@@ -1,0 +1,109 @@
+"""Class (category) endpoints, nested under a project."""
+
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+
+from app.database import get_db
+from app.enums import CLASS_COLORS
+from app.models import Category
+from app.schemas import CategoryCreate, CategoryRead, CategoryUpdate
+from app.api.routes.projects import get_project_or_404
+
+router = APIRouter(tags=["classes"])
+
+
+def _next_color(db: Session, project_id: int) -> str:
+    """Pick the next palette colour for a new class.
+
+    Cycles by class count, so the first few classes in a project get visually
+    distinct colours. Modulo means it wraps rather than crashing on project 13 —
+    duplicate colours are a cosmetic issue, an IndexError is a broken endpoint.
+    """
+    count = (
+        db.scalar(
+            select(func.count()).select_from(Category).where(Category.project_id == project_id)
+        )
+        or 0
+    )
+    return CLASS_COLORS[count % len(CLASS_COLORS)]
+
+
+@router.get("/projects/{project_id}/classes", response_model=list[CategoryRead])
+def list_classes(project_id: int, db: Session = Depends(get_db)) -> list[Category]:
+    get_project_or_404(project_id, db)
+    return list(
+        db.scalars(
+            select(Category).where(Category.project_id == project_id).order_by(Category.id)
+        ).all()
+    )
+
+
+@router.post(
+    "/projects/{project_id}/classes",
+    response_model=CategoryRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_class(
+    project_id: int, payload: CategoryCreate, db: Session = Depends(get_db)
+) -> Category:
+    """Add a class to a project."""
+    get_project_or_404(project_id, db)
+
+    category = Category(
+        project_id=project_id,
+        name=payload.name,
+        color=payload.color or _next_color(db, project_id),
+    )
+    db.add(category)
+
+    try:
+        db.commit()
+    except IntegrityError:
+        # Raised by the uq_category_project_name constraint. We let the DATABASE
+        # detect the duplicate rather than doing a SELECT-then-INSERT check,
+        # because that check has a race: two simultaneous requests can both see
+        # "no duplicate" before either inserts. The unique constraint is the only
+        # thing that can actually guarantee it.
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"A class named '{payload.name}' already exists in this project",
+        ) from None
+
+    db.refresh(category)
+    return category
+
+
+@router.patch("/classes/{class_id}", response_model=CategoryRead)
+def update_class(
+    class_id: int, payload: CategoryUpdate, db: Session = Depends(get_db)
+) -> Category:
+    category = db.get(Category, class_id)
+    if category is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Class {class_id} not found")
+
+    for field, value in payload.model_dump(exclude_unset=True).items():
+        setattr(category, field, value)
+
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"A class named '{payload.name}' already exists in this project",
+        ) from None
+
+    db.refresh(category)
+    return category
+
+
+@router.delete("/classes/{class_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_class(class_id: int, db: Session = Depends(get_db)) -> None:
+    category = db.get(Category, class_id)
+    if category is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Class {class_id} not found")
+    db.delete(category)
+    db.commit()

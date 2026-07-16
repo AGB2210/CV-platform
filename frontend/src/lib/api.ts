@@ -54,6 +54,35 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return res.json() as Promise<T>
 }
 
+/**
+ * Upload files as multipart/form-data.
+ *
+ * Separate from request() because it must NOT set Content-Type. That looks like
+ * an omission but is load-bearing: the browser has to generate the header
+ * itself so it can append the `boundary=...` token that delimits the parts.
+ * Setting 'multipart/form-data' by hand omits the boundary, and the server
+ * fails to parse the body with a confusing 422.
+ */
+async function upload<T>(path: string, files: File[]): Promise<T> {
+  const form = new FormData()
+  // Field name must be 'files' — it matches the `files: list[UploadFile]`
+  // parameter in the FastAPI endpoint.
+  for (const file of files) form.append('files', file)
+
+  const res = await fetch(`${BASE_URL}${path}`, { method: 'POST', body: form })
+
+  if (!res.ok) {
+    let detail = res.statusText
+    try {
+      detail = (await res.json()).detail ?? detail
+    } catch {
+      /* non-JSON body */
+    }
+    throw new ApiError(detail, res.status)
+  }
+  return res.json() as Promise<T>
+}
+
 export const api = {
   get: <T>(path: string) => request<T>(path),
   post: <T>(path: string, body?: unknown) =>
@@ -61,6 +90,7 @@ export const api = {
   patch: <T>(path: string, body?: unknown) =>
     request<T>(path, { method: 'PATCH', body: JSON.stringify(body) }),
   delete: <T>(path: string) => request<T>(path, { method: 'DELETE' }),
+  upload,
 }
 
 // --- Response types -------------------------------------------------------
@@ -77,4 +107,66 @@ export interface HealthResponse {
   storage_dir: string
 }
 
+export interface Project {
+  id: number
+  name: string
+  description: string | null
+  task_type: string
+  created_at: string
+  updated_at: string
+  image_count: number
+  class_count: number
+}
+
+export interface ProjectClass {
+  id: number
+  project_id: number
+  name: string
+  color: string
+  created_at: string
+}
+
+export interface DatasetImage {
+  id: number
+  project_id: number
+  filename: string
+  original_filename: string
+  width: number
+  height: number
+  size_bytes: number
+  created_at: string
+  /** Relative path, e.g. /static/images/1/abc.jpg — usable directly in <img src>. */
+  url: string
+}
+
+export interface UploadResult {
+  uploaded: DatasetImage[]
+  skipped: string[]
+  uploaded_count: number
+  skipped_count: number
+}
+
+// --- Endpoints ------------------------------------------------------------
+// Thin named wrappers rather than components calling api.get('/projects')
+// inline. One place to change if a path moves, and the return types are stated
+// once instead of at every call site.
+
 export const health = () => api.get<HealthResponse>('/health')
+
+export const listProjects = () => api.get<Project[]>('/projects')
+export const getProject = (id: number) => api.get<Project>(`/projects/${id}`)
+export const createProject = (body: { name: string; description?: string }) =>
+  api.post<Project>('/projects', body)
+export const deleteProject = (id: number) => api.delete<void>(`/projects/${id}`)
+
+export const listClasses = (projectId: number) =>
+  api.get<ProjectClass[]>(`/projects/${projectId}/classes`)
+export const createClass = (projectId: number, name: string) =>
+  api.post<ProjectClass>(`/projects/${projectId}/classes`, { name })
+export const deleteClass = (classId: number) => api.delete<void>(`/classes/${classId}`)
+
+export const listImages = (projectId: number) =>
+  api.get<DatasetImage[]>(`/projects/${projectId}/images`)
+export const uploadImages = (projectId: number, files: File[]) =>
+  api.upload<UploadResult>(`/projects/${projectId}/images`, files)
+export const deleteImage = (imageId: number) => api.delete<void>(`/images/${imageId}`)

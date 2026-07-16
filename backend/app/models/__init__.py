@@ -1,11 +1,16 @@
 """
 ORM models package.
 
-Empty in Phase 0 — the schema arrives in Phase 1 (Project, Image, Class).
+Importing every model here is what makes `Base.metadata.create_all()` work:
+SQLAlchemy only knows about a table if its class has been imported. A model that
+nothing imports is invisible, and its table silently never gets created.
 
-`database.init_db()` imports this package so that importing a model module here
-registers it on `Base.metadata`. When Phase 1 adds `project.py`, it gets wired in
-with a single line below, e.g.:
-
-    from app.models.project import Project  # noqa: F401
+Re-exporting also lets callers write `from app.models import Project` rather
+than reaching into each module.
 """
+
+from app.models.category import Category
+from app.models.image import Image
+from app.models.project import Project
+
+__all__ = ["Category", "Image", "Project"]

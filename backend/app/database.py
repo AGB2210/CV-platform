@@ -8,7 +8,8 @@ session is closed even if the handler raises.
 
 from collections.abc import Generator
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.config import settings
@@ -23,6 +24,32 @@ engine = create_engine(
     connect_args={"check_same_thread": False},
     echo=False,  # flip to True to see every SQL statement — useful while learning
 )
+
+@event.listens_for(Engine, "connect")
+def _set_sqlite_pragmas(dbapi_connection, connection_record):
+    """Enable foreign key enforcement on every new SQLite connection.
+
+    THIS IS NOT OPTIONAL, and it surprises almost everyone: SQLite ships with
+    foreign key enforcement OFF by default, for backwards compatibility with
+    versions that predate the feature. Without this, every `ondelete="CASCADE"`
+    in our models is decorative — deleting a project leaves its images and
+    categories behind as orphan rows pointing at an ID that no longer exists.
+
+    The pragma is per-CONNECTION, not per-database, which is why this has to be
+    an event listener rather than a one-off call at startup: the connection pool
+    opens new connections over time, and each one starts with the pragma off.
+
+    The `isinstance` guard exists because this listener is attached to the
+    generic Engine class — if this project ever moves to Postgres (where FKs are
+    always enforced), sending a SQLite pragma would error.
+    """
+    import sqlite3
+
+    if isinstance(dbapi_connection, sqlite3.Connection):
+        cursor = dbapi_connection.cursor()
+        cursor.execute("PRAGMA foreign_keys=ON")
+        cursor.close()
+
 
 # `sessionmaker` is a factory: calling SessionLocal() gives a fresh session.
 # autoflush=False keeps SQLAlchemy from issuing surprise writes mid-transaction;
