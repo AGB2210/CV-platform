@@ -7,11 +7,17 @@ includes one router, and new feature areas are registered in this file.
 
 from fastapi import APIRouter
 
-from app.api.routes import categories, health, images, projects
+from app.api.routes import annotate, categories, health, images, projects
+
+# Importing the annotators package runs each module's @register decorator, which
+# is what populates the model registry. Without this import the /api/annotators
+# dropdown would be empty — the classes exist but nothing has referenced them.
+import app.ml.annotators  # noqa: F401
 
 api_router = APIRouter()
 
 api_router.include_router(health.router)
+api_router.include_router(annotate.router)
 
 # Projects own a /projects prefix. Images and classes define their own full
 # paths, because they're addressed two ways: nested under a project for

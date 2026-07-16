@@ -1,28 +1,50 @@
-# Heavy ML dependencies. NOT installed in Phase 0 — listed here so the plan is
-# visible and so installing them later is one command, not a scavenger hunt.
+# Heavy ML dependencies (Phase 2+). Kept out of requirements.txt so the web
+# skeleton installs in seconds instead of pulling ~3 GB.
 #
-# Install with:  pip install -r requirements-ml.txt
+# TORCH MUST BE INSTALLED FIRST, from the CUDA-specific index — the default PyPI
+# wheel is a different build and pip will not "upgrade" you onto the right one
+# once a plain torch is resident. For this machine (RTX 3050, driver 610.62):
 #
-# IMPORTANT (torch): the default PyPI wheel may be CPU-only or a CUDA build that
-# doesn't match your driver. Install torch FIRST, using the selector at
-# https://pytorch.org/get-started/locally/ to get the right index URL for your
-# GPU, then install the rest. Example for CUDA 12.4:
-#     pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+#     pip install torch==2.13.0 torchvision --index-url https://download.pytorch.org/whl/cu126
+#     pip install -r requirements-ml.txt
+#
+# Pick your own index from https://pytorch.org/get-started/locally/ if the GPU
+# or driver differs. Verify afterwards with:
+#     python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
 
 # --- Phase 2: auto-annotation ---
-# transformers ships Grounding DINO and SAM, so both auto-annotators (and
-# Grounded SAM, which is just the two chained) come from one dependency.
-# torch>=2.5.0
-# torchvision>=0.20.0
-# transformers>=4.46.0
-# timm>=1.0.0
-# supervision>=0.25.0        # box/mask utilities + annotation drawing
+# transformers ships both Grounding DINO and SAM, so all three auto-annotators
+# (DINO, SAM, and Grounded SAM = the two chained) come from one dependency and
+# one weight cache. Avoids vendoring the original research repos, which are
+# pinned to old torch versions and are painful to install on Windows.
+transformers>=4.46.0
+timm>=1.0.0
+accelerate>=1.0.0
+
+# Box/mask utilities and NMS. Also used in Phase 5 to draw predictions.
+supervision>=0.25.0
 
 # --- Phase 4: training ---
+# Commented until Phase 4 — installing them now would pull conflicting pins
+# before we need them.
 # rfdetr>=1.1.0              # RF-DETR (default trainer)
 # ultralytics>=8.3.0         # YOLO26
-# RT-DETR is available through both transformers and ultralytics; we'll pick one
-# in Phase 4 rather than guessing now.
 
 # --- Phase 4/5: metrics ---
 # pycocotools>=2.0.8         # standard COCO mAP evaluation
+
+
+# =============================================================================
+# VRAM BUDGET — this machine has 4 GB (RTX 3050 Laptop)
+# =============================================================================
+# 4 GB is the binding constraint on every model choice in this project, and it
+# is why app/ml/registry.py enforces one resident model at a time.
+#
+#   Grounding DINO Swin-T   ~700 MB weights   ~2-3 GB inference   fits (tight)
+#   SAM ViT-B               ~375 MB weights   ~2-3 GB inference   fits
+#   SAM ViT-H               ~2.4 GB weights   ~6-8 GB inference   DOES NOT FIT
+#   MobileSAM                ~40 MB weights     <1 GB inference   fits easily
+#
+# So: ViT-B, not the ViT-H that every tutorial defaults to. And Grounded SAM
+# cannot hold DINO and SAM resident simultaneously (~5-6 GB) — it must run them
+# sequentially, unloading between stages.

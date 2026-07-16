@@ -1,0 +1,542 @@
+import { useCallback, useEffect, useRef, useState } from 'react'
+import { Link, useParams } from 'react-router-dom'
+import { ArrowLeft, Cpu, Download, Play, Sparkles } from 'lucide-react'
+import { PageBody, PageHeader } from '@/components/layout/AppShell'
+import { StatusBadge, type Status } from '@/components/StatusBadge'
+import {
+  exportUrl,
+  getAnnotationSummary,
+  getDevice,
+  getJob,
+  listAnnotators,
+  listClasses,
+  listExportFormats,
+  listJobs,
+  startAnnotation,
+  type AnnotationJob,
+  type AnnotationSummary,
+  type AnnotatorInfo,
+  type DeviceInfo,
+  type ExportFormatInfo,
+  type ProjectClass,
+} from '@/lib/api'
+
+/** How often to poll a running job. 1s is responsive without hammering the API;
+ *  inference takes ~1s/image on this GPU, so faster polling would mostly return
+ *  identical numbers. */
+const POLL_MS = 1000
+
+export function Annotate() {
+  const { id } = useParams<{ id: string }>()
+  const projectId = Number(id)
+
+  const [annotators, setAnnotators] = useState<AnnotatorInfo[]>([])
+  const [device, setDevice] = useState<DeviceInfo | null>(null)
+  const [classes, setClasses] = useState<ProjectClass[]>([])
+  const [formats, setFormats] = useState<ExportFormatInfo[]>([])
+  const [summary, setSummary] = useState<AnnotationSummary | null>(null)
+  const [jobs, setJobs] = useState<AnnotationJob[]>([])
+
+  const [modelKey, setModelKey] = useState('')
+  const [boxThreshold, setBoxThreshold] = useState(0.3)
+  const [textThreshold, setTextThreshold] = useState(0.25)
+  const [prompts, setPrompts] = useState<Record<string, string>>({})
+
+  const [activeJob, setActiveJob] = useState<AnnotationJob | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [loading, setLoading] = useState(true)
+
+  const refreshSummary = useCallback(async () => {
+    const [s, j] = await Promise.all([
+      getAnnotationSummary(projectId),
+      listJobs(projectId),
+    ])
+    setSummary(s)
+    setJobs(j)
+  }, [projectId])
+
+  // Initial load: everything the page needs, in parallel.
+  useEffect(() => {
+    let cancelled = false
+    Promise.all([
+      listAnnotators(),
+      getDevice(),
+      listClasses(projectId),
+      listExportFormats(),
+      getAnnotationSummary(projectId),
+      listJobs(projectId),
+    ])
+      .then(([a, d, c, f, s, j]) => {
+        if (cancelled) return
+        setAnnotators(a)
+        setDevice(d)
+        setClasses(c)
+        setFormats(f)
+        setSummary(s)
+        setJobs(j)
+        // Default to the first registered model rather than hardcoding a key —
+        // the backend decides what exists.
+        if (a.length) setModelKey((k) => k || a[0].key)
+        // Resume polling if a job is already in flight (e.g. you reloaded the
+        // page mid-run). This is exactly why job state lives in the DB.
+        const running = j.find((x) => x.status === 'running' || x.status === 'queued')
+        if (running) setActiveJob(running)
+      })
+      .catch((e: Error) => !cancelled && setError(e.message))
+      .finally(() => !cancelled && setLoading(false))
+    return () => {
+      cancelled = true
+    }
+  }, [projectId])
+
+  // --- Polling -----------------------------------------------------------
+  // setInterval in a ref so the cleanup can always clear it, and so a re-render
+  // never stacks a second interval on top of the first.
+  const pollRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    const isActive = activeJob?.status === 'running' || activeJob?.status === 'queued'
+    if (!isActive || !activeJob) {
+      if (pollRef.current) {
+        clearInterval(pollRef.current)
+        pollRef.current = null
+      }
+      return
+    }
+
+    pollRef.current = window.setInterval(async () => {
+      try {
+        const fresh = await getJob(activeJob.id)
+        setActiveJob(fresh)
+        if (fresh.status === 'done' || fresh.status === 'failed') {
+          // Terminal state — stop polling and refresh the counts once.
+          if (pollRef.current) clearInterval(pollRef.current)
+          pollRef.current = null
+          void refreshSummary()
+        }
+      } catch (e) {
+        setError((e as Error).message)
+        if (pollRef.current) clearInterval(pollRef.current)
+        pollRef.current = null
+      }
+    }, POLL_MS)
+
+    // Cleanup runs on unmount AND before each re-run of this effect. Without it
+    // navigating away leaves the interval firing forever against a dead
+    // component — a real memory leak, not a theoretical one.
+    return () => {
+      if (pollRef.current) {
+        clearInterval(pollRef.current)
+        pollRef.current = null
+      }
+    }
+  }, [activeJob, refreshSummary])
+
+  async function run() {
+    setError(null)
+    try {
+      const job = await startAnnotation(projectId, {
+        model_key: modelKey,
+        box_threshold: boxThreshold,
+        text_threshold: textThreshold,
+        // Only send non-empty overrides; the backend falls back to class names.
+        prompts: Object.fromEntries(
+          Object.entries(prompts).filter(([, v]) => v.trim()),
+        ),
+      })
+      setActiveJob(job)
+    } catch (e) {
+      setError((e as Error).message)
+    }
+  }
+
+  const selected = annotators.find((a) => a.key === modelKey)
+  const isRunning = activeJob?.status === 'running' || activeJob?.status === 'queued'
+  const canRun = !isRunning && classes.length > 0 && (summary?.total_images ?? 0) > 0
+
+  if (loading) {
+    return (
+      <>
+        <PageHeader title="Auto-annotate" />
+        <PageBody>
+          <p className="text-sm text-gray-500">Loading…</p>
+        </PageBody>
+      </>
+    )
+  }
+
+  return (
+    <>
+      <PageHeader
+        title="Auto-annotate"
+        description="Generate draft bounding boxes with a zero-shot model"
+        actions={
+          <Link to={`/projects/${projectId}`} className="btn-secondary">
+            <ArrowLeft size={14} />
+            Dataset
+          </Link>
+        }
+      />
+      <PageBody>
+        {error && (
+          <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
+            {error}
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
+          {/* --- Left: configure + run --- */}
+          <section className="space-y-4">
+            <div className="card">
+              <div className="border-b border-gray-200 px-4 py-3">
+                <h2 className="text-sm font-medium text-gray-900">Model</h2>
+              </div>
+              <div className="space-y-3 p-4">
+                <div>
+                  <label
+                    htmlFor="model"
+                    className="mb-1 block text-xs font-medium text-gray-700"
+                  >
+                    Auto-annotation model
+                  </label>
+                  <select
+                    id="model"
+                    value={modelKey}
+                    onChange={(e) => setModelKey(e.target.value)}
+                    disabled={isRunning}
+                    className="w-full rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-sm focus:border-accent-500 focus:outline-none disabled:bg-gray-50"
+                  >
+                    {annotators.map((a) => (
+                      <option key={a.key} value={a.key}>
+                        {a.display_name} (~{a.approx_vram_gb} GB VRAM)
+                      </option>
+                    ))}
+                  </select>
+                  {selected && (
+                    <p className="mt-1 text-xs text-gray-500">{selected.description}</p>
+                  )}
+                </div>
+
+                {/* Thresholds. Sliders rather than number inputs: these are
+                    values you tune by feel against results, not by typing an
+                    exact figure. */}
+                <div className="grid grid-cols-2 gap-3">
+                  <Slider
+                    label="Box threshold"
+                    hint="Min detection confidence"
+                    value={boxThreshold}
+                    onChange={setBoxThreshold}
+                    disabled={isRunning}
+                  />
+                  <Slider
+                    label="Text threshold"
+                    hint="Min text-match score"
+                    value={textThreshold}
+                    onChange={setTextThreshold}
+                    disabled={isRunning}
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="card">
+              <div className="border-b border-gray-200 px-4 py-3">
+                <h2 className="text-sm font-medium text-gray-900">Prompts</h2>
+                <p className="text-xs text-gray-500">
+                  Grounding DINO is sensitive to wording. Override a class name with a
+                  fuller phrase if detection is poor — the stored label stays the class
+                  name.
+                </p>
+              </div>
+              {classes.length === 0 ? (
+                <p className="px-4 py-4 text-xs text-gray-500">
+                  No classes defined.{' '}
+                  <Link to={`/projects/${projectId}`} className="text-accent-700 underline">
+                    Add classes
+                  </Link>{' '}
+                  before annotating.
+                </p>
+              ) : (
+                <ul className="divide-y divide-gray-100">
+                  {classes.map((c) => (
+                    <li key={c.id} className="flex items-center gap-2 px-4 py-2">
+                      <span
+                        className="h-3 w-3 shrink-0 rounded-sm border border-black/10"
+                        style={{ backgroundColor: c.color }}
+                      />
+                      <span className="w-28 shrink-0 truncate text-sm text-gray-800">
+                        {c.name}
+                      </span>
+                      <input
+                        value={prompts[c.name] ?? ''}
+                        onChange={(e) =>
+                          setPrompts((p) => ({ ...p, [c.name]: e.target.value }))
+                        }
+                        disabled={isRunning}
+                        placeholder={c.name}
+                        className="min-w-0 flex-1 rounded-md border border-gray-300 px-2 py-1 text-sm placeholder:text-gray-300 focus:border-accent-500 focus:outline-none disabled:bg-gray-50"
+                      />
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            <div className="flex items-center gap-3">
+              <button className="btn-primary" onClick={() => void run()} disabled={!canRun}>
+                {isRunning ? (
+                  <>Running…</>
+                ) : (
+                  <>
+                    <Play size={14} />
+                    Run auto-annotation
+                  </>
+                )}
+              </button>
+              {classes.length === 0 && (
+                <span className="text-xs text-gray-500">Add a class first</span>
+              )}
+              {(summary?.total_images ?? 0) === 0 && (
+                <span className="text-xs text-gray-500">Upload images first</span>
+              )}
+            </div>
+
+            {activeJob && <JobProgress job={activeJob} />}
+          </section>
+
+          {/* --- Right: status --- */}
+          <aside className="space-y-4">
+            {device && <DeviceCard device={device} />}
+            {summary && <SummaryCard summary={summary} />}
+            <ExportCard projectId={projectId} formats={formats} />
+            {jobs.length > 0 && <JobHistory jobs={jobs} />}
+          </aside>
+        </div>
+      </PageBody>
+    </>
+  )
+}
+
+function Slider({
+  label,
+  hint,
+  value,
+  onChange,
+  disabled,
+}: {
+  label: string
+  hint: string
+  value: number
+  onChange: (v: number) => void
+  disabled: boolean
+}) {
+  return (
+    <div>
+      <div className="mb-1 flex items-baseline justify-between">
+        <label className="text-xs font-medium text-gray-700">{label}</label>
+        <span className="font-mono text-xs tabular-nums text-gray-600">
+          {value.toFixed(2)}
+        </span>
+      </div>
+      <input
+        type="range"
+        min={0.05}
+        max={0.95}
+        step={0.05}
+        value={value}
+        disabled={disabled}
+        onChange={(e) => onChange(Number(e.target.value))}
+        className="w-full accent-accent-600"
+      />
+      <p className="mt-0.5 text-xs text-gray-400">{hint}</p>
+    </div>
+  )
+}
+
+function JobProgress({ job }: { job: AnnotationJob }) {
+  const status: Status =
+    job.status === 'done'
+      ? 'done'
+      : job.status === 'failed'
+        ? 'failed'
+        : job.status === 'running'
+          ? 'running'
+          : 'queued'
+
+  return (
+    <div className="card">
+      <div className="flex items-center justify-between border-b border-gray-200 px-4 py-2.5">
+        <h2 className="text-sm font-medium text-gray-900">Job #{job.id}</h2>
+        <StatusBadge status={status} />
+      </div>
+      <div className="p-4">
+        {/* A real progress bar, driven by processed/total from the DB. */}
+        <div className="mb-1.5 flex items-baseline justify-between text-xs">
+          <span className="text-gray-600">
+            {job.processed_images} / {job.total_images} images
+          </span>
+          <span className="font-mono tabular-nums text-gray-600">{job.progress_pct}%</span>
+        </div>
+        <div className="h-1.5 w-full overflow-hidden rounded-full bg-gray-200">
+          <div
+            className={`h-full rounded-full transition-all duration-300 ${
+              job.status === 'failed' ? 'bg-status-bad' : 'bg-accent-600'
+            }`}
+            style={{ width: `${job.progress_pct}%` }}
+          />
+        </div>
+
+        <p className="mt-2 text-xs text-gray-600">
+          <span className="font-medium tabular-nums text-gray-900">
+            {job.boxes_created}
+          </span>{' '}
+          boxes created
+        </p>
+
+        {job.error && (
+          // whitespace-pre-wrap + a scroll cap: tracebacks are long, and
+          // truncating the one thing that explains a failure is cruel.
+          <pre className="mt-2 max-h-40 overflow-auto whitespace-pre-wrap rounded border border-red-200 bg-red-50 p-2 text-[11px] text-red-900">
+            {job.error}
+          </pre>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function DeviceCard({ device }: { device: DeviceInfo }) {
+  const onGpu = device.device === 'cuda'
+  return (
+    <div className="card">
+      <div className="flex items-center gap-2 border-b border-gray-200 px-3 py-2.5">
+        <Cpu size={14} className="text-gray-400" />
+        <h2 className="text-sm font-medium text-gray-900">Compute</h2>
+      </div>
+      <dl className="space-y-1.5 p-3 text-xs">
+        <div className="flex justify-between gap-2">
+          <dt className="text-gray-500">Device</dt>
+          <dd className="truncate font-medium text-gray-900">{device.name}</dd>
+        </div>
+        {device.total_vram_gb && (
+          <div className="flex justify-between">
+            <dt className="text-gray-500">VRAM</dt>
+            <dd className="font-mono tabular-nums text-gray-900">
+              {device.total_vram_gb} GB
+            </dd>
+          </div>
+        )}
+        <div className="flex justify-between">
+          <dt className="text-gray-500">Backend</dt>
+          <dd className="font-mono text-gray-900">{device.device}</dd>
+        </div>
+      </dl>
+      {/* Warn loudly on CPU. Grounding DINO on CPU is minutes per image — the
+          user deserves to know before queueing 500 of them. */}
+      {!onGpu && (
+        <p className="border-t border-gray-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+          {device.note ?? 'Running on CPU — expect very slow inference.'}
+        </p>
+      )}
+    </div>
+  )
+}
+
+function SummaryCard({ summary }: { summary: AnnotationSummary }) {
+  return (
+    <div className="card">
+      <div className="flex items-center gap-2 border-b border-gray-200 px-3 py-2.5">
+        <Sparkles size={14} className="text-gray-400" />
+        <h2 className="text-sm font-medium text-gray-900">Annotations</h2>
+      </div>
+      <dl className="space-y-1.5 p-3 text-xs">
+        <Row label="Images annotated" value={`${summary.annotated_images} / ${summary.total_images}`} />
+        <Row label="Total boxes" value={summary.total_boxes} />
+        <Row label="From model" value={summary.auto_boxes} />
+        <Row label="Manual" value={summary.manual_boxes} />
+        <Row label="Reviewed" value={summary.reviewed_boxes} />
+      </dl>
+    </div>
+  )
+}
+
+function Row({ label, value }: { label: string; value: string | number }) {
+  return (
+    <div className="flex justify-between">
+      <dt className="text-gray-500">{label}</dt>
+      <dd className="font-mono tabular-nums text-gray-900">{value}</dd>
+    </div>
+  )
+}
+
+function ExportCard({
+  projectId,
+  formats,
+}: {
+  projectId: number
+  formats: ExportFormatInfo[]
+}) {
+  const [format, setFormat] = useState('coco')
+  return (
+    <div className="card">
+      <div className="flex items-center gap-2 border-b border-gray-200 px-3 py-2.5">
+        <Download size={14} className="text-gray-400" />
+        <h2 className="text-sm font-medium text-gray-900">Export</h2>
+      </div>
+      <div className="space-y-2 p-3">
+        <select
+          value={format}
+          onChange={(e) => setFormat(e.target.value)}
+          className="w-full rounded-md border border-gray-300 bg-white px-2 py-1 text-xs focus:border-accent-500 focus:outline-none"
+        >
+          {formats.map((f) => (
+            <option key={f.key} value={f.key}>
+              {f.display_name}
+            </option>
+          ))}
+        </select>
+        <p className="text-xs text-gray-400">
+          {formats.find((f) => f.key === format)?.description}
+        </p>
+        {/* An <a download>, not a fetch — native download UI and streaming. */}
+        <a href={exportUrl(projectId, format)} download className="btn-secondary w-full">
+          <Download size={13} />
+          Download dataset
+        </a>
+      </div>
+    </div>
+  )
+}
+
+function JobHistory({ jobs }: { jobs: AnnotationJob[] }) {
+  return (
+    <div className="card">
+      <div className="border-b border-gray-200 px-3 py-2.5">
+        <h2 className="text-sm font-medium text-gray-900">Recent jobs</h2>
+      </div>
+      <ul className="divide-y divide-gray-100">
+        {jobs.slice(0, 6).map((j) => (
+          <li key={j.id} className="flex items-center justify-between px-3 py-2 text-xs">
+            <div className="min-w-0">
+              <p className="truncate font-medium text-gray-800">{j.model_key}</p>
+              <p className="tabular-nums text-gray-500">
+                {j.boxes_created} boxes · {new Date(j.created_at).toLocaleTimeString()}
+              </p>
+            </div>
+            <StatusBadge
+              status={
+                j.status === 'done'
+                  ? 'done'
+                  : j.status === 'failed'
+                    ? 'failed'
+                    : j.status === 'running'
+                      ? 'running'
+                      : 'queued'
+              }
+            />
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}

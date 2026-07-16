@@ -2,6 +2,7 @@ import { BrowserRouter, Route, Routes } from 'react-router-dom'
 import { AppShell } from '@/components/layout/AppShell'
 import { Projects } from '@/pages/Projects'
 import { ProjectDetail } from '@/pages/ProjectDetail'
+import { Annotate } from '@/pages/Annotate'
 
 /**
  * Route table.
@@ -18,7 +19,8 @@ export default function App() {
         <Route element={<AppShell />}>
           <Route path="/" element={<Projects />} />
           <Route path="/projects/:id" element={<ProjectDetail />} />
-          {/* Phase 3: /projects/:id/annotate
+          <Route path="/projects/:id/annotate" element={<Annotate />} />
+          {/* Phase 3: /projects/:id/annotate/:imageId  (review canvas)
               Phase 4: /projects/:id/train
               Phase 5: /projects/:id/deploy   */}
         </Route>

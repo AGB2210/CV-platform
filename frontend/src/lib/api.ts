@@ -170,3 +170,96 @@ export const listImages = (projectId: number) =>
 export const uploadImages = (projectId: number, files: File[]) =>
   api.upload<UploadResult>(`/projects/${projectId}/images`, files)
 export const deleteImage = (imageId: number) => api.delete<void>(`/images/${imageId}`)
+
+// --- Auto-annotation (Phase 2) --------------------------------------------
+
+export interface AnnotatorInfo {
+  key: string
+  display_name: string
+  description: string
+  approx_vram_gb: number
+}
+
+export interface DeviceInfo {
+  available: boolean
+  device: string
+  name: string
+  total_vram_gb: number | null
+  compute_capability: string | null
+  note: string | null
+}
+
+export interface AnnotationJob {
+  id: number
+  project_id: number
+  model_key: string
+  status: 'queued' | 'running' | 'done' | 'failed'
+  total_images: number
+  processed_images: number
+  boxes_created: number
+  error: string | null
+  created_at: string
+  started_at: string | null
+  finished_at: string | null
+  progress_pct: number
+}
+
+export interface Annotation {
+  id: number
+  image_id: number
+  category_id: number
+  x: number
+  y: number
+  width: number
+  height: number
+  confidence: number | null
+  source: string
+  reviewed: boolean
+}
+
+export interface AnnotationSummary {
+  total_images: number
+  annotated_images: number
+  unannotated_images: number
+  total_boxes: number
+  auto_boxes: number
+  manual_boxes: number
+  reviewed_boxes: number
+}
+
+export interface ExportFormatInfo {
+  key: string
+  display_name: string
+  description: string
+}
+
+/** The model list is fetched, never hardcoded — adding an annotator on the
+ *  backend makes it appear here with no frontend change. */
+export const listAnnotators = () => api.get<AnnotatorInfo[]>('/annotators')
+export const getDevice = () => api.get<DeviceInfo>('/device')
+export const listExportFormats = () => api.get<ExportFormatInfo[]>('/export-formats')
+
+export const startAnnotation = (
+  projectId: number,
+  body: {
+    model_key: string
+    box_threshold?: number
+    text_threshold?: number
+    prompts?: Record<string, string>
+  },
+) => api.post<AnnotationJob>(`/projects/${projectId}/annotate`, body)
+
+export const getJob = (jobId: number) => api.get<AnnotationJob>(`/jobs/${jobId}`)
+export const listJobs = (projectId: number) =>
+  api.get<AnnotationJob[]>(`/projects/${projectId}/jobs`)
+
+export const listAnnotations = (imageId: number) =>
+  api.get<Annotation[]>(`/images/${imageId}/annotations`)
+export const getAnnotationSummary = (projectId: number) =>
+  api.get<AnnotationSummary>(`/projects/${projectId}/annotations/summary`)
+
+/** Export is a plain link, not a fetch: letting the browser navigate to the URL
+ *  gets the native download UI and streaming for free, where fetch would buffer
+ *  the whole zip into memory first. */
+export const exportUrl = (projectId: number, format: string, includeUnreviewed = true) =>
+  `/api/projects/${projectId}/export?format=${format}&include_unreviewed=${includeUnreviewed}`

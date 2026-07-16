@@ -43,5 +43,11 @@ class Image(Base):
 
     project: Mapped["Project"] = relationship(back_populates="images")  # noqa: F821
 
+    # delete-orphan: removing an image takes its boxes with it. An annotation
+    # pointing at a deleted image is unexportable and unrenderable.
+    annotations: Mapped[list["Annotation"]] = relationship(  # noqa: F821
+        back_populates="image", cascade="all, delete-orphan"
+    )
+
     def __repr__(self) -> str:
         return f"<Image id={self.id} original={self.original_filename!r}>"

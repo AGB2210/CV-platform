@@ -9,8 +9,17 @@ Re-exporting also lets callers write `from app.models import Project` rather
 than reaching into each module.
 """
 
+from app.models.annotation import Annotation
+from app.models.annotation_job import AnnotationJob, JobStatus
 from app.models.category import Category
 from app.models.image import Image
 from app.models.project import Project
 
-__all__ = ["Category", "Image", "Project"]
+__all__ = [
+    "Annotation",
+    "AnnotationJob",
+    "JobStatus",
+    "Category",
+    "Image",
+    "Project",
+]

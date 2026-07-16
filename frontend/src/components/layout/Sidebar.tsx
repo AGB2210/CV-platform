@@ -28,7 +28,7 @@ interface NavItem {
 // Ordered to match the actual pipeline, not alphabetically.
 const PROJECT_NAV: NavItem[] = [
   { suffix: '', label: 'Dataset', icon: Boxes, ready: true },
-  { suffix: '/annotate', label: 'Annotate', icon: Tags, ready: false },
+  { suffix: '/annotate', label: 'Annotate', icon: Tags, ready: true },
   { suffix: '/train', label: 'Train', icon: Cpu, ready: false },
   { suffix: '/deploy', label: 'Deploy', icon: PlayCircle, ready: false },
 ]
