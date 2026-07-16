@@ -1,0 +1,19 @@
+# Core backend dependencies (Phase 0+).
+#
+# Deliberately does NOT include torch / ultralytics / transformers. Those pull
+# down several GB and are only needed from Phase 2 onward — see
+# requirements-ml.txt. Keeping them apart means this skeleton installs in
+# seconds, and a later CPU-only or CUDA-specific torch build can be chosen
+# without touching this file.
+
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+sqlalchemy>=2.0.36
+pydantic>=2.9.0
+pydantic-settings>=2.6.0
+
+# Required by FastAPI to parse multipart/form-data — i.e. file uploads (Phase 1).
+python-multipart>=0.0.12
+
+# Image metadata (width/height) on upload, and drawing predictions later.
+pillow>=11.0.0

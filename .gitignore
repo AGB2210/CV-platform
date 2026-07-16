@@ -1,0 +1,139 @@
+# =============================================================================
+# NEVER COMMIT: model weights, checkpoints, datasets
+# =============================================================================
+# This is the most important section in this file, and it's first for a reason.
+#
+# Git stores every version of every file forever. A 500 MB checkpoint committed
+# once stays in the history permanently, even if you `git rm` it in the next
+# commit — every future `git clone` re-downloads it. Un-doing that requires
+# rewriting history (git-filter-repo / BFG) and force-pushing, which breaks
+# every existing clone.
+#
+# So: weights and datasets are LOCAL ONLY. They are reproducible (re-download
+# the pretrained weights, re-run training) or they are your own source data —
+# neither belongs in a code repository. Back them up separately if they matter.
+
+# All runtime artifacts: uploaded images, downloaded weights, training runs.
+# NOTE: .gitignore has no trailing-comment syntax — a `#` after a pattern on the
+# same line becomes part of the pattern and silently matches nothing. Comments
+# must sit on their own line. Verify rules with `git check-ignore -v <path>`
+# rather than assuming.
+storage/
+
+# Model weight / checkpoint formats, wherever they land
+*.pt
+*.pth
+*.onnx
+*.safetensors
+*.ckpt
+*.bin
+*.tflite
+*.engine
+*.pkl
+
+# Framework output directories that appear wherever you run them from
+runs/
+wandb/
+lightning_logs/
+checkpoints/
+outputs/
+
+# HuggingFace / torch model caches, if ever pointed inside the repo
+.cache/
+hub/
+
+# Datasets & annotations (COCO JSON can reach hundreds of MB)
+datasets/
+*.zip
+*.tar
+*.tar.gz
+
+
+# =============================================================================
+# Python
+# =============================================================================
+venv/
+.venv/
+env/
+ENV/
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Test / type-check caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+
+# =============================================================================
+# Database
+# =============================================================================
+# SQLite holds *your* project metadata — machine-local state, not source code.
+# Committing it would mean merge conflicts on a binary file, which git cannot
+# resolve. The schema lives in app/models/; the data stays on your machine.
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+*.db-wal
+*.db-shm
+
+
+# =============================================================================
+# Node / frontend
+# =============================================================================
+node_modules/
+dist/
+dist-ssr/
+.vite/
+*.local
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+
+# =============================================================================
+# Secrets & environment
+# =============================================================================
+# .env may hold API keys or absolute paths specific to your machine.
+# .env.example IS committed — it documents which vars exist, with no values.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+
+# =============================================================================
+# Editors & OS
+# =============================================================================
+.vscode/
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+desktop.ini
+
+
+# =============================================================================
+# Test fixtures
+# =============================================================================
+# Sample images for trying things out stay local. If a fixture is genuinely tiny
+# (a few KB) and needed for tests, un-ignore it explicitly with a `!` rule rather
+# than loosening this one.
+samples/
+scratch/

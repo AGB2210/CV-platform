@@ -1,0 +1,28 @@
+# Heavy ML dependencies. NOT installed in Phase 0 — listed here so the plan is
+# visible and so installing them later is one command, not a scavenger hunt.
+#
+# Install with:  pip install -r requirements-ml.txt
+#
+# IMPORTANT (torch): the default PyPI wheel may be CPU-only or a CUDA build that
+# doesn't match your driver. Install torch FIRST, using the selector at
+# https://pytorch.org/get-started/locally/ to get the right index URL for your
+# GPU, then install the rest. Example for CUDA 12.4:
+#     pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+
+# --- Phase 2: auto-annotation ---
+# transformers ships Grounding DINO and SAM, so both auto-annotators (and
+# Grounded SAM, which is just the two chained) come from one dependency.
+# torch>=2.5.0
+# torchvision>=0.20.0
+# transformers>=4.46.0
+# timm>=1.0.0
+# supervision>=0.25.0        # box/mask utilities + annotation drawing
+
+# --- Phase 4: training ---
+# rfdetr>=1.1.0              # RF-DETR (default trainer)
+# ultralytics>=8.3.0         # YOLO26
+# RT-DETR is available through both transformers and ultralytics; we'll pick one
+# in Phase 4 rather than guessing now.
+
+# --- Phase 4/5: metrics ---
+# pycocotools>=2.0.8         # standard COCO mAP evaluation

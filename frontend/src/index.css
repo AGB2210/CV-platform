@@ -1,0 +1,115 @@
+/*
+ * Design tokens + base styles.
+ *
+ * Tailwind v4 configures itself from CSS rather than a tailwind.config.js.
+ * `@import "tailwindcss"` pulls in the framework; `@theme` declares tokens that
+ * become real utility classes (--color-accent-600 => `bg-accent-600`,
+ * `text-accent-600`, etc).
+ *
+ * The point of defining tokens here is constraint. Later phases pick from this
+ * short list instead of reaching for whatever colour looks good in the moment —
+ * that's what keeps a tool looking like one product rather than a pile of
+ * screens.
+ */
+
+@import "tailwindcss";
+
+@theme {
+  /* --- Accent -------------------------------------------------------------
+   * Exactly ONE accent, a muted slate-blue. Reserved for primary actions,
+   * active nav state, and focus rings. If everything is accented, nothing is:
+   * the accent is what tells you where to click. Deliberately desaturated
+   * relative to Tailwind's stock blue-600, which reads a little "consumer app"
+   * against a neutral gray UI.
+   */
+  --color-accent-50: #eef2f7;
+  --color-accent-100: #d9e2ee;
+  --color-accent-200: #b8c8dd;
+  --color-accent-300: #8ba5c4;
+  --color-accent-400: #5b7ba6;
+  --color-accent-500: #3d5d8a;
+  --color-accent-600: #2f4a70; /* primary buttons, active nav */
+  --color-accent-700: #273d5c;
+  --color-accent-800: #22334b;
+  --color-accent-900: #1e2b3f;
+
+  /* --- Status -------------------------------------------------------------
+   * For job lifecycle indicators (queued / running / done / failed) from
+   * Phase 2 onward. Muted rather than signal-bright: on a dense screen these
+   * appear dozens of times at once, and saturated dots turn a table into a
+   * Christmas tree. Named by MEANING, not colour, so a status badge component
+   * maps state -> token without hardcoding "green".
+   */
+  --color-status-idle: #71717a; /* queued  */
+  --color-status-busy: #b45309; /* running */
+  --color-status-good: #15803d; /* done    */
+  --color-status-bad: #b91c1c; /* failed  */
+
+  /* --- Typography ---------------------------------------------------------
+   * System font stack: zero network requests, and it matches what native
+   * tooling on each OS already looks like (Segoe UI here on Windows).
+   */
+  --font-sans:
+    system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial,
+    sans-serif;
+  --font-mono:
+    "Cascadia Code", "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+}
+
+@layer base {
+  html {
+    /* Slightly below the 16px default. Internal tools are read at close range
+       and benefit from fitting more on screen; 16px feels oversized in a dense
+       data UI. */
+    font-size: 15px;
+  }
+
+  body {
+    @apply bg-gray-50 text-gray-900 antialiased;
+    font-family: var(--font-sans);
+  }
+
+  /* One global focus style, so keyboard navigation is consistent and visible
+     everywhere without every component re-declaring it. */
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-accent-600;
+  }
+}
+
+/* --- Shared primitives -----------------------------------------------------
+ * A small set of composite classes, defined once rather than copy-pasting the
+ * same eight utility classes onto every button in the app.
+ *
+ * These use `@utility`, not `.btn { }` inside `@layer components`. The
+ * difference matters in Tailwind v4: `@apply` only accepts real *utilities*, so
+ * a plain class defined in a layer cannot be composed — `@apply btn` from
+ * `.btn-primary` errors with "Cannot apply unknown utility class". Registering
+ * them with `@utility` makes them first-class utilities, which means they can be
+ * @applied AND take variants (`hover:card`, `md:btn`) if ever needed.
+ *
+ * `@utility` must live at the top level, never nested inside `@layer`.
+ */
+
+@utility btn {
+  @apply inline-flex items-center justify-center gap-1.5 rounded-md px-3 py-1.5
+         text-sm font-medium transition-colors
+         disabled:cursor-not-allowed disabled:opacity-50;
+}
+
+@utility btn-primary {
+  @apply btn bg-accent-600 text-white hover:bg-accent-700;
+}
+
+@utility btn-secondary {
+  @apply btn border border-gray-300 bg-white text-gray-700 hover:bg-gray-50;
+}
+
+@utility card {
+  @apply rounded-lg border border-gray-200 bg-white;
+}
+
+/* Section label above a group of fields or stats. Uppercase + tracking is a
+   conventional internal-tool cue for "this is a label, not content". */
+@utility label-eyebrow {
+  @apply text-xs font-medium uppercase tracking-wide text-gray-500;
+}
