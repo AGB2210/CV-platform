@@ -57,8 +57,10 @@ export interface CanvasProps {
   onCreate: (rect: Rect, categoryId: number) => void
   onUpdate: (id: number, rect: Rect) => void
   onDelete: (id: number) => void
-  /** Accept one model proposal. Absent = proposals aren't actionable here. */
-  onAccept?: (id: number) => void
+  /** Read-only: no drawing, moving or resizing. Used while a model batch is
+   *  pending — you're deciding on the batch, not editing it. Editing comes
+   *  after you accept, when the boxes are actually yours. */
+  readOnly?: boolean
 }
 
 /** Below this many pixels a drag is a click, not a box. Prevents the classic
@@ -77,7 +79,7 @@ export function AnnotationCanvas({
   onCreate,
   onUpdate,
   onDelete,
-  onAccept,
+  readOnly = false,
 }: CanvasProps) {
   const svgRef = useRef<SVGSVGElement>(null)
   const [drag, setDrag] = useState<Drag | null>(null)
@@ -130,7 +132,7 @@ export function AnnotationCanvas({
 
   function onPointerDownBackground(e: React.PointerEvent) {
     // Only the background starts a create-drag; boxes stop propagation.
-    if (e.button !== 0 || activeClassId === null) return
+    if (e.button !== 0 || activeClassId === null || readOnly) return
     const { x, y } = toImageCoords(e)
     onSelect(null)
     setDrag({ kind: 'create', startX: x, startY: y })
@@ -144,6 +146,7 @@ export function AnnotationCanvas({
     if (e.button !== 0) return
     e.stopPropagation()
     onSelect(ann.id)
+    if (readOnly) return // selectable for inspection, not draggable
     const { x, y } = toImageCoords(e)
     setDrag({ kind: 'move', id: ann.id, offsetX: x - ann.x, offsetY: y - ann.y })
     setPreview({ x: ann.x, y: ann.y, width: ann.width, height: ann.height })
@@ -258,27 +261,19 @@ export function AnnotationCanvas({
       if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.tagName === 'SELECT'))
         return
 
-      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedId !== null) {
+      if (
+        (e.key === 'Delete' || e.key === 'Backspace') &&
+        selectedId !== null &&
+        !readOnly
+      ) {
         e.preventDefault()
         onDelete(selectedId)
       }
       if (e.key === 'Escape') onSelect(null)
-
-      // 'y' accepts the selected proposal. Deliberately NOT Enter — that
-      // approves the whole image, and having one key mean two different
-      // commitments depending on what's selected is how you accept things you
-      // didn't mean to.
-      if (e.key === 'y' && selectedId !== null && onAccept) {
-        const sel = annotations.find((a) => a.id === selectedId)
-        if (sel?.proposed) {
-          e.preventDefault()
-          onAccept(selectedId)
-        }
-      }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [selectedId, onDelete, onSelect, onAccept, annotations])
+  }, [selectedId, onDelete, onSelect, readOnly])
 
   // --- render ------------------------------------------------------------
 
@@ -303,17 +298,21 @@ export function AnnotationCanvas({
         // THE KEY LINE: user units == image pixels, at any display size.
         viewBox={`0 0 ${imageWidth} ${imageHeight}`}
         className="absolute inset-0 h-full w-full"
-        style={{ cursor: activeClassId !== null ? 'crosshair' : 'default' }}
+        style={{
+          cursor: readOnly ? 'default' : activeClassId !== null ? 'crosshair' : 'default',
+        }}
         onPointerDown={onPointerDownBackground}
         onPointerMove={onPointerMove}
         onPointerUp={onPointerUp}
         onPointerLeave={onPointerUp}
       >
-        {/* Accepted boxes first, proposals after, so suggestions always draw ON
-            TOP of your work rather than hiding underneath it. */}
-        {[...annotations]
-          .sort((a, b) => Number(a.proposed) - Number(b.proposed))
-          .map((ann) => {
+        {/* One set of boxes at a time — never two layers.
+            The caller decides WHICH set to hand us: while a model batch is
+            pending you see the model's output alone; otherwise you see your
+            annotations. Drawing both at once meant dotted suggestions
+            overlapping solid boxes on the same objects, which was impossible to
+            read and hid duplicates rather than revealing them. */}
+        {annotations.map((ann) => {
           const isSelected = ann.id === selectedId
           const isDragging = ann.id === dragId
           const rect: Rect = isDragging && preview ? preview : ann
@@ -329,26 +328,17 @@ export function AnnotationCanvas({
                 fill={color}
                 // Nearly transparent fill, not fill="none": it gives the box an
                 // interior to click for moving, while leaving the image visible.
-                // Proposals get almost none — they're suggestions layered over
-                // your work, and they shouldn't tint the image you're judging.
-                fillOpacity={ann.proposed ? 0.04 : isSelected ? 0.18 : 0.08}
+                fillOpacity={isSelected ? 0.18 : 0.08}
                 stroke={color}
                 // vectorEffect keeps the stroke 2 CSS px regardless of the
                 // viewBox scale. Without it, a 4000px-wide image would render
                 // hairline borders and a 200px one would render fat ones.
                 vectorEffect="non-scaling-stroke"
                 strokeWidth={isSelected ? 3 : 2}
-                // THREE visual states, and the distinction is the whole point
-                // of this screen:
-                //   solid       your annotation, accepted
-                //   long dash   accepted model output, not yet reviewed
-                //   dotted      a PROPOSAL — not an annotation at all yet
-                // Dotted vs dashed reads as "lighter, provisional" at a glance,
-                // which is exactly what a proposal is.
-                strokeDasharray={
-                  ann.proposed ? '2 3' : ann.reviewed ? undefined : '6 4'
-                }
-                strokeOpacity={ann.proposed ? 0.9 : 1}
+                // Dashed = not yet confirmed by a human. Only two states now:
+                // solid (yours/confirmed) and dashed (unreviewed). The third
+                // "proposal" style is gone along with the dual-layer view.
+                strokeDasharray={ann.reviewed ? undefined : '6 4'}
                 onPointerDown={(e) => onPointerDownBox(e, ann)}
                 className="cursor-move"
               />
@@ -362,9 +352,6 @@ export function AnnotationCanvas({
                   width={Math.max(38, labelWidth(ann, classes))}
                   height={17}
                   fill={color}
-                  // A hollow chip for proposals: same colour, but not the solid
-                  // block an accepted box gets.
-                  fillOpacity={ann.proposed ? 0.35 : 1}
                   vectorEffect="non-scaling-stroke"
                 />
                 <text
@@ -379,43 +366,10 @@ export function AnnotationCanvas({
                 </text>
               </g>
 
-              {/* Accept / reject affordances, on the selected proposal only.
-                  Putting them on every proposal would bury the image under
-                  buttons on a busy scene. */}
-              {ann.proposed && isSelected && onAccept && (
-                <g transform={`translate(${rect.x + rect.width}, ${rect.y})`}>
-                  <g
-                    transform="translate(-40, 2)"
-                    onPointerDown={(e) => {
-                      e.stopPropagation()
-                      onAccept(ann.id)
-                    }}
-                    className="cursor-pointer"
-                  >
-                    <rect width={18} height={16} rx={2} fill="#15803d" />
-                    <text x={5} y={12} fill="white" style={{ fontSize: 11 }}>
-                      ✓
-                    </text>
-                  </g>
-                  <g
-                    transform="translate(-20, 2)"
-                    onPointerDown={(e) => {
-                      e.stopPropagation()
-                      onDelete(ann.id)
-                    }}
-                    className="cursor-pointer"
-                  >
-                    <rect width={18} height={16} rx={2} fill="#b91c1c" />
-                    <text x={6} y={12} fill="white" style={{ fontSize: 11 }}>
-                      ✕
-                    </text>
-                  </g>
-                </g>
-              )}
-
               {/* Resize handles, only on the selected box — showing them on
                   every box turns a busy image into confetti. */}
               {isSelected &&
+                !readOnly &&
                 (['nw', 'ne', 'sw', 'se'] as Handle[]).map((h) => {
                   const hx = h === 'nw' || h === 'sw' ? rect.x : rect.x + rect.width
                   const hy = h === 'nw' || h === 'ne' ? rect.y : rect.y + rect.height

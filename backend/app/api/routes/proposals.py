@@ -1,71 +1,58 @@
 """
-Model proposals: accept, reject, and batch-apply.
+Model proposals: accept or reject. That's the whole vocabulary.
 
-Auto-annotation writes PROPOSALS, not annotations. They are the model's
-suggestions and are invisible to exports, training, and every count until a
-human accepts them. This module is where that decision gets made.
+Auto-annotation writes PROPOSALS, not annotations. They're excluded from
+exports, training, and every count until a decision is made:
 
-The model proposes; the human disposes. Nothing you drew is ever destroyed to
-make room for a suggestion — the old behaviour deleted your boxes and wrote the
-model's in their place, which meant running the model cost you whatever was
-already there.
+    Accept  the model's boxes become your annotations. Your previous boxes ON
+            THE IMAGES THIS RUN COVERED are deleted — you asked for the model's
+            output, so that's what you get.
+    Reject  the proposals are thrown away and your boxes stay exactly as they
+            were.
+
+WHY THERE ARE NO MODES HERE
+---------------------------
+This used to offer append/merge/replace. Append was the default, so accepting a
+batch piled the model's boxes ON TOP of the previous run's — re-running four
+times gave you the same three objects boxed four times over, and the canvas drew
+both layers at once so you couldn't tell which was which.
+
+The append and merge cases have no real use: if you wanted to keep your own
+boxes you'd reject the batch, and if you wanted the model's you'd want ONLY the
+model's. Two buttons say everything three modes did, and can't produce
+duplicates.
+
+Note that append/merge/replace still exist for the staging -> dataset commit
+(see routes/dataset.py). That's a different decision about IMAGES, where a
+filename can genuinely collide.
 """
 
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.routes.projects import get_project_or_404
 from app.database import get_db
 from app.models import Annotation, Image
-from app.schemas.annotation import AnnotationRead
 
 router = APIRouter(tags=["proposals"])
 
 
-class ApplyMode:
-    """How a proposal batch combines with your existing boxes, per image."""
-
-    APPEND = "append"
-    MERGE = "merge"
-    REPLACE = "replace"
-
-
-class ApplyProposals(BaseModel):
-    mode: str = Field(default=ApplyMode.APPEND, pattern="^(append|merge|replace)$")
-
-
 class ProposalPreview(BaseModel):
-    """What applying the batch would do. Read-only.
+    """What accepting would do. Read-only."""
 
-    Split deliberately into mode-INDEPENDENT facts and mode-DEPENDENT outcomes.
-    The UI describes all three modes at once while only one is selected, so it
-    needs numbers that don't shift under it — a blurb that reads
-    "would_delete_existing" from the *selected* mode's preview tells you Replace
-    deletes nothing while Merge happens to be ticked.
-    """
-
-    # --- mode-independent ---
     proposed_boxes: int
     proposed_images: int
-    existing_boxes: int
-    #: Images that have BOTH proposals and existing boxes — the only images the
-    #: three modes actually treat differently.
-    conflicting_images: int
-    #: Your boxes sitting on images this batch covers. This is exactly what
-    #: Replace would delete, regardless of which mode is currently selected.
+    #: Your boxes on the images this run covered — exactly what Accept deletes.
     existing_on_proposed_images: int
-
-    # --- outcome for the requested mode ---
-    would_accept: int
-    would_discard: int
-    would_delete_existing: int
+    #: Your boxes on images the run never touched. Accept leaves these alone.
+    existing_elsewhere: int
 
 
-def _proposal_rows(db: Session, project_id: int) -> list[Annotation]:
+def _proposals(db: Session, project_id: int) -> list[Annotation]:
     return list(
         db.scalars(
             select(Annotation)
@@ -75,7 +62,7 @@ def _proposal_rows(db: Session, project_id: int) -> list[Annotation]:
     )
 
 
-def _existing_by_image(db: Session, project_id: int) -> dict[int, list[Annotation]]:
+def _accepted_by_image(db: Session, project_id: int) -> dict[int, list[Annotation]]:
     out: dict[int, list[Annotation]] = {}
     for ann in db.scalars(
         select(Annotation)
@@ -87,163 +74,107 @@ def _existing_by_image(db: Session, project_id: int) -> dict[int, list[Annotatio
 
 
 @router.get("/projects/{project_id}/proposals/preview", response_model=ProposalPreview)
-def preview(
-    project_id: int, mode: str = ApplyMode.APPEND, db: Session = Depends(get_db)
-) -> ProposalPreview:
-    """Numbers for the batch bar, before anything is applied."""
+def preview(project_id: int, db: Session = Depends(get_db)) -> ProposalPreview:
+    """Numbers for the bar. Accepting deletes boxes, so they belong on screen
+    before the click, not after."""
     get_project_or_404(project_id, db)
 
-    proposals = _proposal_rows(db, project_id)
-    existing = _existing_by_image(db, project_id)
-
-    proposal_images = {a.image_id for a in proposals}
-    conflicting = {i for i in proposal_images if existing.get(i)}
-    existing_on_covered = sum(len(existing.get(i, [])) for i in proposal_images)
-
-    if mode == ApplyMode.APPEND:
-        would_accept = len(proposals)
-        would_discard = 0
-        would_delete = 0
-    elif mode == ApplyMode.MERGE:
-        # Per-image, not per-box: an image that already has boxes keeps them and
-        # the proposals for it are dropped. No IoU maths, no surprises — you can
-        # predict the outcome by looking at the grid.
-        would_accept = sum(1 for a in proposals if a.image_id not in conflicting)
-        would_discard = len(proposals) - would_accept
-        would_delete = 0
-    else:  # REPLACE
-        would_accept = len(proposals)
-        would_discard = 0
-        # Only on images the batch actually covers. An image the model never
-        # looked at keeps its boxes — otherwise "replace" would silently wipe
-        # work on images that aren't even part of this run.
-        would_delete = existing_on_covered
+    proposals = _proposals(db, project_id)
+    accepted = _accepted_by_image(db, project_id)
+    covered = {a.image_id for a in proposals}
 
     return ProposalPreview(
         proposed_boxes=len(proposals),
-        proposed_images=len(proposal_images),
-        existing_boxes=sum(len(v) for v in existing.values()),
-        conflicting_images=len(conflicting),
-        existing_on_proposed_images=existing_on_covered,
-        would_accept=would_accept,
-        would_discard=would_discard,
-        would_delete_existing=would_delete,
+        proposed_images=len(covered),
+        existing_on_proposed_images=sum(len(accepted.get(i, [])) for i in covered),
+        existing_elsewhere=sum(
+            len(v) for k, v in accepted.items() if k not in covered
+        ),
     )
 
 
-@router.post("/projects/{project_id}/proposals/apply")
-def apply_proposals(
-    project_id: int, payload: ApplyProposals, db: Session = Depends(get_db)
-) -> dict:
-    """Apply the whole proposal batch.
+def _accept(db: Session, proposals: list[Annotation], accepted_by_image: dict) -> dict:
+    """Replace the covered images' boxes with the proposals. Shared by both
+    accept endpoints so project-wide and per-image can't drift apart."""
+    covered = {a.image_id for a in proposals}
 
-      append   accept every proposal alongside your boxes.
-      merge    per image: if it already has boxes, keep yours and drop the
-               proposals; if it has none, accept them.
-      replace  proposals win on the images they cover; your boxes on those
-               images are deleted. Images the batch didn't touch are untouched.
+    deleted = 0
+    for image_id in covered:
+        for ann in accepted_by_image.get(image_id, []):
+            db.delete(ann)
+            deleted += 1
+
+    for ann in proposals:
+        # A state change, not a copy: the row stays put and stops being a
+        # proposal. Its id, geometry and confidence are untouched.
+        ann.proposed = False
+        ann.reviewed = True
+
+    db.commit()
+    return {"accepted": len(proposals), "deleted_existing": deleted}
+
+
+@router.post("/projects/{project_id}/proposals/accept")
+def accept_all(project_id: int, db: Session = Depends(get_db)) -> dict:
+    """Accept the batch: the model's boxes replace yours on the images it covered.
+
+    Images the run never looked at keep their annotations — "accept the model's
+    output" means for what it actually looked at, not a project-wide wipe.
     """
     get_project_or_404(project_id, db)
 
-    proposals = _proposal_rows(db, project_id)
+    proposals = _proposals(db, project_id)
     if not proposals:
         raise HTTPException(
-            status.HTTP_400_BAD_REQUEST, "There are no pending proposals to apply."
+            status.HTTP_400_BAD_REQUEST, "There are no pending proposals to accept."
         )
-
-    existing = _existing_by_image(db, project_id)
-    proposal_images = {a.image_id for a in proposals}
-    conflicting = {i for i in proposal_images if existing.get(i)}
-
-    accepted = discarded = deleted = 0
-
-    if payload.mode == ApplyMode.REPLACE:
-        for image_id in proposal_images:
-            for ann in existing.get(image_id, []):
-                db.delete(ann)
-                deleted += 1
-
-    for ann in proposals:
-        if payload.mode == ApplyMode.MERGE and ann.image_id in conflicting:
-            db.delete(ann)
-            discarded += 1
-            continue
-        # Accepting is a state change, not a copy: the row stays put and simply
-        # stops being a proposal. Its id, geometry and confidence are unchanged,
-        # so nothing that already references it breaks.
-        ann.proposed = False
-        # A human said yes. That's a review — the whole point of the gesture.
-        ann.reviewed = True
-        accepted += 1
-
-    db.commit()
-    return {
-        "mode": payload.mode,
-        "accepted": accepted,
-        "discarded": discarded,
-        "deleted_existing": deleted,
-    }
+    return _accept(db, proposals, _accepted_by_image(db, project_id))
 
 
 @router.delete("/projects/{project_id}/proposals", status_code=status.HTTP_204_NO_CONTENT)
-def discard_all(project_id: int, db: Session = Depends(get_db)) -> None:
-    """Throw the batch away. Your own boxes are untouched by definition."""
+def reject_all(project_id: int, db: Session = Depends(get_db)) -> None:
+    """Reject the batch. Your boxes are untouched — nothing of yours was ever
+    modified, so there is nothing to restore."""
     get_project_or_404(project_id, db)
-    for ann in _proposal_rows(db, project_id):
+    for ann in _proposals(db, project_id):
         db.delete(ann)
     db.commit()
 
 
-@router.post("/annotations/{annotation_id}/accept", response_model=AnnotationRead)
-def accept_one(annotation_id: int, db: Session = Depends(get_db)) -> Annotation:
-    """Accept a single proposal — the per-box gesture in the canvas."""
-    ann = db.get(Annotation, annotation_id)
-    if ann is None:
-        raise HTTPException(
-            status.HTTP_404_NOT_FOUND, f"Annotation {annotation_id} not found"
-        )
-    if not ann.proposed:
-        # Not an error worth failing on: the box is already accepted, which is
-        # the state the caller wanted. Idempotent beats pedantic.
-        return ann
-    ann.proposed = False
-    ann.reviewed = True
-    db.commit()
-    db.refresh(ann)
-    return ann
-
-
-@router.post("/images/{image_id}/proposals/accept", response_model=list[AnnotationRead])
-def accept_image(image_id: int, db: Session = Depends(get_db)) -> list[Annotation]:
-    """Accept every proposal on one image — the per-image bulk gesture.
-
-    The common case by far: the model got this image right, and clicking each of
-    its six boxes to say so is busywork.
-    """
-    if db.get(Image, image_id) is None:
+@router.post("/images/{image_id}/proposals/accept")
+def accept_image(image_id: int, db: Session = Depends(get_db)) -> dict:
+    """Accept one image's proposals, replacing that image's boxes."""
+    image = db.get(Image, image_id)
+    if image is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"Image {image_id} not found")
 
-    rows = list(
+    proposals = list(
         db.scalars(
             select(Annotation).where(
                 Annotation.image_id == image_id, Annotation.proposed.is_(True)
             )
         ).all()
     )
-    for ann in rows:
-        ann.proposed = False
-        ann.reviewed = True
-    db.commit()
-    for ann in rows:
-        db.refresh(ann)
-    return rows
+    if not proposals:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST, "This image has no pending proposals."
+        )
+
+    accepted = {
+        image_id: list(
+            db.scalars(
+                select(Annotation).where(
+                    Annotation.image_id == image_id, Annotation.proposed.is_(False)
+                )
+            ).all()
+        )
+    }
+    return _accept(db, proposals, accepted)
 
 
-@router.delete(
-    "/images/{image_id}/proposals", status_code=status.HTTP_204_NO_CONTENT
-)
+@router.delete("/images/{image_id}/proposals", status_code=status.HTTP_204_NO_CONTENT)
 def reject_image(image_id: int, db: Session = Depends(get_db)) -> None:
-    """Reject every proposal on one image."""
+    """Reject one image's proposals. Its boxes stay as they were."""
     if db.get(Image, image_id) is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"Image {image_id} not found")
     for ann in db.scalars(
@@ -257,7 +188,7 @@ def reject_image(image_id: int, db: Session = Depends(get_db)) -> None:
 
 @router.get("/projects/{project_id}/proposals/count")
 def count(project_id: int, db: Session = Depends(get_db)) -> dict:
-    """Cheap poll for "is there a pending batch?" without pulling every row."""
+    """Cheap poll for "is there a pending batch?"."""
     get_project_or_404(project_id, db)
     n = db.scalar(
         select(func.count(Annotation.id))

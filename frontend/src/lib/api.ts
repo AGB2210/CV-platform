@@ -239,39 +239,34 @@ export interface Annotation {
   job_id: number | null
 }
 
-export type ApplyMode = 'append' | 'merge' | 'replace'
-
+/** A pending model batch. Accept or reject — there are no modes.
+ *  (append/merge/replace still exist for the staging -> dataset commit, which
+ *  is a different decision about images.) */
 export interface ProposalPreview {
-  // --- mode-independent: safe to describe every mode with ---
   proposed_boxes: number
   proposed_images: number
-  existing_boxes: number
-  /** Images with BOTH proposals and existing boxes — the only ones the modes treat differently. */
-  conflicting_images: number
-  /** Your boxes on images this batch covers = exactly what Replace would delete. */
+  /** Your boxes on the images this run covered — exactly what Accept deletes. */
   existing_on_proposed_images: number
-
-  // --- outcome for the REQUESTED mode only ---
-  would_accept: number
-  would_discard: number
-  would_delete_existing: number
+  /** Your boxes on images the run never touched. Accept leaves these alone. */
+  existing_elsewhere: number
 }
 
 export const getProposalCount = (projectId: number) =>
   api.get<{ proposed_boxes: number }>(`/projects/${projectId}/proposals/count`)
-export const getProposalPreview = (projectId: number, mode: ApplyMode) =>
-  api.get<ProposalPreview>(`/projects/${projectId}/proposals/preview?mode=${mode}`)
-export const applyProposals = (projectId: number, mode: ApplyMode) =>
-  api.post<{ mode: string; accepted: number; discarded: number; deleted_existing: number }>(
-    `/projects/${projectId}/proposals/apply`,
-    { mode },
+export const getProposalPreview = (projectId: number) =>
+  api.get<ProposalPreview>(`/projects/${projectId}/proposals/preview`)
+/** The model's boxes replace yours on the images it covered. */
+export const acceptProposals = (projectId: number) =>
+  api.post<{ accepted: number; deleted_existing: number }>(
+    `/projects/${projectId}/proposals/accept`,
   )
-export const discardProposals = (projectId: number) =>
+/** Discard the batch; your boxes are untouched. */
+export const rejectProposals = (projectId: number) =>
   api.delete<void>(`/projects/${projectId}/proposals`)
-export const acceptAnnotation = (id: number) =>
-  api.post<Annotation>(`/annotations/${id}/accept`)
 export const acceptImageProposals = (imageId: number) =>
-  api.post<Annotation[]>(`/images/${imageId}/proposals/accept`)
+  api.post<{ accepted: number; deleted_existing: number }>(
+    `/images/${imageId}/proposals/accept`,
+  )
 export const rejectImageProposals = (imageId: number) =>
   api.delete<void>(`/images/${imageId}/proposals`)
 

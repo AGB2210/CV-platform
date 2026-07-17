@@ -6,16 +6,16 @@ import {
   ChevronLeft,
   ChevronRight,
   Database,
-  Sparkles,
   Trash2,
+  X,
 } from 'lucide-react'
 import { AnnotationCanvas } from '@/components/AnnotationCanvas'
 import { CommitDialog } from '@/components/CommitDialog'
 import { ProposalBar } from '@/components/ProposalBar'
 import { ConfirmDialog } from '@/components/ui/Modal'
 import {
-  acceptAnnotation,
   acceptImageProposals,
+  rejectImageProposals,
   approveAll,
   approveImage,
   createAnnotation,
@@ -204,27 +204,23 @@ export function Review() {
     }
   }
 
-  /** Accept one model proposal — it stops being a suggestion and becomes yours. */
-  async function handleAccept(annId: number) {
-    setAnnotations((a) =>
-      a.map((x) => (x.id === annId ? { ...x, proposed: false, reviewed: true } : x)),
-    )
-    try {
-      const updated = await acceptAnnotation(annId)
-      setAnnotations((a) => a.map((x) => (x.id === annId ? updated : x)))
-      void refreshCounts()
-    } catch (e) {
-      setError((e as Error).message)
-      if (current) setAnnotations(await listAnnotations(current.id))
-    }
-  }
-
-  /** Accept every proposal on this image — the common case, since the model
-   *  usually gets a whole image right or wrong together. */
+  /** Accept THIS image's proposals: the model's boxes replace this image's. */
   async function handleAcceptImage() {
     if (!current) return
     try {
       await acceptImageProposals(current.id)
+      setAnnotations(await listAnnotations(current.id))
+      void refreshCounts()
+    } catch (e) {
+      setError((e as Error).message)
+    }
+  }
+
+  /** Reject THIS image's proposals: its own boxes stay exactly as they were. */
+  async function handleRejectImage() {
+    if (!current) return
+    try {
+      await rejectImageProposals(current.id)
       setAnnotations(await listAnnotations(current.id))
       void refreshCounts()
     } catch (e) {
@@ -307,6 +303,15 @@ export function Review() {
   const proposals = annotations.filter((a) => a.proposed)
   const accepted = annotations.filter((a) => !a.proposed)
   const unreviewed = accepted.filter((a) => !a.reviewed).length
+
+  // ONE set of boxes on screen, never two.
+  //
+  // While a batch is pending you see the model's output ALONE — that's the
+  // thing you're judging, and overlaying it on your own boxes made the two
+  // indistinguishable on the same objects. Reject and your boxes reappear
+  // untouched; accept and they become your boxes.
+  const reviewingBatch = proposals.length > 0
+  const visibleBoxes = reviewingBatch ? proposals : accepted
 
   return (
     <div className="flex h-full min-h-0 flex-1">
@@ -412,28 +417,39 @@ export function Review() {
               scopes in one toolbar both muddled the meaning and overflowed the
               header at narrow widths. */}
           <div className="flex shrink-0 items-center gap-2">
-            {/* Per-image accept, offered only when this image has proposals.
-                The model tends to get a whole image right or wrong together, so
-                this is the gesture you'll actually use. */}
-            {proposals.length > 0 && (
+            {/* While judging a batch the ONLY actions are accept/reject for
+                this image. Approve is meaningless here — you can't approve
+                boxes that aren't yours yet. */}
+            {reviewingBatch ? (
+              <>
+                <button
+                  className="btn-secondary"
+                  onClick={() => void handleRejectImage()}
+                  title="Discard this image's model boxes and keep your own"
+                >
+                  <X size={14} />
+                  Reject
+                </button>
+                <button
+                  className="btn-primary"
+                  onClick={() => void handleAcceptImage()}
+                  title="Keep this image's model boxes, replacing your own"
+                >
+                  <Check size={14} />
+                  Accept {proposals.length}
+                </button>
+              </>
+            ) : (
               <button
-                className="btn-secondary"
-                onClick={() => void handleAcceptImage()}
-                title="Accept every proposal on this image"
+                className="btn-primary"
+                onClick={() => void handleApprove()}
+                disabled={accepted.length === 0}
+                title="Approve all boxes on this image (Enter)"
               >
-                <Sparkles size={14} />
-                Accept {proposals.length}
+                <Check size={14} />
+                Approve
               </button>
             )}
-            <button
-              className="btn-primary"
-              onClick={() => void handleApprove()}
-              disabled={accepted.length === 0}
-              title="Approve all boxes on this image (Enter)"
-            >
-              <Check size={14} />
-              Approve
-            </button>
           </div>
         </header>
 
@@ -450,7 +466,7 @@ export function Review() {
                 imageUrl={current.url}
                 imageWidth={current.width}
                 imageHeight={current.height}
-                annotations={annotations}
+                annotations={visibleBoxes}
                 classes={classes}
                 activeClassId={activeClassId}
                 selectedId={selectedId}
@@ -458,7 +474,9 @@ export function Review() {
                 onCreate={(r, c) => void handleCreate(r, c)}
                 onUpdate={(i, r) => void handleUpdate(i, r)}
                 onDelete={(i) => void handleDelete(i)}
-                onAccept={(i) => void handleAccept(i)}
+                // Editing is disabled while judging a batch: these aren't your
+                // boxes yet. Accept them first, then edit freely.
+                readOnly={reviewingBatch}
               />
             </div>
           )}
@@ -550,7 +568,12 @@ export function Review() {
         </ul>
 
         <div className="border-b border-gray-200 px-3 py-2">
-          <p className="label-eyebrow">Boxes on this image</p>
+          <p className="label-eyebrow">
+            {reviewingBatch ? "Model's boxes" : 'Boxes on this image'}
+          </p>
+          {reviewingBatch && (
+            <p className="text-[11px] text-gray-400">Your boxes are hidden while you decide</p>
+          )}
         </div>
         <ul className="min-h-0 flex-1 divide-y divide-gray-100 overflow-y-auto">
           {annotations.length === 0 && (
@@ -558,10 +581,9 @@ export function Review() {
               No boxes. Drag on the image to draw one.
             </li>
           )}
-          {/* Proposals listed first — they're the thing awaiting a decision. */}
-          {[...annotations]
-            .sort((a, b) => Number(b.proposed) - Number(a.proposed))
-            .map((a) => {
+          {/* Lists whatever the canvas is showing — the model's boxes while a
+              batch is pending, yours otherwise. Never a mix. */}
+          {visibleBoxes.map((a) => {
             const cls = classes.find((c) => c.id === a.category_id)
             return (
               <li
@@ -569,55 +591,35 @@ export function Review() {
                 onMouseEnter={() => setSelectedId(a.id)}
                 className={`group flex items-center gap-2 px-3 py-1.5 text-xs ${
                   selectedId === a.id ? 'bg-accent-50' : ''
-                } ${a.proposed ? 'bg-accent-50/40' : ''}`}
+                }`}
               >
                 <span
-                  className={`h-2.5 w-2.5 shrink-0 rounded-sm ${
-                    // Hollow swatch for a proposal — same colour, not yet real.
-                    a.proposed ? 'border-2' : 'border border-black/10'
-                  }`}
-                  style={
-                    a.proposed
-                      ? { borderColor: cls?.color }
-                      : { backgroundColor: cls?.color }
-                  }
+                  className="h-2.5 w-2.5 shrink-0 rounded-sm border border-black/10"
+                  style={{ backgroundColor: cls?.color }}
                 />
-                <span
-                  className={`flex-1 truncate ${
-                    a.proposed ? 'italic text-accent-800' : 'text-gray-800'
-                  }`}
-                >
-                  {cls?.name}
-                </span>
+                <span className="flex-1 truncate text-gray-800">{cls?.name}</span>
                 {a.confidence !== null && (
                   <span className="font-mono tabular-nums text-gray-400">
                     {a.confidence.toFixed(2)}
                   </span>
                 )}
-                {a.proposed ? (
-                  <button
-                    onClick={() => void handleAccept(a.id)}
-                    className="rounded p-0.5 text-gray-400 hover:text-green-700"
-                    aria-label="Accept proposal"
-                    title="Accept this proposal (y)"
-                  >
-                    <Check size={12} />
-                  </button>
-                ) : (
-                  !a.reviewed && (
-                    <span
-                      className="h-1.5 w-1.5 rounded-full bg-status-busy"
-                      title="Unreviewed"
-                    />
-                  )
+                {!a.proposed && !a.reviewed && (
+                  <span
+                    className="h-1.5 w-1.5 rounded-full bg-status-busy"
+                    title="Unreviewed"
+                  />
                 )}
-                <button
-                  onClick={() => void handleDelete(a.id)}
-                  className="rounded p-0.5 text-gray-400 opacity-0 hover:text-red-600 focus:opacity-100 group-hover:opacity-100"
-                  aria-label={a.proposed ? 'Reject proposal' : 'Delete box'}
-                >
-                  <Trash2 size={12} />
-                </button>
+                {/* No per-box delete while judging: the decision is accept or
+                    reject the batch, not curate it box by box. */}
+                {!reviewingBatch && (
+                  <button
+                    onClick={() => void handleDelete(a.id)}
+                    className="rounded p-0.5 text-gray-400 opacity-0 hover:text-red-600 focus:opacity-100 group-hover:opacity-100"
+                    aria-label="Delete box"
+                  >
+                    <Trash2 size={12} />
+                  </button>
+                )}
               </li>
             )
           })}
@@ -633,16 +635,11 @@ export function Review() {
           <p>
             <Kbd>←</Kbd> <Kbd>→</Kbd> navigate · <Kbd>Enter</Kbd> approve
           </p>
-          <p>
-            <Kbd>y</Kbd> accept proposal
-          </p>
-          {/* Three line styles carry real meaning here; a legend is the
-              difference between "why are some boxes dotted" and reading the
-              screen at a glance. */}
+          {/* Two states only now — the dotted "proposal" style is gone along
+              with the dual-layer view. */}
           <div className="space-y-0.5 pt-1.5">
-            <LegendRow dash={undefined} label="your annotation" />
-            <LegendRow dash="6 4" label="unreviewed" />
-            <LegendRow dash="2 3" label="model proposal — not yours until accepted" />
+            <LegendRow dash={undefined} label="reviewed" />
+            <LegendRow dash="6 4" label="not yet reviewed" />
           </div>
         </div>
       </aside>
