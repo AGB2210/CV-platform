@@ -76,6 +76,24 @@ export function Annotate() {
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
 
+  // Scroll the job card into view when a run STARTS.
+  //
+  // Moving the card to the top isn't enough on its own: you scroll down to
+  // reach the Run button, so a card at the top is still off-screen at the exact
+  // moment it appears. Clicking Run and seeing nothing happen is the worst
+  // possible feedback for a job that takes a minute.
+  const jobRef = useRef<HTMLDivElement>(null)
+  const scrolledForJob = useRef<number | null>(null)
+
+  useEffect(() => {
+    if (!activeJob) return
+    // Once per JOB, not per poll — this effect re-runs on every 1s progress
+    // update, and yanking the viewport every second would be unusable.
+    if (scrolledForJob.current === activeJob.id) return
+    scrolledForJob.current = activeJob.id
+    jobRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
+  }, [activeJob])
+
   const refreshSummary = useCallback(async () => {
     const [s, j, p] = await Promise.all([
       getAnnotationSummary(projectId),
@@ -228,6 +246,17 @@ export function Annotate() {
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
           {/* --- Left: configure + run --- */}
           <section className="space-y-4">
+            {/* The running job goes FIRST, above the config.
+                It used to sit at the bottom of a long form, so the moment it
+                started mattering it was off-screen — you'd click Run and get
+                no visible response at all. Once a run is going, progress is the
+                only thing you care about; the config above it is settled. */}
+            {activeJob && (
+              <div ref={jobRef}>
+                <JobProgress job={activeJob} />
+              </div>
+            )}
+
             <div className="card">
               <div className="border-b border-gray-200 px-4 py-3">
                 <h2 className="text-sm font-medium text-gray-900">Model</h2>
@@ -502,7 +531,6 @@ export function Annotate() {
               )}
             </div>
 
-            {activeJob && <JobProgress job={activeJob} />}
           </section>
 
           {/* --- Right: status --- */}
@@ -586,10 +614,21 @@ function JobProgress({ job }: { job: AnnotationJob }) {
           ? 'running'
           : 'queued'
 
+  const isRunning = job.status === 'running' || job.status === 'queued'
+
   return (
-    <div className="card">
+    // Ringed while running so it reads as the live thing on the page, not
+    // another card in a stack of five. Drops back to a plain card once it's
+    // finished — a permanent highlight is just noise.
+    <div
+      className={`card transition-shadow ${
+        isRunning ? 'ring-2 ring-accent-400 ring-offset-2' : ''
+      }`}
+    >
       <div className="flex items-center justify-between border-b border-gray-200 px-4 py-2.5">
-        <h2 className="text-sm font-medium text-gray-900">Job #{job.id}</h2>
+        <h2 className="text-sm font-medium text-gray-900">
+          {isRunning ? 'Running…' : `Job #${job.id}`}
+        </h2>
         <StatusBadge status={status} />
       </div>
       <div className="p-4">

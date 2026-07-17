@@ -62,12 +62,54 @@ class GroundingDinoAnnotator(AutoAnnotator):
         # Serving /api/projects must not pay for that.
         from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
 
-        # First call downloads ~700 MB to the HuggingFace cache; later calls are
-        # local. The cache lives outside the repo and is gitignored by default.
-        self._processor = AutoProcessor.from_pretrained(MODEL_ID)
-        self._model = AutoModelForZeroShotObjectDetection.from_pretrained(MODEL_ID).to(
-            self._device
-        )
+        # First call downloads ~700 MB to the HuggingFace cache; later calls
+        # should be local. The cache lives outside the repo and is gitignored.
+        #
+        # ONCE CACHED, THIS MUST NOT NEED THE NETWORK.
+        #
+        # from_pretrained() still phones home to check for updates even when
+        # every byte is already on disk, so anything that upsets that call —
+        # offline, HF down, rate limiting, or a stale auth token — fails a job
+        # whose weights are sitting right there. That happened here: an expired
+        # token in ~/.cache/huggingface/token got a 401, which transformers
+        # reports as the deeply misleading "not a valid model identifier".
+        #
+        # For a tool whose whole premise is that it runs locally, depending on
+        # huggingface.co at inference time is a bug. So: try online (needed for
+        # the genuine first download), and on ANY failure fall back to the
+        # cache. Broad except on purpose — the failure modes are network errors,
+        # HTTP errors, and OSError depending on how deep it got, and the
+        # response is identical for all of them.
+        try:
+            self._processor = AutoProcessor.from_pretrained(MODEL_ID)
+            model = AutoModelForZeroShotObjectDetection.from_pretrained(MODEL_ID)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "Could not reach HuggingFace for %s (%s). Falling back to the "
+                "local cache.",
+                MODEL_ID,
+                exc,
+            )
+            try:
+                self._processor = AutoProcessor.from_pretrained(
+                    MODEL_ID, local_files_only=True
+                )
+                model = AutoModelForZeroShotObjectDetection.from_pretrained(
+                    MODEL_ID, local_files_only=True
+                )
+            except Exception:
+                # Genuinely not cached: the first run does need a download, and
+                # saying so beats re-raising a 401 that blames the model id.
+                raise RuntimeError(
+                    f"{MODEL_ID} is not in the local cache and HuggingFace could "
+                    f"not be reached. The first run needs to download ~700 MB. "
+                    f"If you have an expired HuggingFace token, remove "
+                    f"~/.cache/huggingface/token — a stale token is rejected with "
+                    f"401 even for public models, while anonymous access works."
+                ) from exc
+            logger.info("Loaded %s from the local cache", MODEL_ID)
+
+        self._model = model.to(self._device)
         # eval() disables dropout and batchnorm updates. Mandatory for
         # inference; forgetting it produces subtly worse, non-deterministic
         # boxes rather than an error.
