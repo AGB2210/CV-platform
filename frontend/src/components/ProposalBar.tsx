@@ -92,11 +92,23 @@ export function ProposalBar({
 
   if (proposedBoxes === 0) return null
 
-  async function apply() {
+  /**
+   * Apply the batch in `which` mode.
+   *
+   * The mode is a PARAMETER, not read from state. It used to read `mode` from
+   * the closure, and "Accept all" did `setMode('append'); apply()` — but
+   * setState is asynchronous, so apply() still saw the PREVIOUS mode. Select
+   * Replace, click "Accept all", and it silently ran replace and deleted your
+   * boxes under a button that said "Accept all".
+   *
+   * Passing it explicitly makes the bug structurally impossible: the caller
+   * states which mode it means, and there is no stale value to read.
+   */
+  async function apply(which: ApplyMode) {
     setBusy(true)
     setError(null)
     try {
-      await applyProposals(projectId, mode)
+      await applyProposals(projectId, which)
       onChanged()
     } catch (e) {
       setError((e as Error).message)
@@ -133,6 +145,17 @@ export function ProposalBar({
               across {preview.proposed_images} image
               {preview.proposed_images === 1 ? '' : 's'} — not part of your dataset
               until you accept them
+              {/* Say up front that accepting KEEPS your boxes. "Accept all" on
+                  its own reads like it might overwrite them, and the only way
+                  to find out was to click it. */}
+              {preview.existing_on_proposed_images > 0 && (
+                <>
+                  . Accepting keeps your {preview.existing_on_proposed_images} existing
+                  box
+                  {preview.existing_on_proposed_images === 1 ? '' : 'es'} — use{' '}
+                  <span className="font-medium">Apply batch</span> to replace them instead
+                </>
+              )}
             </span>
           )}
         </span>
@@ -151,15 +174,14 @@ export function ProposalBar({
           </button>
           <button
             className="btn-primary"
-            onClick={() => {
-              setMode('append')
-              void apply()
-            }}
+            // Always append, whatever radio happens to be selected below. The
+            // shortcut names its own mode rather than inheriting one.
+            onClick={() => void apply('append')}
             disabled={busy}
-            title="Accept every proposal"
+            title="Accept every proposal, keeping your existing boxes"
           >
             <Check size={13} />
-            Accept all
+            Accept all {proposedBoxes}
           </button>
         </div>
       </div>
@@ -206,7 +228,7 @@ export function ProposalBar({
                   ? 'btn ml-auto bg-red-600 text-white hover:bg-red-700'
                   : 'btn-primary ml-auto'
               }
-              onClick={() => void apply()}
+              onClick={() => void apply(mode)}
               disabled={busy}
             >
               {busy ? 'Applying…' : `Apply ${mode}`}
