@@ -361,18 +361,17 @@ export function Annotate() {
                   </label>
                 ))}
 
-                {/* Only "all" can disturb the dataset, so this fires only there
-                    rather than on every run regardless of scope. */}
+                {/* No dataset warning here any more, and that's deliberate: a
+                    run writes proposals, which don't change accepted
+                    annotations, so even scope="all" leaves the dataset exactly
+                    as it was. Keeping a scary warning that is no longer true
+                    would just teach people to ignore warnings. */}
                 {scope === 'all' && pre && pre.images_in_dataset > 0 && (
-                  <p className="rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs text-amber-900">
-                    <span className="font-medium">
-                      {pre.images_in_dataset} image
-                      {pre.images_in_dataset === 1 ? '' : 's'} will leave your dataset and
-                      return to staging.
-                    </span>{' '}
-                    Their boxes change, so they need re-approving before they can be
-                    trained on. Nothing is deleted — re-approve and use Add to dataset to
-                    put them back.
+                  <p className="rounded-md border border-gray-200 bg-gray-50 px-2.5 py-1.5 text-xs text-gray-600">
+                    Includes {pre.images_in_dataset} image
+                    {pre.images_in_dataset === 1 ? '' : 's'} already in your dataset. Their
+                    existing boxes are untouched — the model's output arrives as proposals
+                    you accept or reject in Annotate.
                   </p>
                 )}
               </div>
@@ -583,7 +582,9 @@ function JobProgress({ job }: { job: AnnotationJob }) {
             <span className="font-medium tabular-nums text-gray-900">
               {job.boxes_created}
             </span>{' '}
-            boxes created
+            {/* "proposed", not "created": they aren't part of the dataset until
+                accepted, and calling them created implies work that's done. */}
+            boxes proposed
           </p>
           {/* The step that makes the whole run meaningful. A box count is not
               evidence — it's equally consistent with 9 good boxes and 9 boxes
@@ -592,7 +593,7 @@ function JobProgress({ job }: { job: AnnotationJob }) {
           {job.status === 'done' && job.boxes_created > 0 && (
             <Link to={`/projects/${job.project_id}/review`} className="btn-primary">
               <SquarePen size={13} />
-              Review {job.boxes_created} boxes
+              Review {job.boxes_created} proposals
             </Link>
           )}
         </div>

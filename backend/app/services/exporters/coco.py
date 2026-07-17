@@ -87,7 +87,12 @@ class CocoExporter(DatasetExporter):
                 }
             )
 
-            query = select(Annotation).where(Annotation.image_id == image.id)
+            # Proposals are the model's suggestions, not your annotations. They
+            # are excluded unconditionally — exporting them would ship boxes
+            # nobody accepted as though they were ground truth.
+            query = select(Annotation).where(
+                Annotation.image_id == image.id, Annotation.proposed.is_(False)
+            )
             if not request.include_unreviewed:
                 query = query.where(Annotation.reviewed.is_(True))
 

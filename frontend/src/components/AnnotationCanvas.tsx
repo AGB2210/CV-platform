@@ -57,6 +57,8 @@ export interface CanvasProps {
   onCreate: (rect: Rect, categoryId: number) => void
   onUpdate: (id: number, rect: Rect) => void
   onDelete: (id: number) => void
+  /** Accept one model proposal. Absent = proposals aren't actionable here. */
+  onAccept?: (id: number) => void
 }
 
 /** Below this many pixels a drag is a click, not a box. Prevents the classic
@@ -75,6 +77,7 @@ export function AnnotationCanvas({
   onCreate,
   onUpdate,
   onDelete,
+  onAccept,
 }: CanvasProps) {
   const svgRef = useRef<SVGSVGElement>(null)
   const [drag, setDrag] = useState<Drag | null>(null)
@@ -260,10 +263,22 @@ export function AnnotationCanvas({
         onDelete(selectedId)
       }
       if (e.key === 'Escape') onSelect(null)
+
+      // 'y' accepts the selected proposal. Deliberately NOT Enter — that
+      // approves the whole image, and having one key mean two different
+      // commitments depending on what's selected is how you accept things you
+      // didn't mean to.
+      if (e.key === 'y' && selectedId !== null && onAccept) {
+        const sel = annotations.find((a) => a.id === selectedId)
+        if (sel?.proposed) {
+          e.preventDefault()
+          onAccept(selectedId)
+        }
+      }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [selectedId, onDelete, onSelect])
+  }, [selectedId, onDelete, onSelect, onAccept, annotations])
 
   // --- render ------------------------------------------------------------
 
@@ -294,7 +309,11 @@ export function AnnotationCanvas({
         onPointerUp={onPointerUp}
         onPointerLeave={onPointerUp}
       >
-        {annotations.map((ann) => {
+        {/* Accepted boxes first, proposals after, so suggestions always draw ON
+            TOP of your work rather than hiding underneath it. */}
+        {[...annotations]
+          .sort((a, b) => Number(a.proposed) - Number(b.proposed))
+          .map((ann) => {
           const isSelected = ann.id === selectedId
           const isDragging = ann.id === dragId
           const rect: Rect = isDragging && preview ? preview : ann
@@ -310,17 +329,26 @@ export function AnnotationCanvas({
                 fill={color}
                 // Nearly transparent fill, not fill="none": it gives the box an
                 // interior to click for moving, while leaving the image visible.
-                fillOpacity={isSelected ? 0.18 : 0.08}
+                // Proposals get almost none — they're suggestions layered over
+                // your work, and they shouldn't tint the image you're judging.
+                fillOpacity={ann.proposed ? 0.04 : isSelected ? 0.18 : 0.08}
                 stroke={color}
                 // vectorEffect keeps the stroke 2 CSS px regardless of the
                 // viewBox scale. Without it, a 4000px-wide image would render
                 // hairline borders and a 200px one would render fat ones.
                 vectorEffect="non-scaling-stroke"
                 strokeWidth={isSelected ? 3 : 2}
-                // Unreviewed model output is dashed. The single most useful
-                // visual in this whole screen: at a glance you see what the
-                // model produced versus what a human has confirmed.
-                strokeDasharray={ann.reviewed ? undefined : '6 4'}
+                // THREE visual states, and the distinction is the whole point
+                // of this screen:
+                //   solid       your annotation, accepted
+                //   long dash   accepted model output, not yet reviewed
+                //   dotted      a PROPOSAL — not an annotation at all yet
+                // Dotted vs dashed reads as "lighter, provisional" at a glance,
+                // which is exactly what a proposal is.
+                strokeDasharray={
+                  ann.proposed ? '2 3' : ann.reviewed ? undefined : '6 4'
+                }
+                strokeOpacity={ann.proposed ? 0.9 : 1}
                 onPointerDown={(e) => onPointerDownBox(e, ann)}
                 className="cursor-move"
               />
@@ -334,6 +362,9 @@ export function AnnotationCanvas({
                   width={Math.max(38, labelWidth(ann, classes))}
                   height={17}
                   fill={color}
+                  // A hollow chip for proposals: same colour, but not the solid
+                  // block an accepted box gets.
+                  fillOpacity={ann.proposed ? 0.35 : 1}
                   vectorEffect="non-scaling-stroke"
                 />
                 <text
@@ -347,6 +378,40 @@ export function AnnotationCanvas({
                   {labelText(ann, classes)}
                 </text>
               </g>
+
+              {/* Accept / reject affordances, on the selected proposal only.
+                  Putting them on every proposal would bury the image under
+                  buttons on a busy scene. */}
+              {ann.proposed && isSelected && onAccept && (
+                <g transform={`translate(${rect.x + rect.width}, ${rect.y})`}>
+                  <g
+                    transform="translate(-40, 2)"
+                    onPointerDown={(e) => {
+                      e.stopPropagation()
+                      onAccept(ann.id)
+                    }}
+                    className="cursor-pointer"
+                  >
+                    <rect width={18} height={16} rx={2} fill="#15803d" />
+                    <text x={5} y={12} fill="white" style={{ fontSize: 11 }}>
+                      ✓
+                    </text>
+                  </g>
+                  <g
+                    transform="translate(-20, 2)"
+                    onPointerDown={(e) => {
+                      e.stopPropagation()
+                      onDelete(ann.id)
+                    }}
+                    className="cursor-pointer"
+                  >
+                    <rect width={18} height={16} rx={2} fill="#b91c1c" />
+                    <text x={6} y={12} fill="white" style={{ fontSize: 11 }}>
+                      ✕
+                    </text>
+                  </g>
+                </g>
+              )}
 
               {/* Resize handles, only on the selected box — showing them on
                   every box turns a busy image into confetti. */}

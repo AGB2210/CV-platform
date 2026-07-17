@@ -70,5 +70,10 @@ class DatasetStats(BaseModel):
     staging_approved: int
     dataset_total: int
     splits: SplitCounts
+    #: ACCEPTED boxes. Proposals are reported separately, not folded in — "you
+    #: have 90 boxes" is a lie if 60 are suggestions nobody has looked at.
     total_boxes: int
     reviewed_boxes: int
+    #: Pending model suggestions awaiting a decision.
+    proposed_boxes: int = 0
+    proposed_images: int = 0

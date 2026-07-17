@@ -62,7 +62,10 @@ class YoloExporter(DatasetExporter):
 
             stem = Path(image.original_filename).stem
 
-            query = select(Annotation).where(Annotation.image_id == image.id)
+            # Proposals never export — see the note in the COCO exporter.
+            query = select(Annotation).where(
+                Annotation.image_id == image.id, Annotation.proposed.is_(False)
+            )
             if not request.include_unreviewed:
                 query = query.where(Annotation.reviewed.is_(True))
 

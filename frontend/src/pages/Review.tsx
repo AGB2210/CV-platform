@@ -1,10 +1,21 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { Check, CheckCheck, ChevronLeft, ChevronRight, Database, Trash2 } from 'lucide-react'
+import {
+  Check,
+  CheckCheck,
+  ChevronLeft,
+  ChevronRight,
+  Database,
+  Sparkles,
+  Trash2,
+} from 'lucide-react'
 import { AnnotationCanvas } from '@/components/AnnotationCanvas'
 import { CommitDialog } from '@/components/CommitDialog'
+import { ProposalBar } from '@/components/ProposalBar'
 import { ConfirmDialog } from '@/components/ui/Modal'
 import {
+  acceptAnnotation,
+  acceptImageProposals,
   approveAll,
   approveImage,
   createAnnotation,
@@ -193,6 +204,40 @@ export function Review() {
     }
   }
 
+  /** Accept one model proposal — it stops being a suggestion and becomes yours. */
+  async function handleAccept(annId: number) {
+    setAnnotations((a) =>
+      a.map((x) => (x.id === annId ? { ...x, proposed: false, reviewed: true } : x)),
+    )
+    try {
+      const updated = await acceptAnnotation(annId)
+      setAnnotations((a) => a.map((x) => (x.id === annId ? updated : x)))
+      void refreshCounts()
+    } catch (e) {
+      setError((e as Error).message)
+      if (current) setAnnotations(await listAnnotations(current.id))
+    }
+  }
+
+  /** Accept every proposal on this image — the common case, since the model
+   *  usually gets a whole image right or wrong together. */
+  async function handleAcceptImage() {
+    if (!current) return
+    try {
+      await acceptImageProposals(current.id)
+      setAnnotations(await listAnnotations(current.id))
+      void refreshCounts()
+    } catch (e) {
+      setError((e as Error).message)
+    }
+  }
+
+  const reloadCurrent = useCallback(async () => {
+    if (!current) return
+    setAnnotations(await listAnnotations(current.id))
+    await refreshCounts()
+  }, [current, refreshCounts])
+
   const goTo = useCallback(
     (delta: number) => {
       const next = images[index + delta]
@@ -257,7 +302,11 @@ export function Review() {
     )
   }
 
-  const unreviewed = annotations.filter((a) => !a.reviewed).length
+  // Proposals aren't annotations, so they're counted apart from everything else
+  // on this screen.
+  const proposals = annotations.filter((a) => a.proposed)
+  const accepted = annotations.filter((a) => !a.proposed)
+  const unreviewed = accepted.filter((a) => !a.reviewed).length
 
   return (
     <div className="flex h-full min-h-0 flex-1">
@@ -314,6 +363,15 @@ export function Review() {
           <main> and this component is rendered inside it. Nested <main> is
           invalid HTML and makes screen readers announce two main landmarks. */}
       <section className="flex min-w-0 flex-1 flex-col bg-gray-100">
+        {/* The pending batch sits above the canvas — it's the thing you'd act
+            on first, and it disappears once applied or discarded. */}
+        {stats && (
+          <ProposalBar
+            projectId={projectId}
+            proposedBoxes={stats.proposed_boxes}
+            onChanged={() => void reloadCurrent()}
+          />
+        )}
         <header className="flex h-12 shrink-0 items-center justify-between border-b border-gray-200 bg-white px-4">
           <div className="flex items-center gap-2">
             <button
@@ -338,9 +396,12 @@ export function Review() {
               </p>
               <p className="text-xs tabular-nums text-gray-500">
                 {index + 1} of {images.length} · {current?.width}×{current?.height} ·{' '}
-                {annotations.length} boxes
+                {accepted.length} box{accepted.length === 1 ? '' : 'es'}
                 {unreviewed > 0 && (
                   <span className="text-status-busy"> · {unreviewed} unreviewed</span>
+                )}
+                {proposals.length > 0 && (
+                  <span className="text-accent-700"> · {proposals.length} proposed</span>
                 )}
               </p>
             </div>
@@ -350,15 +411,30 @@ export function Review() {
               all, add to dataset) are in the right panel — mixing the two
               scopes in one toolbar both muddled the meaning and overflowed the
               header at narrow widths. */}
-          <button
-            className="btn-primary shrink-0"
-            onClick={() => void handleApprove()}
-            disabled={annotations.length === 0}
-            title="Approve all boxes on this image (Enter)"
-          >
-            <Check size={14} />
-            Approve
-          </button>
+          <div className="flex shrink-0 items-center gap-2">
+            {/* Per-image accept, offered only when this image has proposals.
+                The model tends to get a whole image right or wrong together, so
+                this is the gesture you'll actually use. */}
+            {proposals.length > 0 && (
+              <button
+                className="btn-secondary"
+                onClick={() => void handleAcceptImage()}
+                title="Accept every proposal on this image"
+              >
+                <Sparkles size={14} />
+                Accept {proposals.length}
+              </button>
+            )}
+            <button
+              className="btn-primary"
+              onClick={() => void handleApprove()}
+              disabled={accepted.length === 0}
+              title="Approve all boxes on this image (Enter)"
+            >
+              <Check size={14} />
+              Approve
+            </button>
+          </div>
         </header>
 
         {error && (
@@ -382,6 +458,7 @@ export function Review() {
                 onCreate={(r, c) => void handleCreate(r, c)}
                 onUpdate={(i, r) => void handleUpdate(i, r)}
                 onDelete={(i) => void handleDelete(i)}
+                onAccept={(i) => void handleAccept(i)}
               />
             </div>
           )}
@@ -481,7 +558,10 @@ export function Review() {
               No boxes. Drag on the image to draw one.
             </li>
           )}
-          {annotations.map((a) => {
+          {/* Proposals listed first — they're the thing awaiting a decision. */}
+          {[...annotations]
+            .sort((a, b) => Number(b.proposed) - Number(a.proposed))
+            .map((a) => {
             const cls = classes.find((c) => c.id === a.category_id)
             return (
               <li
@@ -489,28 +569,52 @@ export function Review() {
                 onMouseEnter={() => setSelectedId(a.id)}
                 className={`group flex items-center gap-2 px-3 py-1.5 text-xs ${
                   selectedId === a.id ? 'bg-accent-50' : ''
-                }`}
+                } ${a.proposed ? 'bg-accent-50/40' : ''}`}
               >
                 <span
-                  className="h-2.5 w-2.5 shrink-0 rounded-sm border border-black/10"
-                  style={{ backgroundColor: cls?.color }}
+                  className={`h-2.5 w-2.5 shrink-0 rounded-sm ${
+                    // Hollow swatch for a proposal — same colour, not yet real.
+                    a.proposed ? 'border-2' : 'border border-black/10'
+                  }`}
+                  style={
+                    a.proposed
+                      ? { borderColor: cls?.color }
+                      : { backgroundColor: cls?.color }
+                  }
                 />
-                <span className="flex-1 truncate text-gray-800">{cls?.name}</span>
+                <span
+                  className={`flex-1 truncate ${
+                    a.proposed ? 'italic text-accent-800' : 'text-gray-800'
+                  }`}
+                >
+                  {cls?.name}
+                </span>
                 {a.confidence !== null && (
                   <span className="font-mono tabular-nums text-gray-400">
                     {a.confidence.toFixed(2)}
                   </span>
                 )}
-                {!a.reviewed && (
-                  <span
-                    className="h-1.5 w-1.5 rounded-full bg-status-busy"
-                    title="Unreviewed model output"
-                  />
+                {a.proposed ? (
+                  <button
+                    onClick={() => void handleAccept(a.id)}
+                    className="rounded p-0.5 text-gray-400 hover:text-green-700"
+                    aria-label="Accept proposal"
+                    title="Accept this proposal (y)"
+                  >
+                    <Check size={12} />
+                  </button>
+                ) : (
+                  !a.reviewed && (
+                    <span
+                      className="h-1.5 w-1.5 rounded-full bg-status-busy"
+                      title="Unreviewed"
+                    />
+                  )
                 )}
                 <button
                   onClick={() => void handleDelete(a.id)}
                   className="rounded p-0.5 text-gray-400 opacity-0 hover:text-red-600 focus:opacity-100 group-hover:opacity-100"
-                  aria-label="Delete box"
+                  aria-label={a.proposed ? 'Reject proposal' : 'Delete box'}
                 >
                   <Trash2 size={12} />
                 </button>
@@ -529,7 +633,17 @@ export function Review() {
           <p>
             <Kbd>←</Kbd> <Kbd>→</Kbd> navigate · <Kbd>Enter</Kbd> approve
           </p>
-          <p className="pt-1">Dashed border = unreviewed model output</p>
+          <p>
+            <Kbd>y</Kbd> accept proposal
+          </p>
+          {/* Three line styles carry real meaning here; a legend is the
+              difference between "why are some boxes dotted" and reading the
+              screen at a glance. */}
+          <div className="space-y-0.5 pt-1.5">
+            <LegendRow dash={undefined} label="your annotation" />
+            <LegendRow dash="6 4" label="unreviewed" />
+            <LegendRow dash="2 3" label="model proposal — not yours until accepted" />
+          </div>
         </div>
       </aside>
 
@@ -555,6 +669,25 @@ export function Review() {
         }
       />
     </div>
+  )
+}
+
+function LegendRow({ dash, label }: { dash: string | undefined; label: string }) {
+  return (
+    <p className="flex items-center gap-1.5">
+      <svg width="18" height="8" aria-hidden className="shrink-0">
+        <line
+          x1="0"
+          y1="4"
+          x2="18"
+          y2="4"
+          stroke="currentColor"
+          strokeWidth="1.5"
+          strokeDasharray={dash}
+        />
+      </svg>
+      {label}
+    </p>
   )
 }
 

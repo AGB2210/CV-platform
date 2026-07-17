@@ -46,10 +46,23 @@ def list_images(
     counts = (
         select(
             Annotation.image_id.label("image_id"),
-            func.count(Annotation.id).label("n"),
+            # Accepted boxes only — a proposal isn't an annotation. Counting
+            # them would make an untouched image look annotated, and the grid's
+            # whole job is telling you what still needs work.
+            func.sum(case((Annotation.proposed.is_(False), 1), else_=0)).label("n"),
             # SUM over a boolean: SQLite stores it as 0/1, so summing gives the
             # reviewed count in the same pass rather than a second query.
-            func.sum(case((Annotation.reviewed.is_(True), 1), else_=0)).label("reviewed"),
+            func.sum(
+                case(
+                    (
+                        (Annotation.reviewed.is_(True))
+                        & (Annotation.proposed.is_(False)),
+                        1,
+                    ),
+                    else_=0,
+                )
+            ).label("reviewed"),
+            func.sum(case((Annotation.proposed.is_(True), 1), else_=0)).label("proposed"),
         )
         .group_by(Annotation.image_id)
         .subquery()
@@ -60,6 +73,7 @@ def list_images(
             Image,
             func.coalesce(counts.c.n, 0),
             func.coalesce(counts.c.reviewed, 0),
+            func.coalesce(counts.c.proposed, 0),
         )
         .outerjoin(counts, counts.c.image_id == Image.id)
         .where(Image.project_id == project_id)
@@ -69,10 +83,11 @@ def list_images(
     ).all()
 
     results: list[ImageRead] = []
-    for image, n, reviewed in rows:
+    for image, n, reviewed, proposed in rows:
         data = ImageRead.model_validate(image)
         data.annotation_count = n
         data.reviewed_count = reviewed
+        data.proposed_count = proposed
         results.append(data)
     return results
 

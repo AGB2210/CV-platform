@@ -10,7 +10,7 @@ from __future__ import annotations
 import random
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
 from app.api.routes.projects import get_project_or_404
@@ -47,6 +47,11 @@ def _approved_image_ids(db: Session, project_id: int, staged_only: bool = True) 
         )
         .join(Image, Image.id == Annotation.image_id)
         .where(Image.project_id == project_id)
+        # Proposals don't count toward approval either way: they can't make an
+        # image approved, and an un-actioned proposal must not BLOCK an image
+        # whose real boxes are all fine. Pending suggestions are a separate
+        # decision from "are these annotations correct".
+        .where(Annotation.proposed.is_(False))
         .group_by(Annotation.image_id)
     )
     if staged_only:
@@ -69,16 +74,27 @@ def dataset_stats(project_id: int, db: Session = Depends(get_db)) -> DatasetStat
         for row in db.execute(
             select(Annotation.image_id)
             .join(Image, Image.id == Annotation.image_id)
-            .where(Image.project_id == project_id)
+            .where(Image.project_id == project_id, Annotation.proposed.is_(False))
             .distinct()
         ).all()
     }
     approved = _approved_image_ids(db, project_id)
 
+    Integer = __import__("sqlalchemy").Integer
     boxes = db.execute(
         select(
-            func.count(Annotation.id),
-            func.sum(func.cast(Annotation.reviewed, __import__("sqlalchemy").Integer)),
+            # Every count here is of ACCEPTED boxes. Proposals get their own
+            # figure rather than being folded in — "you have 90 boxes" is a lie
+            # if 60 of them are suggestions nobody has looked at.
+            func.sum(case((Annotation.proposed.is_(False), 1), else_=0)),
+            func.sum(
+                case(
+                    ((Annotation.reviewed.is_(True)) & (Annotation.proposed.is_(False)), 1),
+                    else_=0,
+                )
+            ),
+            func.sum(case((Annotation.proposed.is_(True), 1), else_=0)),
+            func.count(func.distinct(case((Annotation.proposed.is_(True), Annotation.image_id)))),
         )
         .join(Image, Image.id == Annotation.image_id)
         .where(Image.project_id == project_id)
@@ -96,6 +112,8 @@ def dataset_stats(project_id: int, db: Session = Depends(get_db)) -> DatasetStat
         splits=counts,
         total_boxes=boxes[0] or 0,
         reviewed_boxes=boxes[1] or 0,
+        proposed_boxes=boxes[2] or 0,
+        proposed_images=boxes[3] or 0,
     )
 
 
@@ -119,6 +137,10 @@ def approve_all(project_id: int, db: Session = Depends(get_db)) -> dict:
         Annotation.__table__.update()
         .where(Annotation.image_id.in_(image_ids))
         .where(Annotation.reviewed.is_(False))
+        # Never silently accept pending proposals. "Approve all" means "the
+        # annotations I have are correct", not "take everything the model
+        # guessed" — that's a different decision with its own dialog.
+        .where(Annotation.proposed.is_(False))
         .values(reviewed=True)
     )
     db.commit()

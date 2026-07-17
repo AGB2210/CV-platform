@@ -40,6 +40,11 @@ class AnnotationRead(BaseModel):
     confidence: float | None
     source: str
     reviewed: bool
+    #: True = a model suggestion awaiting accept/reject. Not part of the
+    #: annotation set; excluded from exports, training and counts.
+    proposed: bool = False
+    #: Which auto-annotation run produced it. NULL for human/imported boxes.
+    job_id: int | None = None
 
 
 class AnnotationCreate(BaseModel):

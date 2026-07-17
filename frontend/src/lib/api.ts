@@ -137,8 +137,11 @@ export interface DatasetImage {
   created_at: string
   /** Relative path, e.g. /static/images/1/abc.jpg — usable directly in <img src>. */
   url: string
+  /** ACCEPTED boxes only — a proposal isn't an annotation. */
   annotation_count: number
   reviewed_count: number
+  /** Pending model suggestions awaiting accept/reject. */
+  proposed_count: number
   in_dataset: boolean
   split: Split
 }
@@ -231,7 +234,46 @@ export interface Annotation {
   confidence: number | null
   source: string
   reviewed: boolean
+  /** True = a model suggestion awaiting accept/reject. Not a real annotation. */
+  proposed: boolean
+  job_id: number | null
 }
+
+export type ApplyMode = 'append' | 'merge' | 'replace'
+
+export interface ProposalPreview {
+  // --- mode-independent: safe to describe every mode with ---
+  proposed_boxes: number
+  proposed_images: number
+  existing_boxes: number
+  /** Images with BOTH proposals and existing boxes — the only ones the modes treat differently. */
+  conflicting_images: number
+  /** Your boxes on images this batch covers = exactly what Replace would delete. */
+  existing_on_proposed_images: number
+
+  // --- outcome for the REQUESTED mode only ---
+  would_accept: number
+  would_discard: number
+  would_delete_existing: number
+}
+
+export const getProposalCount = (projectId: number) =>
+  api.get<{ proposed_boxes: number }>(`/projects/${projectId}/proposals/count`)
+export const getProposalPreview = (projectId: number, mode: ApplyMode) =>
+  api.get<ProposalPreview>(`/projects/${projectId}/proposals/preview?mode=${mode}`)
+export const applyProposals = (projectId: number, mode: ApplyMode) =>
+  api.post<{ mode: string; accepted: number; discarded: number; deleted_existing: number }>(
+    `/projects/${projectId}/proposals/apply`,
+    { mode },
+  )
+export const discardProposals = (projectId: number) =>
+  api.delete<void>(`/projects/${projectId}/proposals`)
+export const acceptAnnotation = (id: number) =>
+  api.post<Annotation>(`/annotations/${id}/accept`)
+export const acceptImageProposals = (imageId: number) =>
+  api.post<Annotation[]>(`/images/${imageId}/proposals/accept`)
+export const rejectImageProposals = (imageId: number) =>
+  api.delete<void>(`/images/${imageId}/proposals`)
 
 export interface AnnotationSummary {
   total_images: number
@@ -323,8 +365,11 @@ export interface DatasetStats {
   staging_approved: number
   dataset_total: number
   splits: SplitCounts
+  /** ACCEPTED boxes. Proposals are reported separately, not folded in. */
   total_boxes: number
   reviewed_boxes: number
+  proposed_boxes: number
+  proposed_images: number
 }
 
 export interface CommitPreview {

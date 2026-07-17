@@ -28,8 +28,13 @@ class ImageRead(BaseModel):
     # Lets the grid show annotation state at a glance — which is the difference
     # between "you have 500 images" and "you have 500 images, 340 annotated,
     # 120 of those still unreviewed".
+    #: ACCEPTED boxes only. Proposals are excluded — one isn't an annotation
+    #: until you accept it, and counting them would make an untouched image
+    #: look done.
     annotation_count: int = 0
     reviewed_count: int = 0
+    #: Pending model suggestions awaiting accept/reject.
+    proposed_count: int = 0
 
     @computed_field  # type: ignore[prop-decorator]
     @property
