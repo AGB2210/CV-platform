@@ -31,33 +31,36 @@ router = APIRouter(tags=["dataset"])
 
 
 def _approved_image_ids(db: Session, project_id: int, staged_only: bool = True) -> set[int]:
-    """Images whose every box is reviewed, and which have at least one box.
+    """Images that are ready to join the dataset: they have at least one
+    ACCEPTED box.
 
-    "At least one" matters: an image with zero annotations trivially satisfies
-    "all boxes reviewed", and quietly promoting empty images into the dataset
-    would train the model that these scenes contain nothing. That may be true —
-    negative examples are legitimate — but it must be a deliberate choice, not
-    an accident of vacuous truth.
+    This used to also require every box to be `reviewed`, back when
+    auto-annotation wrote boxes straight into your annotations and a human had
+    to confirm them one by one. The proposal model replaced that: a box only
+    becomes an annotation when you accept it, and accepting IS the confirmation.
+    Every path that creates an accepted box now marks it reviewed, so the extra
+    condition could never fail — it only risked blocking legacy rows written
+    under the old rules.
+
+    "At least one" still matters: an image with zero boxes would otherwise
+    satisfy the condition vacuously, and quietly promoting empty images would
+    teach the model these scenes contain nothing. That may be true — negative
+    examples are legitimate — but it should be a deliberate choice.
+
+    Proposals don't count. They can't make an image ready, and an un-actioned
+    proposal must not block one whose real boxes are fine: the batch decision is
+    separate from "does this image have annotations".
     """
     query = (
-        select(
-            Annotation.image_id,
-            func.count(Annotation.id).label("n"),
-            func.sum(func.cast(Annotation.reviewed, __import__("sqlalchemy").Integer)).label("r"),
-        )
+        select(Annotation.image_id)
         .join(Image, Image.id == Annotation.image_id)
-        .where(Image.project_id == project_id)
-        # Proposals don't count toward approval either way: they can't make an
-        # image approved, and an un-actioned proposal must not BLOCK an image
-        # whose real boxes are all fine. Pending suggestions are a separate
-        # decision from "are these annotations correct".
-        .where(Annotation.proposed.is_(False))
-        .group_by(Annotation.image_id)
+        .where(Image.project_id == project_id, Annotation.proposed.is_(False))
+        .distinct()
     )
     if staged_only:
         query = query.where(Image.in_dataset.is_(False))
 
-    return {row[0] for row in db.execute(query).all() if row[1] > 0 and row[1] == row[2]}
+    return {row[0] for row in db.execute(query).all()}
 
 
 @router.get("/projects/{project_id}/dataset/stats", response_model=DatasetStats)
@@ -115,36 +118,6 @@ def dataset_stats(project_id: int, db: Session = Depends(get_db)) -> DatasetStat
         proposed_boxes=boxes[2] or 0,
         proposed_images=boxes[3] or 0,
     )
-
-
-@router.post("/projects/{project_id}/annotations/approve-all")
-def approve_all(project_id: int, db: Session = Depends(get_db)) -> dict:
-    """Mark every box in the project reviewed.
-
-    The bulk escape hatch. Reviewing 500 images one Enter at a time is the
-    correct default, but when you have already eyeballed a grid and the model
-    plainly nailed it, making you press Enter 500 times is theatre rather than
-    diligence.
-
-    A single UPDATE ... WHERE rather than loading rows and setting a field:
-    at 50k boxes the ORM round-trip is the difference between instant and a
-    coffee break.
-    """
-    get_project_or_404(project_id, db)
-
-    image_ids = select(Image.id).where(Image.project_id == project_id)
-    result = db.execute(
-        Annotation.__table__.update()
-        .where(Annotation.image_id.in_(image_ids))
-        .where(Annotation.reviewed.is_(False))
-        # Never silently accept pending proposals. "Approve all" means "the
-        # annotations I have are correct", not "take everything the model
-        # guessed" — that's a different decision with its own dialog.
-        .where(Annotation.proposed.is_(False))
-        .values(reviewed=True)
-    )
-    db.commit()
-    return {"approved": result.rowcount or 0}
 
 
 @router.get("/projects/{project_id}/dataset/preview", response_model=CommitPreview)

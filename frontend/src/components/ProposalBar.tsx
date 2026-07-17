@@ -124,8 +124,15 @@ export function ProposalBar({
             All {preview?.proposed_images ?? ''} image
             {(preview?.proposed_images ?? 0) === 1 ? '' : 's'}
           </span>
+          {/* Colour tracks the ACTION, not which one is riskier.
+              Reject throws the model's work away — red. Accept keeps it and is
+              the affirmative path — blue.
+              Accept previously went red whenever it would delete your boxes,
+              which meant the two buttons swapped colours depending on state and
+              neither colour meant anything reliable. The count in the label
+              ("Accept all, replace 3") carries that warning instead. */}
           <button
-            className="btn-secondary"
+            className="btn bg-red-600 text-white hover:bg-red-700"
             onClick={() => void act(() => rejectProposals(projectId))}
             disabled={busy}
             title="Discard the model's boxes on EVERY image and keep yours"
@@ -134,11 +141,7 @@ export function ProposalBar({
             Reject all
           </button>
           <button
-            className={
-              willDelete > 0
-                ? 'btn bg-red-600 text-white hover:bg-red-700'
-                : 'btn-primary'
-            }
+            className="btn-primary"
             onClick={() => void act(() => acceptProposals(projectId))}
             disabled={busy}
             title={

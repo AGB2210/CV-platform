@@ -340,8 +340,6 @@ export const updateAnnotation = (
   }>,
 ) => api.patch<Annotation>(`/annotations/${id}`, body)
 export const deleteAnnotation = (id: number) => api.delete<void>(`/annotations/${id}`)
-export const approveImage = (imageId: number) =>
-  api.post<Annotation[]>(`/images/${imageId}/annotations/approve`)
 
 // --- Dataset lifecycle & splits -------------------------------------------
 
@@ -380,8 +378,9 @@ export interface CommitPreview {
 export const getDatasetStats = (projectId: number) =>
   api.get<DatasetStats>(`/projects/${projectId}/dataset/stats`)
 
-export const approveAll = (projectId: number) =>
-  api.post<{ approved: number }>(`/projects/${projectId}/annotations/approve-all`)
+// approveAll / approveImage are gone. With the proposal model, accepting IS the
+// confirmation — every path that creates an accepted box marks it reviewed, so
+// approving could only ever be a no-op.
 
 export const getCommitPreview = (projectId: number, mode: CommitMode) =>
   api.get<CommitPreview>(`/projects/${projectId}/dataset/preview?mode=${mode}`)

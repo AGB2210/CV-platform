@@ -1,23 +1,12 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import {
-  Check,
-  CheckCheck,
-  ChevronLeft,
-  ChevronRight,
-  Database,
-  Trash2,
-  X,
-} from 'lucide-react'
+import { Check, ChevronLeft, ChevronRight, Database, Trash2, X } from 'lucide-react'
 import { AnnotationCanvas } from '@/components/AnnotationCanvas'
 import { CommitDialog } from '@/components/CommitDialog'
 import { ProposalBar } from '@/components/ProposalBar'
-import { ConfirmDialog } from '@/components/ui/Modal'
 import {
   acceptImageProposals,
   rejectImageProposals,
-  approveAll,
-  approveImage,
   createAnnotation,
   deleteAnnotation,
   getDatasetStats,
@@ -57,8 +46,6 @@ export function Review() {
   const [error, setError] = useState<string | null>(null)
   const [stats, setStats] = useState<DatasetStats | null>(null)
   const [showCommit, setShowCommit] = useState(false)
-  const [confirmApproveAll, setConfirmApproveAll] = useState(false)
-  const [busy, setBusy] = useState(false)
 
   const current = useMemo(
     () => images.find((i) => i.id === Number(imageId)) ?? null,
@@ -122,19 +109,6 @@ export function Review() {
     }
   }, [projectId])
 
-  async function handleApproveAll() {
-    setBusy(true)
-    try {
-      await approveAll(projectId)
-      await refreshCounts()
-      if (current) setAnnotations(await listAnnotations(current.id))
-      setConfirmApproveAll(false)
-    } catch (e) {
-      setError((e as Error).message)
-    } finally {
-      setBusy(false)
-    }
-  }
 
   // --- mutations ---------------------------------------------------------
   //
@@ -210,7 +184,8 @@ export function Review() {
     try {
       await acceptImageProposals(current.id)
       setAnnotations(await listAnnotations(current.id))
-      void refreshCounts()
+      await refreshCounts()
+      advanceIfMoreProposals()
     } catch (e) {
       setError((e as Error).message)
     }
@@ -222,10 +197,20 @@ export function Review() {
     try {
       await rejectImageProposals(current.id)
       setAnnotations(await listAnnotations(current.id))
-      void refreshCounts()
+      await refreshCounts()
+      advanceIfMoreProposals()
     } catch (e) {
       setError((e as Error).message)
     }
+  }
+
+  /** After deciding on an image, jump to the next one still awaiting a
+   *  decision — not merely the next image. Judging a batch means visiting the
+   *  images the model actually touched, and stepping through untouched ones in
+   *  between is friction for nothing. */
+  function advanceIfMoreProposals() {
+    const next = images.find((i, idx) => idx > index && i.proposed_count > 0)
+    if (next) navigate(`/projects/${projectId}/review/${next.id}`)
   }
 
   const reloadCurrent = useCallback(async () => {
@@ -242,20 +227,9 @@ export function Review() {
     [images, index, navigate, projectId],
   )
 
-  async function handleApprove() {
-    if (!current) return
-    try {
-      setAnnotations(await approveImage(current.id))
-      await refreshCounts()
-      goTo(1) // approving means "this one's done" — move on
-    } catch (e) {
-      setError((e as Error).message)
-    }
-  }
-
   // --- keyboard ----------------------------------------------------------
-  // Review is hundreds of repetitions. Shortcuts aren't a power-user luxury
-  // here, they're the difference between a usable tool and a chore.
+  // Judging a batch is hundreds of repetitions. Shortcuts aren't a power-user
+  // luxury here, they're the difference between a usable tool and a chore.
 
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -264,7 +238,11 @@ export function Review() {
 
       if (e.key === 'ArrowRight' || e.key === 'd') goTo(1)
       if (e.key === 'ArrowLeft' || e.key === 'a') goTo(-1)
-      if (e.key === 'Enter') void handleApprove()
+      // Enter used to approve. It now accepts THIS image's model boxes, which
+      // is the same gesture ("yes, this image is right, next") aimed at the
+      // decision that still exists. It does nothing when no batch is pending —
+      // better than a key that silently no-ops on every screen.
+      if (e.key === 'Enter' && proposals.length > 0) void handleAcceptImage()
 
       // Number keys pick the active class — 1..9 map to the class list. Faster
       // than reaching for the mouse on every box.
@@ -429,8 +407,11 @@ export function Review() {
                 <span className="hidden text-[11px] uppercase tracking-wide text-gray-400 sm:inline">
                   This image
                 </span>
+                {/* Red = reject, blue = accept, identically to the batch bar
+                    above. The colour has to mean the same thing in both places
+                    or it means nothing. */}
                 <button
-                  className="btn-secondary"
+                  className="btn bg-red-600 text-white hover:bg-red-700"
                   onClick={() => void handleRejectImage()}
                   title="Discard THIS image's model boxes and keep your own. Other images are unaffected."
                 >
@@ -446,17 +427,7 @@ export function Review() {
                   Accept image ({proposals.length})
                 </button>
               </>
-            ) : (
-              <button
-                className="btn-primary"
-                onClick={() => void handleApprove()}
-                disabled={accepted.length === 0}
-                title="Approve all boxes on this image (Enter)"
-              >
-                <Check size={14} />
-                Approve
-              </button>
-            )}
+            ) : null}
           </div>
         </header>
 
@@ -493,52 +464,45 @@ export function Review() {
       {/* --- Classes + boxes --- */}
       <aside className="flex w-60 shrink-0 flex-col border-l border-gray-200 bg-white">
         {/* Project-scoped block, kept visually distinct from the per-image
-            controls below it. This is where you leave the review loop. */}
+            controls below it. This is where you leave the annotation loop.
+
+            The "Progress N/M" bar and "Approve all" button used to live here.
+            Both are gone: with the proposal model, accepting IS the
+            confirmation, so every accepted box is reviewed by construction. The
+            bar sat permanently at 100% and the button permanently read "All
+            approved" — furniture that could never change state, next to a click
+            that could never do anything. */}
         {stats && (
           <div className="border-b border-gray-200 bg-gray-50 p-3">
-            <div className="mb-1.5 flex items-baseline justify-between">
-              <p className="label-eyebrow">Progress</p>
-              <span className="font-mono text-xs tabular-nums text-gray-600">
-                {stats.reviewed_boxes}/{stats.total_boxes}
-              </span>
-            </div>
-            <div className="h-1.5 w-full overflow-hidden rounded-full bg-gray-200">
-              <div
-                className="h-full rounded-full bg-status-good transition-all"
-                style={{
-                  width: `${stats.total_boxes ? (100 * stats.reviewed_boxes) / stats.total_boxes : 0}%`,
-                }}
-              />
-            </div>
+            <p className="label-eyebrow mb-1.5">Dataset</p>
+            <dl className="space-y-1 text-xs">
+              <div className="flex justify-between">
+                <dt className="text-gray-500">Annotated, staged</dt>
+                <dd className="font-mono tabular-nums text-gray-900">
+                  {stats.staging_approved}
+                </dd>
+              </div>
+              <div className="flex justify-between">
+                <dt className="text-gray-500">In dataset</dt>
+                <dd className="font-mono tabular-nums text-gray-900">
+                  {stats.dataset_total}
+                </dd>
+              </div>
+            </dl>
 
-            <button
-              className="btn-secondary mt-2 w-full"
-              onClick={() => setConfirmApproveAll(true)}
-              disabled={stats.reviewed_boxes >= stats.total_boxes}
-              title="Approve every box in the project"
-            >
-              <CheckCheck size={13} />
-              {stats.reviewed_boxes >= stats.total_boxes
-                ? 'All approved'
-                : `Approve all ${stats.total_boxes - stats.reviewed_boxes}`}
-            </button>
-
-            {/* The commit step only appears once something is approved to
-                commit. Showing it permanently would invite clicking it before
-                reviewing anything — exactly what staging exists to prevent. */}
-            {stats.staging_approved > 0 && (
+            {stats.staging_approved > 0 ? (
               <button
-                className="btn-primary mt-1.5 w-full"
+                className="btn-primary mt-2 w-full"
                 onClick={() => setShowCommit(true)}
               >
                 <Database size={13} />
                 Add {stats.staging_approved} to dataset
               </button>
-            )}
-            {stats.staging_total > 0 && stats.staging_approved === 0 && (
-              <p className="mt-1.5 text-[11px] text-gray-400">
-                {stats.staging_total} image(s) staged. Approve them to add to the
-                dataset.
+            ) : (
+              <p className="mt-2 text-[11px] text-gray-400">
+                {stats.staging_total > 0
+                  ? `${stats.staging_total} staged image(s) have no boxes yet. Annotate them to add them to the dataset.`
+                  : 'Nothing staged.'}
               </p>
             )}
           </div>
@@ -640,14 +604,22 @@ export function Review() {
             <Kbd>Del</Kbd> delete · <Kbd>Esc</Kbd> deselect
           </p>
           <p>
-            <Kbd>←</Kbd> <Kbd>→</Kbd> navigate · <Kbd>Enter</Kbd> approve
+            <Kbd>←</Kbd> <Kbd>→</Kbd> navigate
+            {reviewingBatch && (
+              <>
+                {' · '}
+                <Kbd>Enter</Kbd> accept image
+              </>
+            )}
           </p>
-          {/* Two states only now — the dotted "proposal" style is gone along
-              with the dual-layer view. */}
-          <div className="space-y-0.5 pt-1.5">
-            <LegendRow dash={undefined} label="reviewed" />
-            <LegendRow dash="6 4" label="not yet reviewed" />
-          </div>
+          {/* The legend only earns its space while a batch is pending — that's
+              the only time dashed boxes are on screen. Otherwise every box is
+              yours and solid, and a legend explaining one state is noise. */}
+          {reviewingBatch && (
+            <div className="space-y-0.5 pt-1.5">
+              <LegendRow dash="6 4" label="the model's — not yours until accepted" />
+            </div>
+          )}
         </div>
       </aside>
 
@@ -658,20 +630,6 @@ export function Review() {
         onCommitted={() => void refreshCounts()}
       />
 
-      <ConfirmDialog
-        open={confirmApproveAll}
-        onClose={() => setConfirmApproveAll(false)}
-        onConfirm={handleApproveAll}
-        busy={busy}
-        destructive={false}
-        title="Approve all boxes"
-        confirmLabel="Approve all"
-        message={
-          stats
-            ? `Mark all ${stats.total_boxes - stats.reviewed_boxes} unreviewed box(es) across ${stats.staging_total + stats.dataset_total} image(s) as approved? This says the model's output is correct without looking at it — only do this if you've already checked the dataset.`
-            : ''
-        }
-      />
     </div>
   )
 }

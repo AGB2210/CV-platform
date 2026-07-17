@@ -294,26 +294,14 @@ def delete_annotation(annotation_id: int, db: Session = Depends(get_db)) -> None
     db.commit()
 
 
-@router.post("/images/{image_id}/annotations/approve", response_model=list[AnnotationRead])
-def approve_image(image_id: int, db: Session = Depends(get_db)) -> list[Annotation]:
-    """Mark every box on this image as reviewed.
-
-    The bulk path that makes review tractable: when the model got an image
-    right — which is most of them — the whole interaction should be one key
-    press, not one click per box.
-    """
-    if db.get(Image, image_id) is None:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Image {image_id} not found")
-
-    anns = list(
-        db.scalars(select(Annotation).where(Annotation.image_id == image_id)).all()
-    )
-    for ann in anns:
-        ann.reviewed = True
-    db.commit()
-    for ann in anns:
-        db.refresh(ann)
-    return anns
+# The approve endpoints are gone.
+#
+# They existed when auto-annotation wrote boxes straight into your annotations
+# and a human then confirmed them one at a time. The proposal model replaced
+# that entirely: a box only becomes an annotation when you ACCEPT it, and
+# accepting is the confirmation. Every remaining path that creates an accepted
+# box marks it reviewed, so approving could only ever be a no-op — a button that
+# does nothing, next to an "All approved" badge that is permanently lit.
 
 
 def _scope_counts(db: Session, project_id: int) -> dict:

@@ -335,10 +335,18 @@ export function AnnotationCanvas({
                 // hairline borders and a 200px one would render fat ones.
                 vectorEffect="non-scaling-stroke"
                 strokeWidth={isSelected ? 3 : 2}
-                // Dashed = not yet confirmed by a human. Only two states now:
-                // solid (yours/confirmed) and dashed (unreviewed). The third
-                // "proposal" style is gone along with the dual-layer view.
-                strokeDasharray={ann.reviewed ? undefined : '6 4'}
+                // Dashed = the model's PENDING output; solid = your annotation.
+                //
+                // Keyed off `proposed`, not `reviewed`. `reviewed` no longer
+                // distinguishes anything — accepting is the confirmation, so
+                // every accepted box is reviewed by construction — and rows
+                // written under the old rules still carry reviewed=False, which
+                // would render your own annotations dashed for no reason.
+                //
+                // Since the canvas shows one set at a time, this reads as a mode
+                // indicator: all-dashed means "you're judging a batch, these
+                // aren't yours yet".
+                strokeDasharray={ann.proposed ? '6 4' : undefined}
                 onPointerDown={(e) => onPointerDownBox(e, ann)}
                 className="cursor-move"
               />
