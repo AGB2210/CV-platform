@@ -17,6 +17,7 @@ from app.api.routes.projects import get_project_or_404
 from app.database import get_db
 from app.models import Annotation, Image
 from app.models.image import Split
+from app.services import storage
 from app.schemas.dataset import (
     CommitMode,
     CommitPreview,
@@ -149,8 +150,28 @@ def commit_preview(
     ) or 0
 
     approved = _approved_image_ids(db, project_id)
-    would_add = sum(1 for i in staged if i.id in approved)
-    would_remove = current if mode == CommitMode.REPLACE else 0
+    incoming = [i for i in staged if i.id in approved]
+    would_add = len(incoming)
+
+    if mode == CommitMode.REPLACE:
+        would_remove = current
+    elif mode == CommitMode.MERGE:
+        # Merge deletes too — just only the images it supersedes by name. That
+        # number has to be on screen before the click, or "merge" reads as
+        # harmless and quietly removes data.
+        dataset_names = {
+            i.original_filename
+            for i in db.scalars(
+                select(Image).where(
+                    Image.project_id == project_id, Image.in_dataset.is_(True)
+                )
+            ).all()
+        }
+        would_remove = sum(
+            1 for i in incoming if i.original_filename in dataset_names
+        )
+    else:
+        would_remove = 0
 
     return CommitPreview(
         staged_total=len(staged),
@@ -170,16 +191,19 @@ def commit_to_dataset(
     """Move approved staging images into the trainable dataset.
 
     Modes:
-      append  — add them; existing dataset untouched.
-      merge   — same, but a staged image whose filename already exists in the
-                dataset folds its boxes into that image and the duplicate row is
-                dropped. This is the "I re-uploaded a corrected batch" case.
-      replace — the staged images become the whole dataset; images currently in
-                it are DELETED. Destructive, hence /preview.
+      append  — add them; existing dataset untouched. A duplicate filename
+                simply means two images with the same name.
+      merge   — upsert by filename. A staged image whose name already exists in
+                the dataset SUPERSEDES that image: the old one and its boxes are
+                deleted. Names that don't collide are appended. This is the
+                "I re-uploaded a corrected batch" case.
+      replace — the staged images become the whole dataset; everything currently
+                in it is DELETED, collision or not.
 
     Only APPROVED images move. An image with an unreviewed box is, by
     definition, not something you've said is correct — and the entire point of
     the two-stage model is that "not yet checked" can't leak into training.
+
     """
     get_project_or_404(project_id, db)
 
@@ -220,6 +244,17 @@ def commit_to_dataset(
             removed += 1
 
     elif payload.mode == CommitMode.MERGE:
+        # Upsert by filename: the incoming version WINS, the old one goes.
+        #
+        # A filename collision means the same picture arrived twice, and the one
+        # you just reviewed and approved is the one you meant. Keeping the old
+        # copy and folding the new boxes into it (the previous behaviour) left
+        # you with BOTH sets of boxes on one image — the stale ones you were
+        # trying to replace, plus the new ones. That's not a merge, it's a pile.
+        #
+        # Scoped to name collisions, which is the whole difference from
+        # `replace`: dataset images that this batch doesn't mention are left
+        # completely alone.
         by_name = {
             i.original_filename: i
             for i in db.scalars(
@@ -228,21 +263,18 @@ def commit_to_dataset(
                 )
             ).all()
         }
-        survivors = []
         for image in staged:
-            existing = by_name.get(image.original_filename)
-            if existing is None:
-                survivors.append(image)
-                continue
-            # Re-point this image's boxes at the dataset copy, then drop the
-            # duplicate row. Cheaper and safer than copying box values, and it
-            # keeps annotation ids stable.
-            for ann in list(image.annotations):
-                ann.image_id = existing.id
+            superseded = by_name.get(image.original_filename)
+            if superseded is None:
+                continue  # no collision — plain append
+            # Cascade takes the old image's annotations with it, and
+            # delete_image_file removes the bytes from disk so a superseded
+            # copy doesn't sit there forever.
+            project_id_, filename_ = superseded.project_id, superseded.filename
+            db.delete(superseded)
             db.flush()
-            db.delete(image)
+            storage.delete_image_file(project_id_, filename_)
             merged += 1
-        staged = survivors
 
     if payload.assign_splits and staged:
         _assign_splits(staged, payload.train_pct, payload.val_pct, payload.test_pct)

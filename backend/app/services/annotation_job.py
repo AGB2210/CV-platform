@@ -163,33 +163,24 @@ def _run(db: Session, job: AnnotationJob) -> None:
             db.commit()
             continue
 
-        # Clear out what's there before writing this run's output, so re-running
-        # doesn't pile duplicate boxes on top of each other.
+        # A run writes PROPOSALS. It does not touch your existing boxes.
         #
-        # Two policies, and the choice belongs to the user:
+        # The only thing cleared is this pipeline's own leftover proposals from
+        # an earlier run — otherwise running the model twice would stack two
+        # sets of suggestions for the same objects. Accepted boxes (yours,
+        # imported, or previously-accepted model output) are never touched here:
+        # the accept/reject decision belongs to you, at review time.
         #
-        #   clear_existing=False (default) — delete only this pipeline's own
-        #     previous `auto` boxes. Human and imported work survives, so a
-        #     re-run can never destroy corrections. The cost is that the image
-        #     then shows a MIX of model output and human boxes.
-        #
-        #   clear_existing=True — delete everything first, so the result is
-        #     purely what the model said. This is what people mean by "run the
-        #     model and show me the output", and without it there was no way to
-        #     get a clean slate short of deleting boxes by hand.
-        query = select(Annotation).where(Annotation.image_id == image.id)
-        if not job.clear_existing:
-            query = query.where(Annotation.source == "auto")
-        for old in db.scalars(query).all():
-            db.delete(old)
-
-        # A committed image whose boxes just changed goes back to staging: the
-        # new boxes are unreviewed, and unreviewed data must not be trained on.
-        #
-        # This only reaches dataset images under scope="all", which the UI
-        # warns about explicitly. Under the default staging scope the image is
-        # already staged and this is a no-op — the dataset is untouched.
-        image.in_dataset = False
+        # The image is NOT re-staged either. Its accepted annotations haven't
+        # changed — a proposal is not an annotation until you say so — so a
+        # committed image stays committed and the dataset is undisturbed even
+        # under scope="all".
+        for stale in db.scalars(
+            select(Annotation).where(
+                Annotation.image_id == image.id, Annotation.proposed.is_(True)
+            )
+        ).all():
+            db.delete(stale)
 
         for box in result.boxes:
             category = by_name.get(box.label)
@@ -206,7 +197,11 @@ def _run(db: Session, job: AnnotationJob) -> None:
                     height=h,
                     confidence=box.confidence,
                     source="auto",
-                    reviewed=False,  # drafts, pending human review
+                    reviewed=False,
+                    # A suggestion, not an annotation. Invisible to exports,
+                    # training and counts until accepted.
+                    proposed=True,
+                    job_id=job.id,
                 )
             )
             total_boxes += 1

@@ -78,10 +78,39 @@ class Annotation(Base):
     # "auto" | "manual". Which model produced it is on the job, not here.
     source: Mapped[str] = mapped_column(String(16), nullable=False, default="manual")
 
-    # The heart of the review workflow: has a human confirmed this box?
-    # Auto-annotation writes reviewed=False; the Phase 3 UI flips it to True.
-    # Training can then be restricted to verified data.
+    # Has a human confirmed this box? Only meaningful once it's accepted.
     reviewed: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    # --- Proposal state -----------------------------------------------------
+    #
+    # True = the model SUGGESTS this box; it is not part of your annotations.
+    # Proposals are excluded from exports, training, and every annotation count.
+    # They exist only until you accept them (proposed -> False) or reject them
+    # (deleted).
+    #
+    # This is what makes auto-annotation non-destructive. It used to delete your
+    # boxes and write its own in their place, so running the model cost you
+    # whatever was already there. Now the two coexist: yours stay, the model's
+    # arrive alongside as a separate layer, and you decide how they combine.
+    #
+    # The model proposes; the human disposes. Nothing of yours is destroyed to
+    # make room for a suggestion.
+    proposed: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, index=True
+    )
+
+    # Which auto-annotation run produced this box. NULL for human-drawn and
+    # imported boxes. Lets a whole batch be applied or discarded as a unit, and
+    # lets the UI say "this run proposed 47 boxes" long after the fact.
+    #
+    # ondelete="SET NULL", not CASCADE: deleting a job's history must not delete
+    # the annotations it created. Once you've accepted a box it's yours, and its
+    # provenance record is not a lifeline.
+    job_id: Mapped[int | None] = mapped_column(
+        ForeignKey("annotation_jobs.id", ondelete="SET NULL"),
+        default=None,
+        index=True,
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False

@@ -30,7 +30,7 @@ const MODES: { value: CommitMode; label: string; blurb: string }[] = [
     value: 'merge',
     label: 'Merge',
     blurb:
-      'Add these, but if a filename already exists in the dataset, fold the boxes into that image instead of creating a duplicate.',
+      'Upsert by filename: an image whose name already exists in the dataset replaces that one (the old copy is deleted). Names that do not clash are just added.',
   },
   {
     value: 'replace',
@@ -115,7 +115,15 @@ export function CommitDialog({
               )}
               <Row label="Currently in dataset" value={preview.dataset_current} />
               {preview.would_remove > 0 && (
-                <Row label="Will be DELETED" value={preview.would_remove} danger />
+                <Row
+                  label={
+                    mode === 'merge'
+                      ? 'Superseded by same filename (deleted)'
+                      : 'Will be DELETED'
+                  }
+                  value={preview.would_remove}
+                  danger
+                />
               )}
               <div className="mt-1 border-t border-gray-200 pt-1">
                 <Row label="Dataset after" value={preview.dataset_after} strong />
@@ -161,9 +169,12 @@ export function CommitDialog({
           </div>
         </fieldset>
 
-        {/* Destructive mode gets an explicit, specific warning with the real
-            number in it — not a generic "are you sure?". */}
-        {mode === 'replace' && preview && preview.would_remove > 0 && (
+        {/* Destructive modes get an explicit, specific warning with the real
+            number in it — not a generic "are you sure?".
+            Merge deletes too, just selectively. It would be easy to read
+            "merge" as harmless and lose data to it, so it warns as loudly as
+            replace does — the wording just names the reason. */}
+        {preview && preview.would_remove > 0 && (mode === 'replace' || mode === 'merge') && (
           <div className="flex gap-2 rounded-md border border-red-200 bg-red-50 px-3 py-2">
             <AlertTriangle size={14} className="mt-0.5 shrink-0 text-red-600" />
             <p className="text-xs text-red-800">
@@ -171,7 +182,10 @@ export function CommitDialog({
                 {preview.would_remove} image{preview.would_remove === 1 ? '' : 's'} and their
                 annotations will be permanently deleted
               </span>{' '}
-              from this project. This cannot be undone.
+              {mode === 'merge'
+                ? 'because an incoming image has the same filename and supersedes them.'
+                : 'from this project.'}{' '}
+              This cannot be undone.
             </p>
           </div>
         )}
@@ -226,15 +240,25 @@ export function CommitDialog({
             Cancel
           </button>
           <button
-            className={mode === 'replace' ? 'btn bg-red-600 text-white hover:bg-red-700' : 'btn-primary'}
+            // Red tracks whether data actually dies, not which mode is
+            // selected: a merge with no name collisions deletes nothing and
+            // shouldn't look alarming, while one that supersedes 40 images
+            // should look exactly as serious as replace.
+            className={
+              (mode === 'replace' || (mode === 'merge' && (preview?.would_remove ?? 0) > 0))
+                ? 'btn bg-red-600 text-white hover:bg-red-700'
+                : 'btn-primary'
+            }
             onClick={() => void submit()}
             disabled={busy || nothingToAdd || (assignSplits && !pctValid)}
           >
             {busy
               ? 'Working…'
               : mode === 'replace'
-                ? `Replace dataset`
-                : `Add ${preview?.would_add ?? 0} to dataset`}
+                ? 'Replace dataset'
+                : mode === 'merge' && (preview?.would_remove ?? 0) > 0
+                  ? `Add ${preview?.would_add ?? 0}, replace ${preview?.would_remove ?? 0}`
+                  : `Add ${preview?.would_add ?? 0} to dataset`}
           </button>
         </div>
       </div>
