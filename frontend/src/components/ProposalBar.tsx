@@ -1,170 +1,156 @@
-import { useCallback, useEffect, useState } from 'react'
 import { Check, Sparkles, X } from 'lucide-react'
-import {
-  acceptProposals,
-  getProposalPreview,
-  rejectProposals,
-  type ProposalPreview,
-} from '@/lib/api'
+import { acceptProposals, rejectProposals, type ProposalPreview } from '@/lib/api'
 
 /**
- * The pending model batch: accept it or reject it.
+ * The pending model batch, split into two pieces that live in DIFFERENT PLACES.
  *
- * While a batch is pending the canvas shows the MODEL'S boxes and nothing else.
- * This bar is the decision:
+ * WHY SPLIT
+ * ---------
+ * The batch actions and the per-image actions used to sit in stacked toolbars:
+ * "Reject all" 16px above "Reject image", with 62px of horizontal overlap. Two
+ * red buttons, same word, and a small slip turned "discard this image's
+ * suggestions" into "discard the entire batch". Adjacency was doing the exact
+ * opposite of what the labels worked so hard to establish.
  *
- *   Accept  the model's boxes become your annotations; your previous boxes on
- *           the images it covered are deleted.
- *   Reject  the proposals are discarded and your boxes come straight back.
+ * So they're now separated by scope AND by geography:
+ *   ProposalBanner   top strip — explains the mode, NO buttons
+ *   ProposalActions  right panel, beside the other project-scoped action
+ *                    ("Add to dataset") — the batch buttons
+ * The per-image pair keeps the image header. Different columns, no overlap,
+ * nothing to slip between.
  *
- * It used to offer append/merge/replace, defaulting to append — so accepting
- * stacked the model's boxes on top of the last run's and four runs gave you the
- * same object boxed four times. Two buttons say everything the three modes did,
- * and can't manufacture duplicates.
+ * Both take `preview` as a prop rather than fetching it: they'd otherwise issue
+ * the same request twice and could disagree with each other mid-flight.
  */
-export function ProposalBar({
+
+export function ProposalBanner({
+  proposedBoxes,
+  preview,
+}: {
+  proposedBoxes: number
+  preview: ProposalPreview | null
+}) {
+  if (proposedBoxes === 0) return null
+  const willDelete = preview?.existing_on_proposed_images ?? 0
+
+  return (
+    <div className="flex items-start gap-2 border-b border-accent-200 bg-accent-50 px-4 py-2">
+      <Sparkles size={14} className="mt-0.5 shrink-0 text-accent-700" />
+      <div className="min-w-0 text-xs">
+        <p className="text-accent-900">
+          <span className="font-medium">
+            Reviewing model output — {proposedBoxes} box{proposedBoxes === 1 ? '' : 'es'}
+          </span>
+          {preview && (
+            <span className="text-accent-800">
+              {' '}
+              across {preview.proposed_images} image
+              {preview.proposed_images === 1 ? '' : 's'}. Your own boxes are hidden while
+              you decide.
+            </span>
+          )}
+        </p>
+        {/* The consequence, stated before any click — not in a dialog after. */}
+        {preview && (
+          <p className="text-accent-800">
+            {willDelete > 0 ? (
+              <>
+                <span className="font-medium">
+                  Accepting replaces your {willDelete} existing box
+                  {willDelete === 1 ? '' : 'es'}
+                </span>{' '}
+                on {preview.proposed_images === 1 ? 'this image' : 'these images'}.
+                Rejecting keeps them.
+              </>
+            ) : (
+              <>You have no boxes on these images, so accepting deletes nothing.</>
+            )}
+            {preview.existing_elsewhere > 0 && (
+              <>
+                {' '}
+                Your {preview.existing_elsewhere} box
+                {preview.existing_elsewhere === 1 ? '' : 'es'} on other images
+                {preview.existing_elsewhere === 1 ? ' is' : ' are'} unaffected either way.
+              </>
+            )}
+          </p>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Batch actions. Lives in the right panel, deliberately far from the per-image
+ * pair in the image header.
+ */
+export function ProposalActions({
   projectId,
   proposedBoxes,
+  preview,
+  busy,
+  onBusy,
   onChanged,
+  onError,
 }: {
   projectId: number
   proposedBoxes: number
+  preview: ProposalPreview | null
+  busy: boolean
+  onBusy: (v: boolean) => void
   onChanged: () => void
+  onError: (msg: string) => void
 }) {
-  const [preview, setPreview] = useState<ProposalPreview | null>(null)
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-
-  const load = useCallback(async () => {
-    try {
-      setPreview(await getProposalPreview(projectId))
-    } catch (e) {
-      setError((e as Error).message)
-    }
-  }, [projectId])
-
-  useEffect(() => {
-    if (proposedBoxes > 0) void load()
-  }, [load, proposedBoxes])
-
   if (proposedBoxes === 0) return null
+  const willDelete = preview?.existing_on_proposed_images ?? 0
 
   async function act(fn: () => Promise<unknown>) {
-    setBusy(true)
-    setError(null)
+    onBusy(true)
     try {
       await fn()
       onChanged()
     } catch (e) {
-      setError((e as Error).message)
+      onError((e as Error).message)
     } finally {
-      setBusy(false)
+      onBusy(false)
     }
   }
 
-  // Accepting deletes your boxes on the covered images. If there are none, it's
-  // a harmless action and shouldn't wear a warning colour.
-  const willDelete = preview?.existing_on_proposed_images ?? 0
-
   return (
-    <div className="border-b border-accent-200 bg-accent-50">
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 px-4 py-2">
-        <Sparkles size={14} className="shrink-0 text-accent-700" />
+    <div className="border-b border-accent-200 bg-accent-50 p-3">
+      <p className="label-eyebrow text-accent-700">Model batch</p>
+      <p className="mt-0.5 text-[11px] text-accent-900">
+        {proposedBoxes} box{proposedBoxes === 1 ? '' : 'es'} across{' '}
+        {preview?.proposed_images ?? 0} image
+        {(preview?.proposed_images ?? 0) === 1 ? '' : 's'} — applies to{' '}
+        <span className="font-medium">every image</span>, not just this one.
+      </p>
 
-        <div className="min-w-0 text-xs">
-          <p className="text-accent-900">
-            <span className="font-medium">
-              Reviewing model output — {proposedBoxes} box
-              {proposedBoxes === 1 ? '' : 'es'}
-            </span>
-            {preview && (
-              <span className="text-accent-800">
-                {' '}
-                across {preview.proposed_images} image
-                {preview.proposed_images === 1 ? '' : 's'}. Your own boxes are hidden
-                while you decide.
-              </span>
-            )}
-          </p>
-          {/* State the consequence in the bar, not in a dialog after the fact.
-              Accept DELETES — that has to be visible before the click. */}
-          {preview && (
-            <p className="text-accent-800">
-              {willDelete > 0 ? (
-                <>
-                  <span className="font-medium">
-                    Accepting replaces your {willDelete} existing box
-                    {willDelete === 1 ? '' : 'es'}
-                  </span>{' '}
-                  on {preview.proposed_images === 1 ? 'this image' : 'these images'}.
-                  Rejecting keeps them.
-                </>
-              ) : (
-                <>You have no boxes on these images, so accepting deletes nothing.</>
-              )}
-              {preview.existing_elsewhere > 0 && (
-                <>
-                  {' '}
-                  Your {preview.existing_elsewhere} box
-                  {preview.existing_elsewhere === 1 ? '' : 'es'} on other images
-                  {preview.existing_elsewhere === 1 ? ' is' : ' are'} unaffected either
-                  way.
-                </>
-              )}
-            </p>
-          )}
-        </div>
-
-        {/* These act on the WHOLE batch, while the header's buttons act on the
-            current image only. Both said just "Reject", which made two very
-            different blast radii look like the same button. Everything here is
-            explicitly "all". */}
-        <div className="ml-auto flex shrink-0 items-center gap-2">
-          <span className="hidden text-[11px] uppercase tracking-wide text-accent-700 sm:inline">
-            All {preview?.proposed_images ?? ''} image
-            {(preview?.proposed_images ?? 0) === 1 ? '' : 's'}
-          </span>
-          {/* Colour tracks the ACTION, not which one is riskier.
-              Reject throws the model's work away — red. Accept keeps it and is
-              the affirmative path — blue.
-              Accept previously went red whenever it would delete your boxes,
-              which meant the two buttons swapped colours depending on state and
-              neither colour meant anything reliable. The count in the label
-              ("Accept all, replace 3") carries that warning instead. */}
-          <button
-            className="btn bg-red-600 text-white hover:bg-red-700"
-            onClick={() => void act(() => rejectProposals(projectId))}
-            disabled={busy}
-            title="Discard the model's boxes on EVERY image and keep yours"
-          >
-            <X size={13} />
-            Reject all
-          </button>
-          <button
-            className="btn-primary"
-            onClick={() => void act(() => acceptProposals(projectId))}
-            disabled={busy}
-            title={
-              willDelete > 0
-                ? `Keep the model's boxes on EVERY image and delete your ${willDelete} existing`
-                : "Keep the model's boxes on every image"
-            }
-          >
-            <Check size={13} />
-            {busy
-              ? 'Working…'
-              : willDelete > 0
-                ? `Accept all, replace ${willDelete}`
-                : `Accept all ${proposedBoxes}`}
-          </button>
-        </div>
-      </div>
-
-      {error && (
-        <p className="border-t border-red-200 bg-red-50 px-4 py-1.5 text-xs text-red-800">
-          {error}
-        </p>
-      )}
+      {/* Stacked full-width, unlike the header's side-by-side pair. Different
+          shape as well as different place: at a glance you can tell which
+          toolbar you're in. */}
+      <button
+        className="btn-primary mt-2 w-full"
+        onClick={() => void act(() => acceptProposals(projectId))}
+        disabled={busy}
+        title={
+          willDelete > 0
+            ? `Keep the model's boxes on EVERY image and delete your ${willDelete} existing`
+            : "Keep the model's boxes on every image"
+        }
+      >
+        <Check size={13} />
+        {busy ? 'Working…' : willDelete > 0 ? `Accept all, replace ${willDelete}` : `Accept all ${proposedBoxes}`}
+      </button>
+      <button
+        className="btn mt-1.5 w-full bg-red-600 text-white hover:bg-red-700"
+        onClick={() => void act(() => rejectProposals(projectId))}
+        disabled={busy}
+        title="Discard the model's boxes on EVERY image and keep yours"
+      >
+        <X size={13} />
+        Reject all {proposedBoxes}
+      </button>
     </div>
   )
 }

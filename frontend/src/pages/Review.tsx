@@ -3,10 +3,11 @@ import { Link, useNavigate, useParams } from 'react-router-dom'
 import { Check, ChevronLeft, ChevronRight, Database, Trash2, X } from 'lucide-react'
 import { AnnotationCanvas } from '@/components/AnnotationCanvas'
 import { CommitDialog } from '@/components/CommitDialog'
-import { ProposalBar } from '@/components/ProposalBar'
+import { ProposalActions, ProposalBanner } from '@/components/ProposalBar'
 import {
   acceptImageProposals,
   rejectImageProposals,
+  getProposalPreview,
   createAnnotation,
   deleteAnnotation,
   getDatasetStats,
@@ -18,6 +19,7 @@ import {
   type DatasetImage,
   type DatasetStats,
   type ProjectClass,
+  type ProposalPreview,
 } from '@/lib/api'
 
 /**
@@ -46,6 +48,10 @@ export function Review() {
   const [error, setError] = useState<string | null>(null)
   const [stats, setStats] = useState<DatasetStats | null>(null)
   const [showCommit, setShowCommit] = useState(false)
+  // Owned here, not inside the two proposal components — they'd otherwise fetch
+  // the same preview twice and could disagree with each other mid-flight.
+  const [proposalPreview, setProposalPreview] = useState<ProposalPreview | null>(null)
+  const [busy, setBusy] = useState(false)
 
   const current = useMemo(
     () => images.find((i) => i.id === Number(imageId)) ?? null,
@@ -104,6 +110,11 @@ export function Review() {
       const [imgs, s] = await Promise.all([listImages(projectId), getDatasetStats(projectId)])
       setImages(imgs)
       setStats(s)
+      // Only ask for the batch preview when there IS a batch — otherwise every
+      // refresh pays for a request whose answer is all zeroes.
+      setProposalPreview(
+        s.proposed_boxes > 0 ? await getProposalPreview(projectId) : null,
+      )
     } catch {
       /* non-fatal: the counts are a nicety, not the work */
     }
@@ -346,13 +357,13 @@ export function Review() {
           <main> and this component is rendered inside it. Nested <main> is
           invalid HTML and makes screen readers announce two main landmarks. */}
       <section className="flex min-w-0 flex-1 flex-col bg-gray-100">
-        {/* The pending batch sits above the canvas — it's the thing you'd act
-            on first, and it disappears once applied or discarded. */}
+        {/* Explains the mode. Its ACTIONS live in the right panel — stacking
+            two toolbars put "Reject all" 16px above "Reject image" with 62px of
+            overlap, which is a misclick trap however well the labels read. */}
         {stats && (
-          <ProposalBar
-            projectId={projectId}
+          <ProposalBanner
             proposedBoxes={stats.proposed_boxes}
-            onChanged={() => void reloadCurrent()}
+            preview={proposalPreview}
           />
         )}
         <header className="flex h-12 shrink-0 items-center justify-between border-b border-gray-200 bg-white px-4">
@@ -463,6 +474,22 @@ export function Review() {
 
       {/* --- Classes + boxes --- */}
       <aside className="flex w-60 shrink-0 flex-col border-l border-gray-200 bg-white">
+        {/* Batch actions: a different column from the image header's pair, so
+            the two "Reject" buttons can no longer be confused by proximity.
+            Sits at the top because a pending batch is the thing you'd act on
+            first, and it vanishes the moment you do. */}
+        {stats && (
+          <ProposalActions
+            projectId={projectId}
+            proposedBoxes={stats.proposed_boxes}
+            preview={proposalPreview}
+            busy={busy}
+            onBusy={setBusy}
+            onChanged={() => void reloadCurrent()}
+            onError={setError}
+          />
+        )}
+
         {/* Project-scoped block, kept visually distinct from the per-image
             controls below it. This is where you leave the annotation loop.
 
