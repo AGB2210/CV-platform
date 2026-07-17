@@ -19,6 +19,13 @@ class ImageRead(BaseModel):
     size_bytes: int
     created_at: datetime
 
+    # Populated by the list route via a GROUP BY join, not a per-image COUNT.
+    # Lets the grid show annotation state at a glance — which is the difference
+    # between "you have 500 images" and "you have 500 images, 340 annotated,
+    # 120 of those still unreviewed".
+    annotation_count: int = 0
+    reviewed_count: int = 0
+
     @computed_field  # type: ignore[prop-decorator]
     @property
     def url(self) -> str:

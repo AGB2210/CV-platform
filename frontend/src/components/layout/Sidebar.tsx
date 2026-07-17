@@ -1,5 +1,5 @@
 import { NavLink, useMatch } from 'react-router-dom'
-import { LayoutGrid, Boxes, Tags, Cpu, PlayCircle } from 'lucide-react'
+import { LayoutGrid, Boxes, Tags, Cpu, PlayCircle, SquarePen } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 
 /**
@@ -28,7 +28,8 @@ interface NavItem {
 // Ordered to match the actual pipeline, not alphabetically.
 const PROJECT_NAV: NavItem[] = [
   { suffix: '', label: 'Dataset', icon: Boxes, ready: true },
-  { suffix: '/annotate', label: 'Annotate', icon: Tags, ready: true },
+  { suffix: '/annotate', label: 'Auto-annotate', icon: Tags, ready: true },
+  { suffix: '/review', label: 'Review', icon: SquarePen, ready: true },
   { suffix: '/train', label: 'Train', icon: Cpu, ready: false },
   { suffix: '/deploy', label: 'Deploy', icon: PlayCircle, ready: false },
 ]
@@ -81,7 +82,10 @@ export function Sidebar() {
                 <NavLink
                   key={label}
                   to={`/projects/${id}${suffix}`}
-                  end
+                  // `end` ONLY for the project root (suffix ''), where it stops
+                  // "Dataset" matching every sub-route. The others need prefix
+                  // matching so "Review" stays highlighted on /review/5.
+                  end={suffix === ''}
                   className={({ isActive }) => linkClass(isActive)}
                 >
                   <Icon size={16} strokeWidth={2} />

@@ -104,7 +104,7 @@ export function ProjectDetail() {
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_280px]">
           <section>
             <UploadPanel projectId={projectId} onUploaded={refresh} />
-            <ImageGrid images={images} onDeleted={refresh} />
+            <ImageGrid images={images} projectId={projectId} onDeleted={refresh} />
           </section>
 
           <ClassPanel projectId={projectId} classes={classes} onChanged={refresh} />
@@ -221,9 +221,11 @@ function UploadPanel({
 
 function ImageGrid({
   images,
+  projectId,
   onDeleted,
 }: {
   images: DatasetImage[]
+  projectId: number
   onDeleted: () => void
 }) {
   const [pending, setPending] = useState<DatasetImage | null>(null)
@@ -265,16 +267,41 @@ function ImageGrid({
             key={img.id}
             className="group relative overflow-hidden rounded border border-gray-200 bg-gray-100"
           >
-            {/* aspect-square + object-cover: uniform tiles regardless of source
-                aspect ratio, so the grid stays a grid. */}
-            <img
-              src={img.url}
-              alt={img.original_filename}
-              // Native lazy loading — a 5,000-image dataset must not issue
-              // 5,000 requests on mount.
-              loading="lazy"
-              className="aspect-square w-full object-cover"
-            />
+            {/* The tile links into review. The whole point of the grid is to
+                get you to the image you want to look at. */}
+            <Link to={`/projects/${projectId}/review/${img.id}`} className="block">
+              {/* aspect-square + object-cover: uniform tiles regardless of source
+                  aspect ratio, so the grid stays a grid. */}
+              <img
+                src={img.url}
+                alt={img.original_filename}
+                // Native lazy loading — a 5,000-image dataset must not issue
+                // 5,000 requests on mount.
+                loading="lazy"
+                className="aspect-square w-full object-cover"
+              />
+            </Link>
+
+            {/* Annotation state, visible without opening the image. A dataset is
+                mostly "which of these still needs work", and answering that from
+                the grid saves opening 500 images to find out. */}
+            {img.annotation_count > 0 && (
+              <span
+                className={[
+                  'absolute left-1 top-1 rounded px-1 py-0.5 text-[10px] font-medium tabular-nums shadow-sm',
+                  img.reviewed_count === img.annotation_count
+                    ? 'bg-green-600 text-white'
+                    : 'bg-amber-500 text-white',
+                ].join(' ')}
+                title={
+                  img.reviewed_count === img.annotation_count
+                    ? `${img.annotation_count} boxes, all reviewed`
+                    : `${img.annotation_count} boxes, ${img.annotation_count - img.reviewed_count} unreviewed`
+                }
+              >
+                {img.annotation_count}
+              </span>
+            )}
 
             <button
               onClick={() => setPending(img)}
@@ -284,7 +311,7 @@ function ImageGrid({
               <X size={12} />
             </button>
 
-            <div className="absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/60 to-transparent px-1.5 py-1">
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/60 to-transparent px-1.5 py-1">
               <p className="truncate text-[10px] text-white" title={img.original_filename}>
                 {img.original_filename}
               </p>

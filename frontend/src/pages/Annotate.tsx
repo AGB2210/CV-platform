@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { ArrowLeft, Cpu, Download, Play, Sparkles } from 'lucide-react'
+import { ArrowLeft, Cpu, Download, Play, Sparkles, SquarePen } from 'lucide-react'
 import { PageBody, PageHeader } from '@/components/layout/AppShell'
 import { StatusBadge, type Status } from '@/components/StatusBadge'
 import {
@@ -386,12 +386,24 @@ function JobProgress({ job }: { job: AnnotationJob }) {
           />
         </div>
 
-        <p className="mt-2 text-xs text-gray-600">
-          <span className="font-medium tabular-nums text-gray-900">
-            {job.boxes_created}
-          </span>{' '}
-          boxes created
-        </p>
+        <div className="mt-2 flex items-center justify-between">
+          <p className="text-xs text-gray-600">
+            <span className="font-medium tabular-nums text-gray-900">
+              {job.boxes_created}
+            </span>{' '}
+            boxes created
+          </p>
+          {/* The step that makes the whole run meaningful. A box count is not
+              evidence — it's equally consistent with 9 good boxes and 9 boxes
+              in the wrong place. Without this link the only way to see what the
+              model did is to export the dataset and open it somewhere else. */}
+          {job.status === 'done' && job.boxes_created > 0 && (
+            <Link to={`/projects/${job.project_id}/review`} className="btn-primary">
+              <SquarePen size={13} />
+              Review {job.boxes_created} boxes
+            </Link>
+          )}
+        </div>
 
         {job.error && (
           // whitespace-pre-wrap + a scroll cap: tracebacks are long, and

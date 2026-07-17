@@ -3,6 +3,7 @@ import { AppShell } from '@/components/layout/AppShell'
 import { Projects } from '@/pages/Projects'
 import { ProjectDetail } from '@/pages/ProjectDetail'
 import { Annotate } from '@/pages/Annotate'
+import { Review } from '@/pages/Review'
 
 /**
  * Route table.
@@ -20,8 +21,12 @@ export default function App() {
           <Route path="/" element={<Projects />} />
           <Route path="/projects/:id" element={<ProjectDetail />} />
           <Route path="/projects/:id/annotate" element={<Annotate />} />
-          {/* Phase 3: /projects/:id/annotate/:imageId  (review canvas)
-              Phase 4: /projects/:id/train
+          {/* Two review routes: with an image id (deep-linkable — you can send
+              someone a link to a specific image) and without (lands on the
+              first image). */}
+          <Route path="/projects/:id/review" element={<Review />} />
+          <Route path="/projects/:id/review/:imageId" element={<Review />} />
+          {/* Phase 4: /projects/:id/train
               Phase 5: /projects/:id/deploy   */}
         </Route>
       </Routes>

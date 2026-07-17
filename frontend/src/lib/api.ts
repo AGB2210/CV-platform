@@ -137,6 +137,8 @@ export interface DatasetImage {
   created_at: string
   /** Relative path, e.g. /static/images/1/abc.jpg — usable directly in <img src>. */
   url: string
+  annotation_count: number
+  reviewed_count: number
 }
 
 export interface UploadResult {
@@ -255,6 +257,24 @@ export const listJobs = (projectId: number) =>
 
 export const listAnnotations = (imageId: number) =>
   api.get<Annotation[]>(`/images/${imageId}/annotations`)
+export const createAnnotation = (
+  imageId: number,
+  body: { category_id: number; x: number; y: number; width: number; height: number },
+) => api.post<Annotation>(`/images/${imageId}/annotations`, body)
+export const updateAnnotation = (
+  id: number,
+  body: Partial<{
+    category_id: number
+    x: number
+    y: number
+    width: number
+    height: number
+    reviewed: boolean
+  }>,
+) => api.patch<Annotation>(`/annotations/${id}`, body)
+export const deleteAnnotation = (id: number) => api.delete<void>(`/annotations/${id}`)
+export const approveImage = (imageId: number) =>
+  api.post<Annotation[]>(`/images/${imageId}/annotations/approve`)
 export const getAnnotationSummary = (projectId: number) =>
   api.get<AnnotationSummary>(`/projects/${projectId}/annotations/summary`)
 

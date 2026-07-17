@@ -43,7 +43,7 @@ class AnnotationRead(BaseModel):
 
 
 class AnnotationCreate(BaseModel):
-    """A box drawn or edited by a human (Phase 3)."""
+    """A box drawn by a human on the canvas."""
 
     category_id: int
     # ge=0 rejects negative coordinates; the canvas can produce them if a drag
@@ -54,6 +54,23 @@ class AnnotationCreate(BaseModel):
     # store an invisible, unexportable, untrainable box.
     width: float = Field(..., gt=0)
     height: float = Field(..., gt=0)
+
+
+class AnnotationUpdate(BaseModel):
+    """Partial update from the canvas: move, resize, relabel, or approve.
+
+    Every field optional. The canvas sends only what changed — dragging a box
+    sends x/y, resizing sends all four, clicking a class sends category_id.
+    Combined with exclude_unset=True in the route, that means a relabel can
+    never accidentally reset the geometry.
+    """
+
+    category_id: int | None = None
+    x: float | None = Field(default=None, ge=0)
+    y: float | None = Field(default=None, ge=0)
+    width: float | None = Field(default=None, gt=0)
+    height: float | None = Field(default=None, gt=0)
+    reviewed: bool | None = None
 
 
 class AnnotationJobCreate(BaseModel):
