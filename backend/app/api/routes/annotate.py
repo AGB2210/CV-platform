@@ -227,10 +227,20 @@ def update_annotation(
 ) -> Annotation:
     """Move, resize, relabel, or approve one box.
 
-    Editing an auto box promotes it to source="manual": once a human has moved
-    it, it is no longer the model's output, and a later re-run of the same model
-    must not silently delete their correction (the job runner only replaces
-    source="auto" boxes).
+    ANY human edit — geometry OR label — promotes an auto box to
+    source="manual". Once a person has corrected it, it is no longer the model's
+    output, and a re-run of that model must not silently delete their work: the
+    job runner only replaces source="auto" boxes.
+
+    Relabelling counts. It's tempting to treat only geometry as a "real" edit,
+    but fixing person -> car is exactly as much human judgement as nudging a
+    corner, and leaving it source="auto" means the next re-run throws it away
+    with no error and no warning. (Verified: it did.)
+
+    Setting `reviewed` alone does NOT promote — that's the approve action
+    confirming the model was right, not a human overriding it. A box can be
+    reviewed and still be the model's own output, which is precisely the
+    distinction that makes "trained on verified model output" meaningful.
     """
     ann = db.get(Annotation, annotation_id)
     if ann is None:
@@ -248,12 +258,17 @@ def update_annotation(
                 status.HTTP_400_BAD_REQUEST, "Class does not belong to this project"
             )
 
-    geometry_changed = any(k in fields for k in ("x", "y", "width", "height"))
+    # A human overriding the model, in either dimension: where the box is, or
+    # what it is. Deliberately excludes `reviewed` — approving is confirming the
+    # model, not overriding it.
+    human_edit = any(
+        k in fields for k in ("x", "y", "width", "height", "category_id")
+    )
 
     for field, value in fields.items():
         setattr(ann, field, value)
 
-    if geometry_changed and ann.source == "auto":
+    if human_edit and ann.source == "auto":
         ann.source = "manual"
         ann.reviewed = True
 

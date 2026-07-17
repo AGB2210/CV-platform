@@ -214,9 +214,31 @@ export function AnnotationCanvas({
         onCreate(preview, activeClassId)
       }
     } else if (preview.width >= 1 && preview.height >= 1) {
-      // One PATCH on pointerup, not per mousemove. Dragging is local state;
-      // the server hears about it once, when you let go.
-      onUpdate(drag.id, preview)
+      // Only PATCH if the box ACTUALLY moved.
+      //
+      // Selecting a box is a pointerdown+pointerup inside it, which is
+      // indistinguishable from a zero-distance move-drag. Without this guard,
+      // merely CLICKING a box to look at it issued a PATCH with its existing
+      // coordinates — and because the backend treats any geometry write as a
+      // human edit, that silently:
+      //   - flipped source "auto" -> "manual", fabricating provenance
+      //   - set reviewed=True, so a box nobody approved counted as verified
+      // i.e. clicking around the dataset quietly marked it reviewed. Exactly
+      // the kind of corruption that doesn't error, it just makes your training
+      // data a lie.
+      const original = annotations.find((a) => a.id === drag.id)
+      const moved =
+        !original ||
+        Math.abs(preview.x - original.x) > 0.01 ||
+        Math.abs(preview.y - original.y) > 0.01 ||
+        Math.abs(preview.width - original.width) > 0.01 ||
+        Math.abs(preview.height - original.height) > 0.01
+
+      if (moved) {
+        // One PATCH on pointerup, not per mousemove. Dragging is local state;
+        // the server hears about it once, when you let go.
+        onUpdate(drag.id, preview)
+      }
     }
 
     setDrag(null)
