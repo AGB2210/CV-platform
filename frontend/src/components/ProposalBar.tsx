@@ -126,11 +126,13 @@ export function ProposalActions({
         <span className="font-medium">every image</span>, not just this one.
       </p>
 
-      {/* Stacked full-width, unlike the header's side-by-side pair. Different
-          shape as well as different place: at a glance you can tell which
-          toolbar you're in. */}
+      {/* OUTLINED, and stacked full-width — unlike the header's solid,
+          side-by-side pair. Three differences at once (place, shape, fill) so
+          the scope is obvious without reading a word. Outlined also suits the
+          rarer action: batch decisions shouldn't shout as loudly as the
+          per-image ones you click a hundred times. */}
       <button
-        className="btn-primary mt-2 w-full"
+        className="btn-accept-outline mt-2 w-full"
         onClick={() => void act(() => acceptProposals(projectId))}
         disabled={busy}
         title={
@@ -143,7 +145,7 @@ export function ProposalActions({
         {busy ? 'Working…' : willDelete > 0 ? `Accept all, replace ${willDelete}` : `Accept all ${proposedBoxes}`}
       </button>
       <button
-        className="btn mt-1.5 w-full bg-red-600 text-white hover:bg-red-700"
+        className="btn-reject-outline mt-1.5 w-full"
         onClick={() => void act(() => rejectProposals(projectId))}
         disabled={busy}
         title="Discard the model's boxes on EVERY image and keep yours"

@@ -72,29 +72,26 @@ def run_annotation_job(job_id: int) -> None:
 
 
 def _images_in_scope(db: Session, job: AnnotationJob) -> list[Image]:
-    """The images this job is allowed to touch.
+    """The images this job covers.
 
-    Scoping exists because an unscoped run was quietly destructive. It
-    re-annotated images already committed to the dataset; their boxes changed,
-    so they were unreviewed; so each bounced back to staging. Net effect:
-    annotating three new uploads emptied a 500-image dataset. No data was
-    deleted, but the dataset membership was — indistinguishable from deletion
-    if you're looking at the numbers.
-
-      staging      only images not in the dataset. The default, and it CANNOT
-                   disturb committed work.
-      unannotated  only images with zero boxes, wherever they live.
-      all          everything, including the dataset (which then re-stages).
+      selected     exactly the ids the request named.
+      unannotated  images with no ACCEPTED boxes — fill the gaps.
+      all          every image in the project.
     """
     query = select(Image).where(Image.project_id == job.project_id)
 
-    if job.scope == "staging":
-        query = query.where(Image.in_dataset.is_(False))
+    if job.image_ids_json:
+        ids = json.loads(job.image_ids_json)
+        # Still filtered by project_id above: an id from another project can't
+        # be annotated just because it appeared in the request body.
+        query = query.where(Image.id.in_(ids))
     elif job.scope == "unannotated":
-        # NOT IN over a correlated subquery: images that have no annotation
-        # rows at all. One query rather than fetching every image and counting
-        # its boxes in Python.
-        annotated = select(Annotation.image_id).distinct()
+        # Images with no accepted boxes. A pending proposal doesn't count as
+        # annotated — it isn't an annotation — so an image whose only boxes are
+        # last run's un-actioned suggestions is still a gap worth filling.
+        annotated = select(Annotation.image_id).where(
+            Annotation.proposed.is_(False)
+        ).distinct()
         query = query.where(Image.id.not_in(annotated))
     # "all" adds no filter.
 

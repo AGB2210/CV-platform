@@ -142,7 +142,6 @@ export interface DatasetImage {
   reviewed_count: number
   /** Pending model suggestions awaiting accept/reject. */
   proposed_count: number
-  in_dataset: boolean
   split: Split
 }
 
@@ -274,10 +273,12 @@ export interface AnnotationSummary {
   total_images: number
   annotated_images: number
   unannotated_images: number
+  /** ACCEPTED boxes only — proposals are counted separately. */
   total_boxes: number
   auto_boxes: number
   manual_boxes: number
-  reviewed_boxes: number
+  imported_boxes: number
+  proposed_boxes: number
 }
 
 export interface ExportFormatInfo {
@@ -292,13 +293,13 @@ export const listAnnotators = () => api.get<AnnotatorInfo[]>('/annotators')
 export const getDevice = () => api.get<DeviceInfo>('/device')
 export const listExportFormats = () => api.get<ExportFormatInfo[]>('/export-formats')
 
-export type JobScope = 'staging' | 'unannotated' | 'all'
+/** Used only when no explicit image selection is given. */
+export type JobScope = 'unannotated' | 'all'
 
 export interface AnnotatePreview {
   auto_boxes: number
   manual_boxes: number
   imported_boxes: number
-  images_in_dataset: number
   scope_counts: Record<JobScope, number>
 }
 
@@ -314,6 +315,8 @@ export const startAnnotation = (
     text_threshold?: number
     prompts?: Record<string, string>
     clear_existing?: boolean
+    /** Annotate exactly these. Takes precedence over `scope`. */
+    image_ids?: number[]
     scope?: JobScope
   },
 ) => api.post<AnnotationJob>(`/projects/${projectId}/annotate`, body)
@@ -341,10 +344,13 @@ export const updateAnnotation = (
 ) => api.patch<Annotation>(`/annotations/${id}`, body)
 export const deleteAnnotation = (id: number) => api.delete<void>(`/annotations/${id}`)
 
-// --- Dataset lifecycle & splits -------------------------------------------
+// --- Dataset stats & splits -----------------------------------------------
+//
+// The staging -> dataset commit is gone: accepting IS the commit, so there's no
+// CommitMode, no preview, and no dialog asking a question whose answer was
+// always yes. Every image is a dataset image; `split` is just a property.
 
 export type Split = 'train' | 'val' | 'test'
-export type CommitMode = 'append' | 'merge' | 'replace'
 
 export interface SplitCounts {
   train: number
@@ -353,52 +359,18 @@ export interface SplitCounts {
 }
 
 export interface DatasetStats {
-  staging_total: number
-  staging_annotated: number
-  staging_approved: number
-  dataset_total: number
+  total_images: number
+  annotated_images: number
+  unannotated_images: number
   splits: SplitCounts
   /** ACCEPTED boxes. Proposals are reported separately, not folded in. */
   total_boxes: number
-  reviewed_boxes: number
   proposed_boxes: number
   proposed_images: number
 }
 
-export interface CommitPreview {
-  staged_total: number
-  staged_approved: number
-  staged_unapproved: number
-  dataset_current: number
-  would_add: number
-  would_remove: number
-  dataset_after: number
-}
-
 export const getDatasetStats = (projectId: number) =>
   api.get<DatasetStats>(`/projects/${projectId}/dataset/stats`)
-
-// approveAll / approveImage are gone. With the proposal model, accepting IS the
-// confirmation — every path that creates an accepted box marks it reviewed, so
-// approving could only ever be a no-op.
-
-export const getCommitPreview = (projectId: number, mode: CommitMode) =>
-  api.get<CommitPreview>(`/projects/${projectId}/dataset/preview?mode=${mode}`)
-
-export const commitToDataset = (
-  projectId: number,
-  body: {
-    mode: CommitMode
-    train_pct?: number
-    val_pct?: number
-    test_pct?: number
-    assign_splits?: boolean
-  },
-) =>
-  api.post<{ committed: number; merged: number; removed: number; mode: string }>(
-    `/projects/${projectId}/dataset/commit`,
-    body,
-  )
 
 export const resplitDataset = (
   projectId: number,
@@ -407,6 +379,19 @@ export const resplitDataset = (
 
 export const setImageSplit = (imageId: number, split: Split) =>
   api.patch<{ id: number; split: string }>(`/images/${imageId}/split?split=${split}`)
+
+/** Move a chosen set of images to one split — the manual counterpart to the
+ *  percentage control, for when you know these specific images belong in val. */
+export const setSplitForImages = (projectId: number, imageIds: number[], split: Split) =>
+  api.post<SplitCounts>(`/projects/${projectId}/dataset/split-selected`, {
+    image_ids: imageIds,
+    split,
+  })
+
+export const bulkDeleteProjects = (projectIds: number[]) =>
+  api.post<{ deleted: number; not_found: number[] }>('/projects/bulk-delete', {
+    project_ids: projectIds,
+  })
 export const getAnnotationSummary = (projectId: number) =>
   api.get<AnnotationSummary>(`/projects/${projectId}/annotations/summary`)
 

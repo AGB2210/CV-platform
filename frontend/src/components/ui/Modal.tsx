@@ -134,7 +134,10 @@ export function ConfirmDialog({
         </>
       }
     >
-      <p className="text-sm text-gray-600">{message}</p>
+      {/* whitespace-pre-line so a message can list what it's about to delete on
+          separate lines. Without it the newlines collapse and the list runs
+          together into an unreadable paragraph. */}
+      <p className="whitespace-pre-line text-sm text-gray-600">{message}</p>
     </Modal>
   )
 }

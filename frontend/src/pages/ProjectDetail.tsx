@@ -1,6 +1,16 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { ArrowLeft, Eye, Plus, SquarePen, Tags, Trash2, Upload, X } from 'lucide-react'
+import {
+  ArrowLeft,
+  Eye,
+  Plus,
+  Shuffle,
+  SquarePen,
+  Tags,
+  Trash2,
+  Upload,
+  X,
+} from 'lucide-react'
 import { PageBody, PageHeader } from '@/components/layout/AppShell'
 import { ConfirmDialog } from '@/components/ui/Modal'
 import {
@@ -10,10 +20,13 @@ import {
   getProject,
   listClasses,
   listImages,
+  resplitDataset,
+  setSplitForImages,
   uploadImages,
   type DatasetImage,
   type Project,
   type ProjectClass,
+  type Split,
   type UploadResult,
 } from '@/lib/api'
 
@@ -28,6 +41,26 @@ export function ProjectDetail() {
   const [classes, setClasses] = useState<ProjectClass[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+
+  // Image selection drives two things: which images auto-annotate runs on, and
+  // which images a manual split assignment moves. Both needed a way to say
+  // "these ones" and there wasn't one.
+  const [selected, setSelected] = useState<Set<number>>(new Set())
+
+  function toggleImage(id: number) {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  function selectAll() {
+    setSelected((prev) =>
+      prev.size === images.length ? new Set() : new Set(images.map((i) => i.id)),
+    )
+  }
 
   const refresh = useCallback(async () => {
     try {
@@ -97,9 +130,22 @@ export function ProjectDetail() {
                   <Eye size={14} />
                   Visualize
                 </Link>
-                <Link to={`/projects/${projectId}/annotate`} className="btn-secondary">
+                {/* Carries the selection through in the URL, so Auto-annotate
+                    opens already scoped to the images you picked. Previously
+                    the only choices were coarse buckets — running the model on
+                    six specific images was impossible. */}
+                <Link
+                  to={
+                    selected.size > 0
+                      ? `/projects/${projectId}/annotate?images=${[...selected].join(',')}`
+                      : `/projects/${projectId}/annotate`
+                  }
+                  className="btn-secondary"
+                >
                   <Tags size={14} />
-                  Auto-annotate
+                  {selected.size > 0
+                    ? `Auto-annotate ${selected.size}`
+                    : 'Auto-annotate'}
                 </Link>
                 <Link to={`/projects/${projectId}/review`} className="btn-primary">
                   <SquarePen size={14} />
@@ -127,7 +173,26 @@ export function ProjectDetail() {
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-[1fr_280px]">
           <section>
             <UploadPanel projectId={projectId} onUploaded={refresh} />
-            <ImageGrid images={images} projectId={projectId} onDeleted={refresh} />
+            <ImageGrid
+              images={images}
+              projectId={projectId}
+              onDeleted={refresh}
+              selected={selected}
+              onToggle={toggleImage}
+              onSelectAll={selectAll}
+              onClearSelection={() => setSelected(new Set())}
+            />
+            {/* Split lives here, under the images, because it's a property OF
+                the images you're looking at — and because with the commit step
+                gone there is nowhere else it belongs. */}
+            {images.length > 0 && (
+              <SplitPanel
+                projectId={projectId}
+                images={images}
+                selected={selected}
+                onChanged={refresh}
+              />
+            )}
           </section>
 
           <ClassPanel projectId={projectId} classes={classes} onChanged={refresh} />
@@ -291,14 +356,212 @@ function UploadPanel({
   )
 }
 
+/**
+ * Train/val/test split, under the grid.
+ *
+ * It lives here because a split is a property OF these images — and because
+ * with the staging->dataset commit gone, the dialog that used to ask for
+ * percentages went with it. Setting it next to the thing it describes beats
+ * hiding it behind a modal you only meet at commit time.
+ *
+ * Two ways to set it, because there are genuinely two situations:
+ *   - by percentage, shuffled — the normal case, and reproducible (fixed seed)
+ *   - by selection — for when you KNOW these twelve images belong in val, and
+ *     a random shuffle is exactly the wrong tool
+ */
+function SplitPanel({
+  projectId,
+  images,
+  selected,
+  onChanged,
+}: {
+  projectId: number
+  images: DatasetImage[]
+  selected: Set<number>
+  onChanged: () => void
+}) {
+  const [trainPct, setTrainPct] = useState(80)
+  const [valPct, setValPct] = useState(20)
+  const [testPct, setTestPct] = useState(0)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const counts = useMemo(() => {
+    const c = { train: 0, val: 0, test: 0 } as Record<string, number>
+    for (const i of images) c[i.split] = (c[i.split] ?? 0) + 1
+    return c
+  }, [images])
+
+  const total = trainPct + valPct + testPct
+  const pctValid = total === 100
+
+  async function applyPercentages() {
+    setBusy(true)
+    setError(null)
+    try {
+      await resplitDataset(projectId, {
+        train_pct: trainPct / 100,
+        val_pct: valPct / 100,
+        test_pct: testPct / 100,
+      })
+      onChanged()
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function assignSelected(split: Split) {
+    setBusy(true)
+    setError(null)
+    try {
+      await setSplitForImages(projectId, [...selected], split)
+      onChanged()
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="card mt-4">
+      <div className="flex items-baseline justify-between border-b border-gray-200 px-4 py-3">
+        <div>
+          <h2 className="text-sm font-medium text-gray-900">Train / val / test split</h2>
+          <p className="text-xs text-gray-500">
+            Which images the trainer learns from, tunes on, and is scored against.
+          </p>
+        </div>
+        <div className="flex gap-3 text-xs tabular-nums">
+          <SplitStat label="train" value={counts.train ?? 0} className="text-gray-700" />
+          <SplitStat label="val" value={counts.val ?? 0} className="text-accent-700" />
+          <SplitStat label="test" value={counts.test ?? 0} className="text-amber-700" />
+        </div>
+      </div>
+
+      <div className="space-y-3 p-4">
+        {/* No validation set = no way to detect overfitting, and nothing else
+            in the app would ever tell you. */}
+        {(counts.val ?? 0) === 0 && images.length > 1 && (
+          <p className="rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs text-amber-900">
+            <span className="font-medium">No validation set.</span> Without one you'll
+            have no way to tell whether the model is learning or memorising.
+          </p>
+        )}
+
+        {selected.size > 0 ? (
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-gray-600">
+              Move <span className="font-medium">{selected.size} selected</span> to:
+            </span>
+            {(['train', 'val', 'test'] as const).map((s) => (
+              <button
+                key={s}
+                className="btn-secondary"
+                disabled={busy}
+                onClick={() => void assignSelected(s)}
+              >
+                {s}
+              </button>
+            ))}
+          </div>
+        ) : (
+          <>
+            <div className="flex flex-wrap items-end gap-2">
+              <PctField label="Train" value={trainPct} onChange={setTrainPct} />
+              <PctField label="Val" value={valPct} onChange={setValPct} />
+              <PctField label="Test" value={testPct} onChange={setTestPct} />
+              <button
+                className="btn-primary"
+                onClick={() => void applyPercentages()}
+                disabled={busy || !pctValid || images.length === 0}
+              >
+                <Shuffle size={13} />
+                {busy ? 'Splitting…' : 'Apply split'}
+              </button>
+            </div>
+            {!pctValid && (
+              <p className="text-xs text-red-600">Must sum to 100% — currently {total}%.</p>
+            )}
+            <p className="text-xs text-gray-400">
+              Shuffled with a fixed seed, so the same dataset splits the same way every
+              time. Select images above to assign them manually instead.
+            </p>
+          </>
+        )}
+
+        {error && (
+          <p className="rounded-md border border-red-200 bg-red-50 px-2.5 py-1.5 text-xs text-red-800">
+            {error}
+          </p>
+        )}
+      </div>
+    </div>
+  )
+}
+
+function SplitStat({
+  label,
+  value,
+  className,
+}: {
+  label: string
+  value: number
+  className: string
+}) {
+  return (
+    <span className={className}>
+      <span className="font-medium">{value}</span>{' '}
+      <span className="text-gray-400">{label}</span>
+    </span>
+  )
+}
+
+function PctField({
+  label,
+  value,
+  onChange,
+}: {
+  label: string
+  value: number
+  onChange: (v: number) => void
+}) {
+  return (
+    <label className="block">
+      <span className="mb-0.5 block text-xs text-gray-500">{label}</span>
+      <div className="flex w-20 items-center rounded-md border border-gray-300 focus-within:border-accent-500">
+        <input
+          type="number"
+          min={0}
+          max={100}
+          value={value}
+          onChange={(e) => onChange(Math.max(0, Math.min(100, Number(e.target.value))))}
+          className="w-full rounded-md px-2 py-1 text-sm tabular-nums focus:outline-none"
+        />
+        <span className="pr-2 text-xs text-gray-400">%</span>
+      </div>
+    </label>
+  )
+}
+
 function ImageGrid({
   images,
   projectId,
   onDeleted,
+  selected,
+  onToggle,
+  onSelectAll,
+  onClearSelection,
 }: {
   images: DatasetImage[]
   projectId: number
   onDeleted: () => void
+  selected: Set<number>
+  onToggle: (id: number) => void
+  onSelectAll: () => void
+  onClearSelection: () => void
 }) {
   const [pending, setPending] = useState<DatasetImage | null>(null)
   const [busy, setBusy] = useState(false)
@@ -325,9 +588,24 @@ function ImageGrid({
 
   return (
     <>
-      <div className="mb-2 flex items-baseline justify-between">
+      <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
         <h2 className="text-sm font-medium text-gray-900">Images</h2>
-        <span className="text-xs tabular-nums text-gray-500">{images.length} total</span>
+        <div className="flex items-center gap-3 text-xs">
+          {selected.size > 0 && (
+            <>
+              <span className="font-medium tabular-nums text-accent-800">
+                {selected.size} selected
+              </span>
+              <button className="text-gray-500 underline" onClick={onClearSelection}>
+                Clear
+              </button>
+            </>
+          )}
+          <button className="text-gray-500 underline" onClick={onSelectAll}>
+            {selected.size === images.length ? 'Deselect all' : 'Select all'}
+          </button>
+          <span className="tabular-nums text-gray-500">{images.length} total</span>
+        </div>
       </div>
 
       {/* Dense auto-fill grid: as many ~130px columns as fit. Deliberately
@@ -337,7 +615,12 @@ function ImageGrid({
         {images.map((img) => (
           <div
             key={img.id}
-            className="group relative overflow-hidden rounded border border-gray-200 bg-gray-100"
+            className={[
+              'group relative overflow-hidden rounded border bg-gray-100',
+              selected.has(img.id)
+                ? 'border-accent-500 ring-2 ring-accent-500'
+                : 'border-gray-200',
+            ].join(' ')}
           >
             {/* The tile links into review. The whole point of the grid is to
                 get you to the image you want to look at. */}
@@ -350,28 +633,69 @@ function ImageGrid({
                 // Native lazy loading — a 5,000-image dataset must not issue
                 // 5,000 requests on mount.
                 loading="lazy"
-                className="aspect-square w-full object-cover"
+                className={`aspect-square w-full object-cover ${
+                  selected.has(img.id) ? 'opacity-80' : ''
+                }`}
               />
             </Link>
+
+            {/* Checkbox sits ON the tile, always visible once anything is
+                selected — a hover-only checkbox makes multi-select a hunt.
+                Its own element, not the tile, so clicking the picture still
+                opens it: selecting and opening are different intents. */}
+            <label
+              className={[
+                'absolute bottom-1 left-1 flex h-5 w-5 cursor-pointer items-center justify-center rounded bg-white/90 shadow-sm transition-opacity',
+                selected.size > 0 || selected.has(img.id)
+                  ? 'opacity-100'
+                  : 'opacity-0 focus-within:opacity-100 group-hover:opacity-100',
+              ].join(' ')}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <input
+                type="checkbox"
+                checked={selected.has(img.id)}
+                onChange={() => onToggle(img.id)}
+                className="accent-accent-600"
+                aria-label={`Select ${img.original_filename}`}
+              />
+            </label>
+
+            {/* Split chip — every image has one now that staging is gone. */}
+            <span
+              className={[
+                'absolute bottom-1 right-1 rounded px-1 py-0.5 text-[10px] font-medium uppercase tracking-wide text-white',
+                img.split === 'val'
+                  ? 'bg-accent-600'
+                  : img.split === 'test'
+                    ? 'bg-amber-600'
+                    : 'bg-gray-700',
+              ].join(' ')}
+            >
+              {img.split}
+            </span>
 
             {/* Annotation state, visible without opening the image. A dataset is
                 mostly "which of these still needs work", and answering that from
                 the grid saves opening 500 images to find out. */}
-            {img.annotation_count > 0 && (
+            {(img.annotation_count > 0 || img.proposed_count > 0) && (
               <span
                 className={[
                   'absolute left-1 top-1 rounded px-1 py-0.5 text-[10px] font-medium tabular-nums shadow-sm',
-                  img.reviewed_count === img.annotation_count
-                    ? 'bg-green-600 text-white'
-                    : 'bg-amber-500 text-white',
+                  // Amber when the model is waiting on you. Green means done.
+                  img.proposed_count > 0
+                    ? 'bg-accent-600 text-white'
+                    : 'bg-green-700 text-white',
                 ].join(' ')}
                 title={
-                  img.reviewed_count === img.annotation_count
-                    ? `${img.annotation_count} boxes, all reviewed`
-                    : `${img.annotation_count} boxes, ${img.annotation_count - img.reviewed_count} unreviewed`
+                  img.proposed_count > 0
+                    ? `${img.annotation_count} box(es) · ${img.proposed_count} model proposal(s) awaiting review`
+                    : `${img.annotation_count} box(es)`
                 }
               >
-                {img.annotation_count}
+                {img.proposed_count > 0
+                  ? `${img.annotation_count}+${img.proposed_count}`
+                  : img.annotation_count}
               </span>
             )}
 

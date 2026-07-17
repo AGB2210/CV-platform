@@ -1,6 +1,14 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
-import { ArrowLeft, Cpu, Download, Play, Sparkles, SquarePen } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Link, useParams, useSearchParams } from 'react-router-dom'
+import {
+  ArrowLeft,
+  Cpu,
+  Download,
+  Image as ImageIcon,
+  Play,
+  Sparkles,
+  SquarePen,
+} from 'lucide-react'
 import { PageBody, PageHeader } from '@/components/layout/AppShell'
 import { StatusBadge, type Status } from '@/components/StatusBadge'
 import {
@@ -33,6 +41,22 @@ export function Annotate() {
   const { id } = useParams<{ id: string }>()
   const projectId = Number(id)
 
+  // Selection arrives as ?images=1,2,3 from the Dataset page.
+  //
+  // The URL rather than shared state: it survives a refresh, it's shareable,
+  // and it means the two pages don't need a store between them just to pass a
+  // list of ids one way.
+  const [searchParams] = useSearchParams()
+  const selectedIds = useMemo(() => {
+    const raw = searchParams.get('images')
+    if (!raw) return null
+    const ids = raw
+      .split(',')
+      .map((s) => Number(s.trim()))
+      .filter((n) => Number.isInteger(n) && n > 0)
+    return ids.length ? ids : null
+  }, [searchParams])
+
   const [annotators, setAnnotators] = useState<AnnotatorInfo[]>([])
   const [device, setDevice] = useState<DeviceInfo | null>(null)
   const [classes, setClasses] = useState<ProjectClass[]>([])
@@ -45,7 +69,7 @@ export function Annotate() {
   const [textThreshold, setTextThreshold] = useState(0.25)
   const [prompts, setPrompts] = useState<Record<string, string>>({})
   const [clearExisting, setClearExisting] = useState(false)
-  const [scope, setScope] = useState<JobScope>('staging')
+  const [scope, setScope] = useState<JobScope>('unannotated')
   const [pre, setPre] = useState<AnnotatePreview | null>(null)
 
   const [activeJob, setActiveJob] = useState<AnnotationJob | null>(null)
@@ -150,7 +174,8 @@ export function Annotate() {
         box_threshold: boxThreshold,
         text_threshold: textThreshold,
         clear_existing: clearExisting,
-        scope,
+        // A selection wins outright; scope is only the fallback.
+        ...(selectedIds ? { image_ids: selectedIds } : { scope }),
         // Only send non-empty overrides; the backend falls back to class names.
         prompts: Object.fromEntries(
           Object.entries(prompts).filter(([, v]) => v.trim()),
@@ -164,9 +189,10 @@ export function Annotate() {
 
   const selected = annotators.find((a) => a.key === modelKey)
   const isRunning = activeJob?.status === 'running' || activeJob?.status === 'queued'
-  // Gate on the SELECTED scope's count, not the project total: with everything
-  // committed, "Staging only" has nothing to do and the run would 400.
-  const scopeCount = pre?.scope_counts?.[scope] ?? 0
+  // Gate on what will ACTUALLY be processed — the selection if there is one,
+  // otherwise the chosen bucket's count. Using the project total would offer a
+  // run that immediately 400s because the bucket is empty.
+  const scopeCount = selectedIds ? selectedIds.length : (pre?.scope_counts?.[scope] ?? 0)
   const canRun = !isRunning && classes.length > 0 && scopeCount > 0
 
   if (loading) {
@@ -298,82 +324,88 @@ export function Annotate() {
             </div>
 
             {/* --- Which images ---
-                An unscoped run re-annotated images already committed to the
-                dataset, which bounced every one back to staging — so labelling
-                three new uploads silently emptied a whole dataset. Scoping to
-                staging by default makes the normal case incapable of touching
-                committed work. */}
+                A selection arriving from the Dataset page wins outright; the
+                buckets are only the fallback for "just do the obvious thing".
+                Before, coarse buckets were the ONLY option, so running the model
+                on six specific images was impossible. */}
             <div className="card">
               <div className="border-b border-gray-200 px-4 py-3">
                 <h2 className="text-sm font-medium text-gray-900">Which images</h2>
                 <p className="text-xs text-gray-500">
-                  Images already in your dataset are left alone unless you say otherwise.
+                  {selectedIds
+                    ? 'Running on the images you selected.'
+                    : 'Select images on the Dataset page to run on a specific subset.'}
                 </p>
               </div>
               <div className="space-y-1.5 p-4">
-                {(
-                  [
-                    {
-                      value: 'staging' as const,
-                      label: 'Staging only',
-                      blurb:
-                        'Images not yet added to the dataset. Your dataset is not touched.',
-                    },
-                    {
-                      value: 'unannotated' as const,
-                      label: 'Unannotated only',
-                      blurb: 'Images with no boxes yet. Fills gaps, changes nothing else.',
-                    },
-                    {
-                      value: 'all' as const,
-                      label: 'All images',
-                      blurb:
-                        'Re-annotate everything, including images already in the dataset.',
-                    },
-                  ]
-                ).map((o) => (
-                  <label
-                    key={o.value}
-                    className={`flex cursor-pointer gap-2 rounded-md border p-2 transition-colors ${
-                      scope === o.value
-                        ? 'border-accent-500 bg-accent-50'
-                        : 'border-gray-200 hover:bg-gray-50'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="scope"
-                      checked={scope === o.value}
-                      onChange={() => setScope(o.value)}
-                      disabled={isRunning}
-                      className="mt-0.5 accent-accent-600"
-                    />
-                    <span className="min-w-0 flex-1">
-                      <span className="flex items-baseline justify-between gap-2">
-                        <span className="text-sm font-medium text-gray-900">{o.label}</span>
-                        <span className="font-mono text-xs tabular-nums text-gray-500">
-                          {pre?.scope_counts?.[o.value] ?? 0} image
-                          {(pre?.scope_counts?.[o.value] ?? 0) === 1 ? '' : 's'}
-                        </span>
+                {selectedIds ? (
+                  <div className="flex items-center gap-2 rounded-md border border-accent-500 bg-accent-50 p-2">
+                    <ImageIcon size={14} className="shrink-0 text-accent-700" />
+                    <span className="min-w-0 flex-1 text-sm text-accent-900">
+                      <span className="font-medium">
+                        {selectedIds.length} selected image
+                        {selectedIds.length === 1 ? '' : 's'}
                       </span>
-                      <span className="block text-xs text-gray-500">{o.blurb}</span>
                     </span>
-                  </label>
-                ))}
-
-                {/* No dataset warning here any more, and that's deliberate: a
-                    run writes proposals, which don't change accepted
-                    annotations, so even scope="all" leaves the dataset exactly
-                    as it was. Keeping a scary warning that is no longer true
-                    would just teach people to ignore warnings. */}
-                {scope === 'all' && pre && pre.images_in_dataset > 0 && (
-                  <p className="rounded-md border border-gray-200 bg-gray-50 px-2.5 py-1.5 text-xs text-gray-600">
-                    Includes {pre.images_in_dataset} image
-                    {pre.images_in_dataset === 1 ? '' : 's'} already in your dataset. Their
-                    existing boxes are untouched — the model's output arrives as proposals
-                    you accept or reject in Annotate.
-                  </p>
+                    <Link
+                      to={`/projects/${projectId}`}
+                      className="shrink-0 text-xs font-medium text-accent-800 underline"
+                    >
+                      Change
+                    </Link>
+                  </div>
+                ) : (
+                  (
+                    [
+                      {
+                        value: 'unannotated' as const,
+                        label: 'Unannotated only',
+                        blurb: 'Images with no boxes yet. Fills the gaps.',
+                      },
+                      {
+                        value: 'all' as const,
+                        label: 'All images',
+                        blurb: 'Re-annotate everything in the project.',
+                      },
+                    ]
+                  ).map((o) => (
+                    <label
+                      key={o.value}
+                      className={`flex cursor-pointer gap-2 rounded-md border p-2 transition-colors ${
+                        scope === o.value
+                          ? 'border-accent-500 bg-accent-50'
+                          : 'border-gray-200 hover:bg-gray-50'
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="scope"
+                        checked={scope === o.value}
+                        onChange={() => setScope(o.value)}
+                        disabled={isRunning}
+                        className="mt-0.5 accent-accent-600"
+                      />
+                      <span className="min-w-0 flex-1">
+                        <span className="flex items-baseline justify-between gap-2">
+                          <span className="text-sm font-medium text-gray-900">
+                            {o.label}
+                          </span>
+                          <span className="font-mono text-xs tabular-nums text-gray-500">
+                            {pre?.scope_counts?.[o.value] ?? 0} image
+                            {(pre?.scope_counts?.[o.value] ?? 0) === 1 ? '' : 's'}
+                          </span>
+                        </span>
+                        <span className="block text-xs text-gray-500">{o.blurb}</span>
+                      </span>
+                    </label>
+                  ))
                 )}
+
+                {/* No dataset warning here, deliberately: a run writes
+                    proposals, which don't change accepted annotations, so even
+                    "all images" leaves your boxes exactly as they were. Keeping
+                    a scary warning that is no longer true would only teach
+                    people to ignore warnings. */}
               </div>
             </div>
 
@@ -458,13 +490,13 @@ export function Annotate() {
                 <span className="text-xs text-gray-500">Add a class first</span>
               )}
               {/* Say WHY it's disabled. "0 images" with a full grid on screen is
-                  baffling unless you know they're all committed. */}
+                  baffling unless you're told which bucket is empty. */}
               {classes.length > 0 && scopeCount === 0 && !isRunning && (
                 <span className="text-xs text-gray-500">
                   {(summary?.total_images ?? 0) === 0
                     ? 'Upload images first'
-                    : scope === 'staging'
-                      ? 'No staging images — everything is already in the dataset. Choose "All images" to re-annotate.'
+                    : scope === 'unannotated'
+                      ? 'Every image already has boxes. Choose "All images", or select specific ones on the Dataset page.'
                       : 'No images match this scope.'}
                 </span>
               )}
@@ -659,7 +691,15 @@ function SummaryCard({ summary }: { summary: AnnotationSummary }) {
         <Row label="Total boxes" value={summary.total_boxes} />
         <Row label="From model" value={summary.auto_boxes} />
         <Row label="Manual" value={summary.manual_boxes} />
-        <Row label="Reviewed" value={summary.reviewed_boxes} />
+        {summary.imported_boxes > 0 && (
+          <Row label="Imported" value={summary.imported_boxes} />
+        )}
+        {/* "Reviewed" is gone — accepting IS the confirmation, so it always
+            equalled Total boxes. Pending proposals are the number that
+            actually varies and that you can act on. */}
+        {summary.proposed_boxes > 0 && (
+          <Row label="Pending review" value={summary.proposed_boxes} />
+        )}
       </dl>
     </div>
   )

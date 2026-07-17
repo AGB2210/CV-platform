@@ -73,26 +73,35 @@ class Image(Base):
     height: Mapped[int] = mapped_column(Integer, nullable=False)
     size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
 
-    # --- Dataset lifecycle -------------------------------------------------
+    # --- Split --------------------------------------------------------------
     #
-    # Mirrors Roboflow's two-stage model, and it exists for a real reason:
-    # half-annotated images must not silently end up in a training run.
-    #
-    #   in_dataset=False  "staging"  — uploaded, being annotated/reviewed
-    #   in_dataset=True   "dataset"  — approved and trainable; exports read only these
-    #
-    # An imported COCO/Roboflow dataset skips staging entirely: it is already
-    # labelled ground truth, so there is nothing to review.
-    in_dataset: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False, index=True
-    )
-
-    # train | val | test. Defaults to train so a plain upload is never blocked
-    # on a decision the user hasn't been asked to make yet; the split control
-    # reassigns later. An import overrides this from the folder name.
+    # train | val | test. Defaults to train so an upload is never blocked on a
+    # decision nobody has been asked to make yet; the split control on the
+    # Dataset page reassigns later. An import overrides this from its folder.
     split: Mapped[str] = mapped_column(
         String(16), nullable=False, default=Split.TRAIN, index=True
     )
+
+    # NOTE: `in_dataset` is gone.
+    #
+    # It carried Roboflow's two-stage model — uploads landed in "staging" and a
+    # commit step moved approved images into the trainable dataset, to stop
+    # half-annotated work reaching a training run.
+    #
+    # The proposal model already does that job better: the model's output isn't
+    # part of your annotations until you accept it, so nothing unreviewed can
+    # leak in regardless. What staging added on top was a second gate that
+    # blocked you from using work you'd already accepted, and a commit dialog
+    # asking a question (merge/append/replace) whose answer was always "yes,
+    # obviously". Accepting IS the commit.
+    #
+    # The column still exists in the database — SQLite can't drop one without
+    # rebuilding the table, and it's harmless: nothing selects it, and its
+    # NOT NULL DEFAULT 0 keeps old rows and new inserts valid.
+    #
+    # Consequence worth knowing: an image with no boxes now exports as a
+    # negative example rather than being held back. That's usually correct, but
+    # it IS a behaviour change from "staging protects you".
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime, server_default=func.now(), nullable=False

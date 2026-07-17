@@ -1,8 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { Database, SquarePen } from 'lucide-react'
+import { SquarePen } from 'lucide-react'
 import { PageBody, PageHeader } from '@/components/layout/AppShell'
-import { CommitDialog } from '@/components/CommitDialog'
 import {
   getDatasetStats,
   listAnnotations,
@@ -36,13 +35,17 @@ export function Visualize() {
   /** image_id -> boxes. Fetched per image, then cached. */
   const [boxes, setBoxes] = useState<Record<number, Annotation[]>>({})
   const [stats, setStats] = useState<DatasetStats | null>(null)
-  const [showCommit, setShowCommit] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   // Filters
   const [splitFilter, setSplitFilter] = useState<'all' | Split>('all')
-  const [stageFilter, setStageFilter] = useState<'all' | 'dataset' | 'staging'>('all')
+  /** Annotation state, replacing the old staging/dataset filter — that
+   *  distinction no longer exists, but "which of these still need boxes" is the
+   *  question you actually ask while auditing. */
+  const [stateFilter, setStateFilter] = useState<'all' | 'annotated' | 'empty' | 'pending'>(
+    'all',
+  )
   const [classFilter, setClassFilter] = useState<number | 'all'>('all')
   const [size, setSize] = useState(220)
 
@@ -79,15 +82,17 @@ export function Visualize() {
     () =>
       images.filter((img) => {
         if (splitFilter !== 'all' && img.split !== splitFilter) return false
-        if (stageFilter === 'dataset' && !img.in_dataset) return false
-        if (stageFilter === 'staging' && img.in_dataset) return false
+        const accepted = (boxes[img.id] ?? []).filter((a) => !a.proposed)
+        const pending = (boxes[img.id] ?? []).filter((a) => a.proposed)
+        if (stateFilter === 'annotated' && accepted.length === 0) return false
+        if (stateFilter === 'empty' && accepted.length > 0) return false
+        if (stateFilter === 'pending' && pending.length === 0) return false
         if (classFilter !== 'all') {
-          const b = boxes[img.id] ?? []
-          if (!b.some((a) => a.category_id === classFilter)) return false
+          if (!accepted.some((a) => a.category_id === classFilter)) return false
         }
         return true
       }),
-    [images, boxes, splitFilter, stageFilter, classFilter],
+    [images, boxes, splitFilter, stateFilter, classFilter],
   )
 
   const totalBoxes = visible.reduce((n, i) => n + (boxes[i.id]?.length ?? 0), 0)
@@ -109,20 +114,9 @@ export function Visualize() {
         title="Visualize"
         description="Every image with its annotations drawn on"
         actions={
-          <>
-            {/* The commit action belongs wherever you're LOOKING at the
-                dataset, not only in the review screen. Seeing "staging" here
-                with no way to act on it was a dead end. */}
-            {stats && stats.staging_approved > 0 && (
-              <button className="btn-primary" onClick={() => setShowCommit(true)}>
-                <Database size={14} />
-                Add {stats.staging_approved} to dataset
-              </button>
-            )}
-            <Link to={`/projects/${projectId}`} className="btn-secondary">
-              Dataset
-            </Link>
-          </>
+          <Link to={`/projects/${projectId}`} className="btn-secondary">
+            Dataset
+          </Link>
         }
       />
       <PageBody>
@@ -132,41 +126,40 @@ export function Visualize() {
           </div>
         )}
 
-        {/* Explain "staging" rather than leaving a chip nobody asked for.
-            The label is meaningless without knowing what moves an image out of
-            it, and the answer differs depending on whether the boxes are
-            approved yet — so the banner states which case you're in and links
-            to the one action that resolves it. */}
-        {stats && stats.staging_total > 0 && (
-          <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs">
-            <span className="text-amber-900">
+        {/* A pending batch is the one thing worth interrupting for here: those
+            boxes aren't in the dataset and won't export until you decide. */}
+        {stats && stats.proposed_boxes > 0 && (
+          <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-accent-200 bg-accent-50 px-3 py-2 text-xs">
+            <span className="text-accent-900">
               <span className="font-medium">
-                {stats.staging_total} image{stats.staging_total === 1 ? '' : 's'} in
-                staging.
+                {stats.proposed_boxes} model proposal
+                {stats.proposed_boxes === 1 ? '' : 's'} across {stats.proposed_images}{' '}
+                image{stats.proposed_images === 1 ? '' : 's'}
               </span>{' '}
-              Staging images are not part of the trainable dataset and are excluded from
-              exports and training.
+              are pending — not part of your dataset, and not exported, until you accept
+              them.
             </span>
-
-            {stats.staging_approved > 0 ? (
-              <span className="text-amber-900">
-                {stats.staging_approved}{' '}
-                {stats.staging_approved === stats.staging_total ? 'are' : 'of them are'}{' '}
-                approved and ready to add.
-              </span>
-            ) : (
-              <span className="text-amber-900">
-                They still have unreviewed boxes — approve them first.
-              </span>
-            )}
-
             <Link
               to={`/projects/${projectId}/review`}
-              className="ml-auto inline-flex items-center gap-1 font-medium text-amber-900 underline underline-offset-2"
+              className="ml-auto inline-flex items-center gap-1 font-medium text-accent-900 underline underline-offset-2"
             >
               <SquarePen size={12} />
-              {stats.staging_approved > 0 ? 'Review' : 'Approve them'}
+              Review them
             </Link>
+          </div>
+        )}
+
+        {/* Unannotated images are worth flagging now that nothing holds them
+            back: with staging gone they export as negative examples, which is
+            usually right but should never be a surprise. */}
+        {stats && stats.unannotated_images > 0 && (
+          <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+            <span className="font-medium">
+              {stats.unannotated_images} image
+              {stats.unannotated_images === 1 ? '' : 's'} have no boxes.
+            </span>{' '}
+            They'll export as negative examples (scenes containing none of your
+            classes). Annotate or delete them if that isn't what you want.
           </div>
         )}
 
@@ -186,14 +179,17 @@ export function Visualize() {
             />
           </Filter>
 
-          <Filter label="Stage">
+          <Filter label="State">
             <Select
-              value={stageFilter}
-              onChange={(v) => setStageFilter(v as 'all' | 'dataset' | 'staging')}
+              value={stateFilter}
+              onChange={(v) =>
+                setStateFilter(v as 'all' | 'annotated' | 'empty' | 'pending')
+              }
               options={[
                 { value: 'all', label: 'All' },
-                { value: 'dataset', label: 'In dataset' },
-                { value: 'staging', label: 'Staging' },
+                { value: 'annotated', label: 'Annotated' },
+                { value: 'empty', label: 'No boxes' },
+                { value: 'pending', label: 'Pending review' },
               ]}
             />
           </Filter>
@@ -285,13 +281,6 @@ export function Visualize() {
           </div>
         )}
       </PageBody>
-
-      <CommitDialog
-        open={showCommit}
-        projectId={projectId}
-        onClose={() => setShowCommit(false)}
-        onCommitted={() => void load()}
-      />
     </>
   )
 }
@@ -383,25 +372,15 @@ function AnnotatedTile({
           ))}
         </svg>
 
-        {/* Split chip. Only meaningful once an image is in the dataset — a
-            staging image's split hasn't been decided yet. */}
-        {image.in_dataset && (
-          <span
-            className={`absolute left-1 top-1 rounded px-1 py-0.5 text-[10px] font-medium uppercase tracking-wide text-white ${
-              SPLIT_STYLE[image.split] ?? 'bg-gray-500'
-            }`}
-          >
-            {image.split}
-          </span>
-        )}
-        {!image.in_dataset && (
-          <span
-            className="absolute left-1 top-1 rounded bg-white/90 px-1 py-0.5 text-[10px] font-medium text-gray-600"
-            title="Not in the trainable dataset yet — approve its boxes, then use Add to dataset"
-          >
-            staging
-          </span>
-        )}
+        {/* Split chip. Every image is a dataset image now, so this always
+            applies — there is no staging state to be in instead. */}
+        <span
+          className={`absolute left-1 top-1 rounded px-1 py-0.5 text-[10px] font-medium uppercase tracking-wide text-white ${
+            SPLIT_STYLE[image.split] ?? 'bg-gray-500'
+          }`}
+        >
+          {image.split}
+        </span>
 
         <span className="absolute right-1 top-1 rounded bg-black/60 px-1 py-0.5 text-[10px] tabular-nums text-white">
           {boxes.length}

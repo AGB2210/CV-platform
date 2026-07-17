@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Plus, Trash2 } from 'lucide-react'
 import { PageBody, PageHeader } from '@/components/layout/AppShell'
 import { ConfirmDialog, Modal } from '@/components/ui/Modal'
 import {
+  bulkDeleteProjects,
   createProject,
   deleteProject,
   listProjects,
@@ -18,6 +19,41 @@ export function Projects() {
   const [showCreate, setShowCreate] = useState(false)
   const [pendingDelete, setPendingDelete] = useState<Project | null>(null)
   const [busy, setBusy] = useState(false)
+
+  // A Set, not an array: selection is membership, and Set gives O(1) `has` for
+  // the checkbox on every row instead of a scan per render.
+  const [selected, setSelected] = useState<Set<number>>(new Set())
+  const [confirmBulk, setConfirmBulk] = useState(false)
+
+  const selectedProjects = useMemo(
+    () => projects.filter((p) => selected.has(p.id)),
+    [projects, selected],
+  )
+
+  function toggle(id: number) {
+    setSelected((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const allSelected = projects.length > 0 && selected.size === projects.length
+
+  async function handleBulkDelete() {
+    setBusy(true)
+    try {
+      await bulkDeleteProjects([...selected])
+      setSelected(new Set())
+      setConfirmBulk(false)
+      await refresh()
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
 
   // useCallback so this identity is stable and can be both used in the effect
   // and handed to children as an explicit "reload now" without re-firing the
@@ -57,10 +93,21 @@ export function Projects() {
         title="Projects"
         description="Local computer vision projects on this machine"
         actions={
-          <button className="btn-primary" onClick={() => setShowCreate(true)}>
-            <Plus size={14} />
-            New project
-          </button>
+          <>
+            {/* Only appears with a selection. A permanent "Delete selected (0)"
+                is dead furniture, and a red button that does nothing most of
+                the time teaches people to ignore red. */}
+            {selected.size > 0 && (
+              <button className="btn-reject" onClick={() => setConfirmBulk(true)}>
+                <Trash2 size={14} />
+                Delete {selected.size} project{selected.size === 1 ? '' : 's'}
+              </button>
+            )}
+            <button className="btn-primary" onClick={() => setShowCreate(true)}>
+              <Plus size={14} />
+              New project
+            </button>
+          </>
         }
       />
       <PageBody>
@@ -94,6 +141,27 @@ export function Projects() {
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-gray-200 bg-gray-50 text-left">
+                  <th className="w-10 px-4 py-2">
+                    <input
+                      type="checkbox"
+                      checked={allSelected}
+                      // Indeterminate can't be set via an attribute — it's a DOM
+                      // property only. The ref callback is the standard way, and
+                      // without it a partial selection shows an empty box that
+                      // reads as "nothing selected".
+                      ref={(el) => {
+                        if (el)
+                          el.indeterminate = selected.size > 0 && !allSelected
+                      }}
+                      onChange={() =>
+                        setSelected(
+                          allSelected ? new Set() : new Set(projects.map((p) => p.id)),
+                        )
+                      }
+                      className="accent-accent-600"
+                      aria-label="Select all projects"
+                    />
+                  </th>
                   <th className="px-4 py-2 font-medium text-gray-600">Name</th>
                   <th className="px-4 py-2 font-medium text-gray-600">Type</th>
                   <th className="px-4 py-2 text-right font-medium text-gray-600">Images</th>
@@ -104,7 +172,21 @@ export function Projects() {
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {projects.map((p) => (
-                  <tr key={p.id} className="group hover:bg-gray-50">
+                  <tr
+                    key={p.id}
+                    className={`group ${
+                      selected.has(p.id) ? 'bg-accent-50' : 'hover:bg-gray-50'
+                    }`}
+                  >
+                    <td className="px-4 py-2">
+                      <input
+                        type="checkbox"
+                        checked={selected.has(p.id)}
+                        onChange={() => toggle(p.id)}
+                        className="accent-accent-600"
+                        aria-label={`Select ${p.name}`}
+                      />
+                    </td>
                     <td className="px-4 py-2">
                       <Link
                         to={`/projects/${p.id}`}
@@ -166,6 +248,28 @@ export function Projects() {
           pendingDelete
             ? `Delete "${pendingDelete.name}"? Its ${pendingDelete.image_count} image(s) and ${pendingDelete.class_count} class(es) will be permanently removed from disk. This cannot be undone.`
             : ''
+        }
+      />
+
+      {/* Totals the real cost across the selection. "Delete 6 projects?" is a
+          question you can't answer; "6 projects, 1,240 images" is. */}
+      <ConfirmDialog
+        open={confirmBulk}
+        onClose={() => setConfirmBulk(false)}
+        onConfirm={handleBulkDelete}
+        busy={busy}
+        title={`Delete ${selected.size} project${selected.size === 1 ? '' : 's'}`}
+        confirmLabel={`Delete ${selected.size}`}
+        message={
+          `Permanently delete ${selected.size} project${selected.size === 1 ? '' : 's'} — ` +
+          `${selectedProjects.reduce((n, p) => n + p.image_count, 0)} image(s) and ` +
+          `${selectedProjects.reduce((n, p) => n + p.class_count, 0)} class(es) — ` +
+          `and remove their files from disk? This cannot be undone.\n\n` +
+          selectedProjects
+            .slice(0, 8)
+            .map((p) => `• ${p.name}`)
+            .join('\n') +
+          (selectedProjects.length > 8 ? `\n…and ${selectedProjects.length - 8} more` : '')
         }
       />
     </>

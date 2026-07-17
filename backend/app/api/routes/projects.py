@@ -1,6 +1,7 @@
 """Project CRUD endpoints."""
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -153,3 +154,41 @@ def delete_project(project_id: int, db: Session = Depends(get_db)) -> None:
     db.commit()
 
     storage.delete_project_dir(project_id)
+
+
+class BulkDelete(BaseModel):
+    project_ids: list[int]
+
+
+@router.post("/bulk-delete")
+def bulk_delete(payload: BulkDelete, db: Session = Depends(get_db)) -> dict:
+    """Delete several projects at once.
+
+    POST, not DELETE: a request body on DELETE is legal but poorly supported —
+    some proxies strip it, and fetch() in older browsers ignores it. The
+    alternative, a comma-joined query string, breaks at a few hundred ids.
+
+    Same commit-then-unlink ordering as the single delete, for the same reason:
+    a crash mid-way leaves orphaned files (wasted disk) rather than DB rows
+    pointing at files that no longer exist (a grid full of broken images).
+
+    Skips ids that don't exist rather than 404-ing the whole batch. Deleting
+    something already gone is not a failure — the caller wanted it gone, and it
+    is. Failing the other nine because one id was stale would be hostile.
+    """
+    projects = list(
+        db.scalars(select(Project).where(Project.id.in_(payload.project_ids))).all()
+    )
+    deleted_ids = [p.id for p in projects]
+
+    for project in projects:
+        db.delete(project)
+    db.commit()
+
+    for project_id in deleted_ids:
+        storage.delete_project_dir(project_id)
+
+    return {
+        "deleted": len(deleted_ids),
+        "not_found": sorted(set(payload.project_ids) - set(deleted_ids)),
+    }

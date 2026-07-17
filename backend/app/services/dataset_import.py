@@ -321,11 +321,6 @@ def execute(db, project_id: int, plan: ImportPlan) -> ImportResult:
 
     # --- images + annotations ----------------------------------------------
     for group in plan.groups:
-        # An annotated group is ground truth: it goes straight into the dataset,
-        # skipping the staging/review queue. An unannotated group still needs a
-        # human, so it stays in staging even though we know its split.
-        in_dataset = group.coco is not None
-
         for name, path in group.image_files.items():
             try:
                 content = path.read_bytes()
@@ -342,7 +337,6 @@ def execute(db, project_id: int, plan: ImportPlan) -> ImportResult:
                 height=saved.height,
                 size_bytes=saved.size_bytes,
                 split=group.split,
-                in_dataset=in_dataset,
             )
             db.add(image)
             db.flush()

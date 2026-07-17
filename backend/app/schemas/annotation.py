@@ -79,14 +79,12 @@ class AnnotationUpdate(BaseModel):
 
 
 class JobScope:
-    """Which images an auto-annotation run touches."""
+    """Which images an auto-annotation run touches, when no explicit selection
+    is given."""
 
-    #: Only images not yet committed to the dataset. THE DEFAULT.
-    STAGING = "staging"
-    #: Only images with no boxes at all — fill in the gaps, touch nothing else.
+    #: Only images with no boxes at all — fill the gaps, touch nothing else.
     UNANNOTATED = "unannotated"
-    #: Everything, including committed dataset images. Those return to staging
-    #: for re-review, so this empties the dataset until you re-approve.
+    #: Every image in the project.
     ALL = "all"
 
 
@@ -95,17 +93,18 @@ class AnnotationJobCreate(BaseModel):
 
     model_key: str
 
-    #: Defaults to STAGING, and that default matters a great deal.
+    #: Annotate exactly these images. Takes precedence over `scope`.
     #:
-    #: Running over every image meant a run also re-annotated images already
-    #: committed to the dataset — and since changed boxes are unreviewed, each
-    #: one bounced back to staging. The effect was that annotating three new
-    #: uploads silently emptied a 500-image dataset. Nothing was deleted, but
-    #: the membership was, which looks identical from the outside.
+    #: This is the answer to "I want the model to look at these six, not all
+    #: 500". `scope` only ever offered coarse buckets, so the only way to run on
+    #: a subset was to not have the other images in the project.
     #:
-    #: Scoping to staging means the normal case — "I added images, label them"
-    #: — cannot touch the dataset at all.
-    scope: str = Field(default=JobScope.STAGING, pattern="^(staging|unannotated|all)$")
+    #: Nothing here can destroy work regardless: a run writes proposals, which
+    #: aren't annotations until accepted.
+    image_ids: list[int] | None = None
+
+    #: Used only when image_ids is absent.
+    scope: str = Field(default=JobScope.UNANNOTATED, pattern="^(unannotated|all)$")
 
     #: When True, delete EVERY existing box first — including human-drawn and
     #: imported ones — so the result is purely the model's output.

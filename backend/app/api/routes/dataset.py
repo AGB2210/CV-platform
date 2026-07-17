@@ -1,8 +1,16 @@
 """
-Staging -> dataset lifecycle, bulk approval, and train/val/test splits.
+Dataset stats and train/val/test splits.
 
-The two-stage model (see models/image.py) exists so that half-annotated images
-can't drift into a training run. This module owns the transition.
+WHAT USED TO BE HERE
+--------------------
+A staging -> dataset commit step (append/merge/replace), mirroring Roboflow.
+It's gone. The proposal model already prevents unreviewed model output from
+becoming an annotation, so staging was a SECOND gate that only ever blocked you
+from using work you had already accepted — and the commit dialog asked a
+question whose answer was always "yes, add it". Accepting is the commit.
+
+Every image is now a dataset image. `split` is just a property you set, and the
+control for it lives on the Dataset page next to the grid.
 """
 
 from __future__ import annotations
@@ -17,11 +25,8 @@ from app.api.routes.projects import get_project_or_404
 from app.database import get_db
 from app.models import Annotation, Image
 from app.models.image import Split
-from app.services import storage
 from app.schemas.dataset import (
-    CommitMode,
-    CommitPreview,
-    DatasetCommit,
+    BulkSplitRequest,
     DatasetStats,
     SplitCounts,
     SplitRequest,
@@ -30,47 +35,12 @@ from app.schemas.dataset import (
 router = APIRouter(tags=["dataset"])
 
 
-def _approved_image_ids(db: Session, project_id: int, staged_only: bool = True) -> set[int]:
-    """Images that are ready to join the dataset: they have at least one
-    ACCEPTED box.
-
-    This used to also require every box to be `reviewed`, back when
-    auto-annotation wrote boxes straight into your annotations and a human had
-    to confirm them one by one. The proposal model replaced that: a box only
-    becomes an annotation when you accept it, and accepting IS the confirmation.
-    Every path that creates an accepted box now marks it reviewed, so the extra
-    condition could never fail — it only risked blocking legacy rows written
-    under the old rules.
-
-    "At least one" still matters: an image with zero boxes would otherwise
-    satisfy the condition vacuously, and quietly promoting empty images would
-    teach the model these scenes contain nothing. That may be true — negative
-    examples are legitimate — but it should be a deliberate choice.
-
-    Proposals don't count. They can't make an image ready, and an un-actioned
-    proposal must not block one whose real boxes are fine: the batch decision is
-    separate from "does this image have annotations".
-    """
-    query = (
-        select(Annotation.image_id)
-        .join(Image, Image.id == Annotation.image_id)
-        .where(Image.project_id == project_id, Annotation.proposed.is_(False))
-        .distinct()
-    )
-    if staged_only:
-        query = query.where(Image.in_dataset.is_(False))
-
-    return {row[0] for row in db.execute(query).all()}
-
-
 @router.get("/projects/{project_id}/dataset/stats", response_model=DatasetStats)
 def dataset_stats(project_id: int, db: Session = Depends(get_db)) -> DatasetStats:
     """Counts for the Dataset page header."""
     get_project_or_404(project_id, db)
 
     images = list(db.scalars(select(Image).where(Image.project_id == project_id)).all())
-    staging = [i for i in images if not i.in_dataset]
-    committed = [i for i in images if i.in_dataset]
 
     annotated_ids = {
         row[0]
@@ -81,209 +51,35 @@ def dataset_stats(project_id: int, db: Session = Depends(get_db)) -> DatasetStat
             .distinct()
         ).all()
     }
-    approved = _approved_image_ids(db, project_id)
 
-    Integer = __import__("sqlalchemy").Integer
     boxes = db.execute(
         select(
-            # Every count here is of ACCEPTED boxes. Proposals get their own
-            # figure rather than being folded in — "you have 90 boxes" is a lie
-            # if 60 of them are suggestions nobody has looked at.
+            # Accepted boxes only. Proposals get their own figure rather than
+            # being folded in — "you have 90 boxes" is a lie if 60 are
+            # suggestions nobody has looked at.
             func.sum(case((Annotation.proposed.is_(False), 1), else_=0)),
-            func.sum(
-                case(
-                    ((Annotation.reviewed.is_(True)) & (Annotation.proposed.is_(False)), 1),
-                    else_=0,
-                )
-            ),
             func.sum(case((Annotation.proposed.is_(True), 1), else_=0)),
-            func.count(func.distinct(case((Annotation.proposed.is_(True), Annotation.image_id)))),
+            func.count(
+                func.distinct(case((Annotation.proposed.is_(True), Annotation.image_id)))
+            ),
         )
         .join(Image, Image.id == Annotation.image_id)
         .where(Image.project_id == project_id)
     ).one()
 
     counts = SplitCounts()
-    for image in committed:
+    for image in images:
         setattr(counts, image.split, getattr(counts, image.split, 0) + 1)
 
     return DatasetStats(
-        staging_total=len(staging),
-        staging_annotated=sum(1 for i in staging if i.id in annotated_ids),
-        staging_approved=len(approved),
-        dataset_total=len(committed),
+        total_images=len(images),
+        annotated_images=len(annotated_ids),
+        unannotated_images=len(images) - len(annotated_ids),
         splits=counts,
         total_boxes=boxes[0] or 0,
-        reviewed_boxes=boxes[1] or 0,
-        proposed_boxes=boxes[2] or 0,
-        proposed_images=boxes[3] or 0,
+        proposed_boxes=boxes[1] or 0,
+        proposed_images=boxes[2] or 0,
     )
-
-
-@router.get("/projects/{project_id}/dataset/preview", response_model=CommitPreview)
-def commit_preview(
-    project_id: int, mode: str = CommitMode.APPEND, db: Session = Depends(get_db)
-) -> CommitPreview:
-    """What a commit in this mode would do. Read-only.
-
-    Exists because `replace` deletes data. Showing the numbers before the click
-    is the difference between an informed decision and a bug report.
-    """
-    get_project_or_404(project_id, db)
-
-    staged = list(
-        db.scalars(
-            select(Image).where(
-                Image.project_id == project_id, Image.in_dataset.is_(False)
-            )
-        ).all()
-    )
-    current = db.scalar(
-        select(func.count(Image.id)).where(
-            Image.project_id == project_id, Image.in_dataset.is_(True)
-        )
-    ) or 0
-
-    approved = _approved_image_ids(db, project_id)
-    incoming = [i for i in staged if i.id in approved]
-    would_add = len(incoming)
-
-    if mode == CommitMode.REPLACE:
-        would_remove = current
-    elif mode == CommitMode.MERGE:
-        # Merge deletes too — just only the images it supersedes by name. That
-        # number has to be on screen before the click, or "merge" reads as
-        # harmless and quietly removes data.
-        dataset_names = {
-            i.original_filename
-            for i in db.scalars(
-                select(Image).where(
-                    Image.project_id == project_id, Image.in_dataset.is_(True)
-                )
-            ).all()
-        }
-        would_remove = sum(
-            1 for i in incoming if i.original_filename in dataset_names
-        )
-    else:
-        would_remove = 0
-
-    return CommitPreview(
-        staged_total=len(staged),
-        staged_approved=would_add,
-        staged_unapproved=len(staged) - would_add,
-        dataset_current=current,
-        would_add=would_add,
-        would_remove=would_remove,
-        dataset_after=current - would_remove + would_add,
-    )
-
-
-@router.post("/projects/{project_id}/dataset/commit")
-def commit_to_dataset(
-    project_id: int, payload: DatasetCommit, db: Session = Depends(get_db)
-) -> dict:
-    """Move approved staging images into the trainable dataset.
-
-    Modes:
-      append  — add them; existing dataset untouched. A duplicate filename
-                simply means two images with the same name.
-      merge   — upsert by filename. A staged image whose name already exists in
-                the dataset SUPERSEDES that image: the old one and its boxes are
-                deleted. Names that don't collide are appended. This is the
-                "I re-uploaded a corrected batch" case.
-      replace — the staged images become the whole dataset; everything currently
-                in it is DELETED, collision or not.
-
-    Only APPROVED images move. An image with an unreviewed box is, by
-    definition, not something you've said is correct — and the entire point of
-    the two-stage model is that "not yet checked" can't leak into training.
-
-    """
-    get_project_or_404(project_id, db)
-
-    total = payload.train_pct + payload.val_pct + payload.test_pct
-    if payload.assign_splits and abs(total - 1.0) > 0.001:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            f"Split percentages must sum to 1.0, got {total:.2f}",
-        )
-
-    approved = _approved_image_ids(db, project_id)
-    staged = [
-        i
-        for i in db.scalars(
-            select(Image).where(
-                Image.project_id == project_id, Image.in_dataset.is_(False)
-            )
-        ).all()
-        if i.id in approved
-    ]
-
-    if not staged:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            "No approved images to commit. Review and approve images first.",
-        )
-
-    removed = 0
-    merged = 0
-
-    if payload.mode == CommitMode.REPLACE:
-        for image in db.scalars(
-            select(Image).where(
-                Image.project_id == project_id, Image.in_dataset.is_(True)
-            )
-        ).all():
-            db.delete(image)
-            removed += 1
-
-    elif payload.mode == CommitMode.MERGE:
-        # Upsert by filename: the incoming version WINS, the old one goes.
-        #
-        # A filename collision means the same picture arrived twice, and the one
-        # you just reviewed and approved is the one you meant. Keeping the old
-        # copy and folding the new boxes into it (the previous behaviour) left
-        # you with BOTH sets of boxes on one image — the stale ones you were
-        # trying to replace, plus the new ones. That's not a merge, it's a pile.
-        #
-        # Scoped to name collisions, which is the whole difference from
-        # `replace`: dataset images that this batch doesn't mention are left
-        # completely alone.
-        by_name = {
-            i.original_filename: i
-            for i in db.scalars(
-                select(Image).where(
-                    Image.project_id == project_id, Image.in_dataset.is_(True)
-                )
-            ).all()
-        }
-        for image in staged:
-            superseded = by_name.get(image.original_filename)
-            if superseded is None:
-                continue  # no collision — plain append
-            # Cascade takes the old image's annotations with it, and
-            # delete_image_file removes the bytes from disk so a superseded
-            # copy doesn't sit there forever.
-            project_id_, filename_ = superseded.project_id, superseded.filename
-            db.delete(superseded)
-            db.flush()
-            storage.delete_image_file(project_id_, filename_)
-            merged += 1
-
-    if payload.assign_splits and staged:
-        _assign_splits(staged, payload.train_pct, payload.val_pct, payload.test_pct)
-
-    for image in staged:
-        image.in_dataset = True
-
-    db.commit()
-    return {
-        "committed": len(staged),
-        "merged": merged,
-        "removed": removed,
-        "mode": payload.mode,
-    }
 
 
 def _assign_splits(
@@ -291,8 +87,7 @@ def _assign_splits(
 ) -> None:
     """Randomly partition images by percentage.
 
-    Shuffled with a FIXED seed. Two reasons that's the right call over
-    `random.shuffle` with system entropy:
+    Shuffled with a FIXED seed. Two reasons that beats system entropy:
       1. Reproducibility — the same dataset splits the same way every run, so a
          model comparison isn't confounded by a different split.
       2. Debuggability — "why is image 47 in val?" has an answer.
@@ -305,13 +100,9 @@ def _assign_splits(
     random.Random(42).shuffle(shuffled)
     n = len(shuffled)
 
-    # round(), NOT int().
-    #
-    # int() truncates, which silently annihilates a small split: asking for
-    # 80/20 on 3 images gives int(3*0.2) == 0 val images — an empty validation
-    # set, which is the exact failure this app warns users about elsewhere. It
-    # only shows up on small datasets, so it would survive every test on a
-    # realistic one and then bite someone trying the tool with 5 images.
+    # round(), NOT int(). int() truncates, which silently annihilates a small
+    # split: 80/20 on 3 images gives int(3*0.2) == 0 val images — an empty
+    # validation set, which is the exact failure this app warns about elsewhere.
     n_val = round(n * val_pct)
     n_test = round(n * test_pct)
 
@@ -336,11 +127,18 @@ def _assign_splits(
             image.split = Split.TEST
 
 
+def _split_counts(db: Session, project_id: int) -> SplitCounts:
+    counts = SplitCounts()
+    for image in db.scalars(select(Image).where(Image.project_id == project_id)).all():
+        setattr(counts, image.split, getattr(counts, image.split, 0) + 1)
+    return counts
+
+
 @router.post("/projects/{project_id}/dataset/split", response_model=SplitCounts)
 def resplit(
     project_id: int, payload: SplitRequest, db: Session = Depends(get_db)
 ) -> SplitCounts:
-    """Reassign train/val/test across the dataset by percentage.
+    """Reassign train/val/test across the project by percentage.
 
     `only_train=True` handles the common import case: a dataset arrives with
     train/ and test/ but no valid/, so a validation set has to be carved out of
@@ -355,27 +153,17 @@ def resplit(
             f"Split percentages must sum to 1.0, got {total:.2f}",
         )
 
-    query = select(Image).where(
-        Image.project_id == project_id, Image.in_dataset.is_(True)
-    )
+    query = select(Image).where(Image.project_id == project_id)
     if payload.only_train:
         query = query.where(Image.split == Split.TRAIN)
 
     images = list(db.scalars(query).all())
     if not images:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST, "No dataset images to split."
-        )
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "No images to split.")
 
     _assign_splits(images, payload.train_pct, payload.val_pct, payload.test_pct)
     db.commit()
-
-    counts = SplitCounts()
-    for image in db.scalars(
-        select(Image).where(Image.project_id == project_id, Image.in_dataset.is_(True))
-    ).all():
-        setattr(counts, image.split, getattr(counts, image.split, 0) + 1)
-    return counts
+    return _split_counts(db, project_id)
 
 
 @router.patch("/images/{image_id}/split")
@@ -392,3 +180,37 @@ def set_split(image_id: int, split: str, db: Session = Depends(get_db)) -> dict:
     image.split = split
     db.commit()
     return {"id": image.id, "split": image.split}
+
+
+@router.post("/projects/{project_id}/dataset/split-selected", response_model=SplitCounts)
+def set_split_bulk(
+    project_id: int, payload: BulkSplitRequest, db: Session = Depends(get_db)
+) -> SplitCounts:
+    """Move a chosen set of images to one split.
+
+    The manual counterpart to the percentage control: sometimes you know these
+    specific twelve images belong in val, and a random shuffle is exactly the
+    wrong tool.
+    """
+    get_project_or_404(project_id, db)
+    if payload.split not in Split.ALL:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"Invalid split {payload.split!r}. Must be one of {Split.ALL}.",
+        )
+    if not payload.image_ids:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "No images selected.")
+
+    # Scoped to this project: an id from another project must not be moved just
+    # because it was in the request body.
+    images = list(
+        db.scalars(
+            select(Image).where(
+                Image.project_id == project_id, Image.id.in_(payload.image_ids)
+            )
+        ).all()
+    )
+    for image in images:
+        image.split = payload.split
+    db.commit()
+    return _split_counts(db, project_id)

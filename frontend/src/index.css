@@ -104,6 +104,44 @@
   @apply btn border border-gray-300 bg-white text-gray-700 hover:bg-gray-50;
 }
 
+/* --- Accept / reject -------------------------------------------------------
+ * These appear TWICE on the review screen at two different scopes — this image
+ * vs the whole model batch — and when both pairs were solid red/blue the two
+ * scopes were indistinguishable at a glance. Colour alone was carrying no
+ * information, because it was identical either way.
+ *
+ * So two dimensions, each carrying one fact:
+ *
+ *   HUE   what it does      green = accept, red = reject
+ *   FILL  what it acts on   solid = this image, outlined = the whole batch
+ *
+ * Solid reads as heavier, and gets the frequent per-image action you click a
+ * hundred times. Outlined reads as lighter and rarer, which is what a
+ * batch-wide decision should be — visually distinct without being a second
+ * competing solid block shouting from the panel.
+ *
+ * Accept is GREEN, not the app accent blue: accept/reject is a semantic pair,
+ * and green/red reads as yes/no instantly. The accent stays reserved for
+ * neutral primary actions ("New project", "Run") so it keeps meaning "the main
+ * thing here" rather than "yes".
+ */
+
+@utility btn-accept {
+  @apply btn bg-green-700 text-white hover:bg-green-800;
+}
+
+@utility btn-reject {
+  @apply btn bg-red-600 text-white hover:bg-red-700;
+}
+
+@utility btn-accept-outline {
+  @apply btn border border-green-700 bg-white text-green-800 hover:bg-green-50;
+}
+
+@utility btn-reject-outline {
+  @apply btn border border-red-600 bg-white text-red-700 hover:bg-red-50;
+}
+
 @utility card {
   @apply rounded-lg border border-gray-200 bg-white;
 }

@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
 import { Check, ChevronLeft, ChevronRight, Database, Trash2, X } from 'lucide-react'
 import { AnnotationCanvas } from '@/components/AnnotationCanvas'
-import { CommitDialog } from '@/components/CommitDialog'
 import { ProposalActions, ProposalBanner } from '@/components/ProposalBar'
 import {
   acceptImageProposals,
@@ -47,7 +46,6 @@ export function Review() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [stats, setStats] = useState<DatasetStats | null>(null)
-  const [showCommit, setShowCommit] = useState(false)
   // Owned here, not inside the two proposal components — they'd otherwise fetch
   // the same preview twice and could disagree with each other mid-flight.
   const [proposalPreview, setProposalPreview] = useState<ProposalPreview | null>(null)
@@ -418,11 +416,10 @@ export function Review() {
                 <span className="hidden text-[11px] uppercase tracking-wide text-gray-400 sm:inline">
                   This image
                 </span>
-                {/* Red = reject, blue = accept, identically to the batch bar
-                    above. The colour has to mean the same thing in both places
-                    or it means nothing. */}
+                {/* SOLID — the batch pair in the panel is outlined. Hue says
+                    what (green accept / red reject), fill says which scope. */}
                 <button
-                  className="btn bg-red-600 text-white hover:bg-red-700"
+                  className="btn-reject"
                   onClick={() => void handleRejectImage()}
                   title="Discard THIS image's model boxes and keep your own. Other images are unaffected."
                 >
@@ -430,7 +427,7 @@ export function Review() {
                   Reject image
                 </button>
                 <button
-                  className="btn-primary"
+                  className="btn-accept"
                   onClick={() => void handleAcceptImage()}
                   title="Keep THIS image's model boxes, replacing your own. Other images are unaffected."
                 >
@@ -490,48 +487,35 @@ export function Review() {
           />
         )}
 
-        {/* Project-scoped block, kept visually distinct from the per-image
-            controls below it. This is where you leave the annotation loop.
-
-            The "Progress N/M" bar and "Approve all" button used to live here.
-            Both are gone: with the proposal model, accepting IS the
-            confirmation, so every accepted box is reviewed by construction. The
-            bar sat permanently at 100% and the button permanently read "All
-            approved" — furniture that could never change state, next to a click
-            that could never do anything. */}
+        {/* The "Add to dataset" block that used to live here is gone along with
+            the staging model. Accepting a box puts it in the dataset — there is
+            nothing left to commit, and no dialog asking a question whose answer
+            was always yes. Splits are set on the Dataset page. */}
         {stats && (
           <div className="border-b border-gray-200 bg-gray-50 p-3">
             <p className="label-eyebrow mb-1.5">Dataset</p>
             <dl className="space-y-1 text-xs">
               <div className="flex justify-between">
-                <dt className="text-gray-500">Annotated, staged</dt>
+                <dt className="text-gray-500">Annotated</dt>
                 <dd className="font-mono tabular-nums text-gray-900">
-                  {stats.staging_approved}
+                  {stats.annotated_images}/{stats.total_images}
                 </dd>
               </div>
               <div className="flex justify-between">
-                <dt className="text-gray-500">In dataset</dt>
+                <dt className="text-gray-500">Boxes</dt>
                 <dd className="font-mono tabular-nums text-gray-900">
-                  {stats.dataset_total}
+                  {stats.total_boxes}
                 </dd>
               </div>
             </dl>
-
-            {stats.staging_approved > 0 ? (
-              <button
-                className="btn-primary mt-2 w-full"
-                onClick={() => setShowCommit(true)}
-              >
-                <Database size={13} />
-                Add {stats.staging_approved} to dataset
-              </button>
-            ) : (
-              <p className="mt-2 text-[11px] text-gray-400">
-                {stats.staging_total > 0
-                  ? `${stats.staging_total} staged image(s) have no boxes yet. Annotate them to add them to the dataset.`
-                  : 'Nothing staged.'}
-              </p>
-            )}
+            <Link
+              to={`/projects/${projectId}`}
+              className="btn-secondary mt-2 w-full"
+              title="Set the train/val/test split on the Dataset page"
+            >
+              <Database size={13} />
+              Dataset & split
+            </Link>
           </div>
         )}
 
@@ -649,14 +633,6 @@ export function Review() {
           )}
         </div>
       </aside>
-
-      <CommitDialog
-        open={showCommit}
-        projectId={projectId}
-        onClose={() => setShowCommit(false)}
-        onCommitted={() => void refreshCounts()}
-      />
-
     </div>
   )
 }

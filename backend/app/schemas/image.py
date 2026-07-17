@@ -19,8 +19,6 @@ class ImageRead(BaseModel):
     size_bytes: int
     created_at: datetime
 
-    #: False = staging (being annotated); True = committed to the trainable set.
-    in_dataset: bool = False
     #: train | val | test
     split: str = "train"
 

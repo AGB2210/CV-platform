@@ -82,10 +82,14 @@ class AnnotationJob(Base):
     clear_existing: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False
     )
-    # staging | unannotated | all — which images this run was allowed to touch.
-    # Recorded because it determines whether the run could have disturbed the
-    # committed dataset, which is the first question when one looks different.
-    scope: Mapped[str] = mapped_column(String(16), nullable=False, default="staging")
+    # "selected" | "unannotated" | "all" — which images this run covered.
+    # Recorded so job history can answer "what did that run actually look at".
+    scope: Mapped[str] = mapped_column(String(16), nullable=False, default="unannotated")
+    # Explicit image ids, JSON-encoded, when the run was scoped to a selection.
+    # Text rather than a relation: it's an immutable record of what the job was
+    # asked to do, not a live association — and it must survive those images
+    # being deleted.
+    image_ids_json: Mapped[str | None] = mapped_column(Text, default=None)
     # JSON blob of {class_name: prompt}. Stored as Text and serialised by hand
     # rather than using a JSON column: SQLite's JSON support is fine, but we
     # only ever read this whole-value, so a column type buys nothing.

@@ -100,17 +100,36 @@ def start_annotation(
             f"Job {active.id} is already {active.status} for this project",
         )
 
-    counts = _scope_counts(db, project_id)
-    image_count = counts.get(payload.scope, 0)
-    if image_count == 0:
-        # Name the scope in the error. "No images to annotate" is baffling when
-        # you can see 500 of them on screen — they're just all committed.
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            f"No images match scope '{payload.scope}'. "
-            f"Available — staging: {counts['staging']}, "
-            f"unannotated: {counts['unannotated']}, all: {counts['all']}.",
+    if payload.image_ids:
+        # Count within THIS project — an id from elsewhere shouldn't inflate the
+        # total and then quietly annotate nothing.
+        image_count = len(
+            db.scalars(
+                select(Image.id).where(
+                    Image.project_id == project_id, Image.id.in_(payload.image_ids)
+                )
+            ).all()
         )
+        scope_label = "selected"
+        if image_count == 0:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "None of the selected images belong to this project.",
+            )
+    else:
+        counts = _scope_counts(db, project_id)
+        image_count = counts.get(payload.scope, 0)
+        scope_label = payload.scope
+        if image_count == 0:
+            # Name the scope in the error. "No images to annotate" is baffling
+            # when you can see 500 of them on screen — they're just all
+            # annotated already.
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"No images match scope '{payload.scope}'. "
+                f"Available — unannotated: {counts['unannotated']}, "
+                f"all: {counts['all']}. Select images to annotate a subset.",
+            )
 
     job = AnnotationJob(
         project_id=project_id,
@@ -120,7 +139,8 @@ def start_annotation(
         box_threshold=payload.box_threshold,
         text_threshold=payload.text_threshold,
         clear_existing=payload.clear_existing,
-        scope=payload.scope,
+        scope=scope_label,
+        image_ids_json=json.dumps(payload.image_ids) if payload.image_ids else None,
         prompts_json=json.dumps(payload.prompts) if payload.prompts else None,
     )
     db.add(job)
@@ -309,53 +329,42 @@ def _scope_counts(db: Session, project_id: int) -> dict:
     total = db.scalar(
         select(func.count(Image.id)).where(Image.project_id == project_id)
     ) or 0
-    staging = db.scalar(
-        select(func.count(Image.id)).where(
-            Image.project_id == project_id, Image.in_dataset.is_(False)
-        )
-    ) or 0
-    annotated = select(Annotation.image_id).distinct()
+    # "Annotated" means has an ACCEPTED box. A pending proposal doesn't count —
+    # it isn't an annotation — so an image holding only last run's un-actioned
+    # suggestions is still a gap.
+    annotated = select(Annotation.image_id).where(Annotation.proposed.is_(False)).distinct()
     unannotated = db.scalar(
         select(func.count(Image.id)).where(
             Image.project_id == project_id, Image.id.not_in(annotated)
         )
     ) or 0
-    return {"staging": staging, "unannotated": unannotated, "all": total}
+    return {"unannotated": unannotated, "all": total}
 
 
 @router.get("/projects/{project_id}/annotate/preview")
 def annotate_preview(project_id: int, db: Session = Depends(get_db)) -> dict:
-    """What a run would touch and destroy, so the UI can say so before the click.
+    """What a run would touch, so the UI can say so before the click.
 
-    Auto-annotation is not additive — it clears prior output before writing new
-    output, and under scope="all" it also re-stages committed images. Without
-    this, the only way to discover that a run wiped your 40 hand-drawn boxes or
-    emptied your dataset is to notice afterwards.
+    A run writes proposals and can't destroy anything by itself — but
+    `clear_existing` deletes your boxes outright, and that count has to be on
+    screen before the tick, not discovered afterwards.
     """
     get_project_or_404(project_id, db)
 
     rows = db.execute(
         select(Annotation.source, func.count(Annotation.id))
         .join(Image, Image.id == Annotation.image_id)
-        .where(Image.project_id == project_id)
+        .where(Image.project_id == project_id, Annotation.proposed.is_(False))
         .group_by(Annotation.source)
     ).all()
     by_source = {source: n for source, n in rows}
 
-    in_dataset = db.scalar(
-        select(func.count(Image.id)).where(
-            Image.project_id == project_id, Image.in_dataset.is_(True)
-        )
-    ) or 0
-
     return {
         "auto_boxes": by_source.get("auto", 0),
-        # These two survive a default run and are destroyed by clear_existing —
-        # the number the user actually needs before ticking that box.
+        # These two are destroyed by clear_existing — the number the user
+        # actually needs before ticking that box.
         "manual_boxes": by_source.get("manual", 0),
         "imported_boxes": by_source.get("imported", 0),
-        # Only scope="all" puts these at risk of re-staging.
-        "images_in_dataset": in_dataset,
         # Drives the scope selector's per-option counts.
         "scope_counts": _scope_counts(db, project_id),
     }
@@ -370,7 +379,7 @@ def annotations_summary(project_id: int, db: Session = Depends(get_db)) -> dict:
     """
     get_project_or_404(project_id, db)
     rows = db.execute(
-        select(Annotation.source, Annotation.reviewed, Annotation.image_id)
+        select(Annotation.source, Annotation.proposed, Annotation.image_id)
         .join(Image, Image.id == Annotation.image_id)
         .where(Image.project_id == project_id)
     ).all()
@@ -378,15 +387,25 @@ def annotations_summary(project_id: int, db: Session = Depends(get_db)) -> dict:
     total_images = len(
         db.scalars(select(Image.id).where(Image.project_id == project_id)).all()
     )
-    annotated_image_ids = {r.image_id for r in rows}
+
+    # Proposals are excluded from every "annotated" figure — they're the model's
+    # suggestions, not your annotations. Counting them made an image whose only
+    # boxes were un-actioned suggestions read as done.
+    accepted = [r for r in rows if not r.proposed]
+    pending = [r for r in rows if r.proposed]
+    annotated_image_ids = {r.image_id for r in accepted}
+
     return {
         "total_images": total_images,
         "annotated_images": len(annotated_image_ids),
         "unannotated_images": total_images - len(annotated_image_ids),
-        "total_boxes": len(rows),
-        "auto_boxes": sum(1 for r in rows if r.source == "auto"),
-        "manual_boxes": sum(1 for r in rows if r.source == "manual"),
-        "reviewed_boxes": sum(1 for r in rows if r.reviewed),
+        "total_boxes": len(accepted),
+        "auto_boxes": sum(1 for r in accepted if r.source == "auto"),
+        "manual_boxes": sum(1 for r in accepted if r.source == "manual"),
+        "imported_boxes": sum(1 for r in accepted if r.source == "imported"),
+        # `reviewed_boxes` is gone: accepting IS the confirmation, so it was
+        # always equal to total_boxes.
+        "proposed_boxes": len(pending),
     }
 
 
