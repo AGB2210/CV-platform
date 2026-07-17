@@ -422,21 +422,28 @@ export function Review() {
                 boxes that aren't yours yet. */}
             {reviewingBatch ? (
               <>
+                {/* Scoped to the CURRENT image. The bar above does the whole
+                    batch and says "all" — this pair says "this image", because
+                    two identical "Reject" buttons with different blast radii is
+                    a trap. */}
+                <span className="hidden text-[11px] uppercase tracking-wide text-gray-400 sm:inline">
+                  This image
+                </span>
                 <button
                   className="btn-secondary"
                   onClick={() => void handleRejectImage()}
-                  title="Discard this image's model boxes and keep your own"
+                  title="Discard THIS image's model boxes and keep your own. Other images are unaffected."
                 >
                   <X size={14} />
-                  Reject
+                  Reject image
                 </button>
                 <button
                   className="btn-primary"
                   onClick={() => void handleAcceptImage()}
-                  title="Keep this image's model boxes, replacing your own"
+                  title="Keep THIS image's model boxes, replacing your own. Other images are unaffected."
                 >
                   <Check size={14} />
-                  Accept {proposals.length}
+                  Accept image ({proposals.length})
                 </button>
               </>
             ) : (

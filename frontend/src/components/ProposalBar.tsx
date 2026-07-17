@@ -115,15 +115,23 @@ export function ProposalBar({
           )}
         </div>
 
+        {/* These act on the WHOLE batch, while the header's buttons act on the
+            current image only. Both said just "Reject", which made two very
+            different blast radii look like the same button. Everything here is
+            explicitly "all". */}
         <div className="ml-auto flex shrink-0 items-center gap-2">
+          <span className="hidden text-[11px] uppercase tracking-wide text-accent-700 sm:inline">
+            All {preview?.proposed_images ?? ''} image
+            {(preview?.proposed_images ?? 0) === 1 ? '' : 's'}
+          </span>
           <button
             className="btn-secondary"
             onClick={() => void act(() => rejectProposals(projectId))}
             disabled={busy}
-            title="Discard the model's boxes and keep yours"
+            title="Discard the model's boxes on EVERY image and keep yours"
           >
             <X size={13} />
-            Reject
+            Reject all
           </button>
           <button
             className={
@@ -135,16 +143,16 @@ export function ProposalBar({
             disabled={busy}
             title={
               willDelete > 0
-                ? `Keep the model's boxes and delete your ${willDelete} existing`
-                : "Keep the model's boxes"
+                ? `Keep the model's boxes on EVERY image and delete your ${willDelete} existing`
+                : "Keep the model's boxes on every image"
             }
           >
             <Check size={13} />
             {busy
               ? 'Working…'
               : willDelete > 0
-                ? `Accept, replace ${willDelete}`
-                : `Accept ${proposedBoxes}`}
+                ? `Accept all, replace ${willDelete}`
+                : `Accept all ${proposedBoxes}`}
           </button>
         </div>
       </div>
