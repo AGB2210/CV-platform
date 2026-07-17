@@ -19,6 +19,11 @@ class ImageRead(BaseModel):
     size_bytes: int
     created_at: datetime
 
+    #: False = staging (being annotated); True = committed to the trainable set.
+    in_dataset: bool = False
+    #: train | val | test
+    split: str = "train"
+
     # Populated by the list route via a GROUP BY join, not a per-image COUNT.
     # Lets the grid show annotation state at a glance — which is the difference
     # between "you have 500 images" and "you have 500 images, 340 annotated,
@@ -54,6 +59,19 @@ class UploadResult(BaseModel):
     uploaded: list[ImageRead]
     skipped: list[str]  # "photo.txt: not a recognised image format"
 
+    # --- import summary (populated when a zip turned out to be a dataset) ---
+    # The UI needs these to tell you what actually happened. "Uploaded 1,200
+    # images" is a much worse message than "Uploaded 1,200 images, imported
+    # 8,400 annotations, created 6 classes, split train/valid/test".
+    annotations_imported: int = 0
+    classes_created: list[str] = []
+    #: split name -> image count, e.g. {"train": 700, "val": 200, "test": 100}
+    splits: dict[str, int] = {}
+    #: True when the archive used train/valid/test folders, so the UI knows the
+    #: split was chosen by the user's own data rather than defaulted by us.
+    has_split_folders: bool = False
+    notes: list[str] = []
+
     @computed_field  # type: ignore[prop-decorator]
     @property
     def uploaded_count(self) -> int:
@@ -63,3 +81,18 @@ class UploadResult(BaseModel):
     @property
     def skipped_count(self) -> int:
         return len(self.skipped)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def needs_val_split(self) -> bool:
+        """True when the import gave us train data but no validation set.
+
+        The UI uses this to prompt for a percentage split instead of silently
+        training with no held-out data — which produces a model that looks
+        perfect and generalises like a rock.
+        """
+        return (
+            self.has_split_folders
+            and self.splits.get("train", 0) > 0
+            and self.splits.get("val", 0) == 0
+        )

@@ -1,5 +1,10 @@
 """Image upload / listing / deletion endpoints."""
 
+import shutil
+import tempfile
+import zipfile
+from pathlib import Path
+
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
@@ -8,7 +13,7 @@ from app.api.routes.projects import get_project_or_404
 from app.database import get_db
 from app.models import Annotation, Image
 from app.schemas import ImageRead, UploadResult
-from app.services import storage
+from app.services import dataset_import, storage
 
 router = APIRouter(tags=["images"])
 
@@ -82,12 +87,16 @@ async def upload_images(
     files: list[UploadFile] = File(...),
     db: Session = Depends(get_db),
 ) -> UploadResult:
-    """Upload one or more images, or a zip archive of images.
+    """Upload images, or a zip — which may be a whole annotated dataset.
 
-    A single endpoint handles both because the client's intent is identical
-    ("add these images to my project") and the distinction is detectable from
-    the bytes. Making the UI choose between two endpoints would push an
-    implementation detail into the interface.
+    A single endpoint handles all of it because the user's intent is identical
+    ("add this to my project") and the distinction is detectable from the bytes.
+    Making the UI ask "is this a COCO export?" would push our implementation
+    detail into their workflow — they already know what they dragged in.
+
+    A zip is inspected rather than assumed (see services/dataset_import.py):
+    loose images, a flat COCO dataset, or Roboflow's train/valid/test layout all
+    import correctly with no format dropdown.
 
     Partial success is the design: a batch of 50 with 2 corrupt files stores 48
     and reports the 2. Rejecting the whole batch would be hostile, and silently
@@ -97,6 +106,7 @@ async def upload_images(
 
     saved: list[storage.SavedImage] = []
     skipped: list[str] = []
+    import_results: list[dataset_import.ImportResult] = []
 
     for upload in files:
         # `await upload.read()` — UploadFile is async because Starlette spools
@@ -108,16 +118,26 @@ async def upload_images(
 
         if storage.is_zip(name, content):
             try:
-                zip_saved, zip_skipped = storage.save_zip(project_id, content)
-                saved.extend(zip_saved)
-                skipped.extend(zip_skipped)
-            except storage.ImageRejected as exc:
+                import_results.append(_import_zip(db, project_id, content))
+            except (ValueError, zipfile.BadZipFile) as exc:
                 skipped.append(f"{name}: {exc}")
         else:
             try:
                 saved.append(storage.save_image(project_id, content, name))
             except storage.ImageRejected as exc:
                 skipped.append(f"{name}: {exc}")
+
+    # A zip took the import path and already committed its own rows, so the
+    # plain-image path below has nothing to do for it.
+    if import_results and not saved:
+        merged = _merge_results(import_results, skipped)
+        if merged.images_added == 0:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "No valid images found in the archive. "
+                + "; ".join(merged.skipped[:5]),
+            )
+        return _result_to_response(db, project_id, merged)
 
     if not saved and skipped:
         # Nothing at all was storable. A 201 here would be a lie, and the UI
@@ -146,9 +166,85 @@ async def upload_images(
     for row in rows:
         db.refresh(row)
 
-    return UploadResult(
+    response = UploadResult(
         uploaded=[ImageRead.model_validate(r) for r in rows],
         skipped=skipped,
+    )
+    # Merge in anything a zip contributed alongside loose files in the same
+    # request (rare, but the UI allows dropping both at once).
+    if import_results:
+        merged = _merge_results(import_results, [])
+        response.annotations_imported = merged.annotations_added
+        response.classes_created = merged.classes_created
+        response.splits = merged.splits
+        response.has_split_folders = merged.has_split_folders
+        response.notes = merged.notes
+    return response
+
+
+# --- import helpers ---------------------------------------------------------
+
+
+def _import_zip(db: Session, project_id: int, content: bytes) -> dataset_import.ImportResult:
+    """Extract a zip to a temp dir, analyse it, and import what's there.
+
+    The temp dir is deleted on every path — the extracted copy is scratch; the
+    images we keep were re-saved into storage/ under generated names by
+    `storage.save_image`.
+    """
+    tmp = Path(tempfile.mkdtemp(prefix="cvimport_"))
+    try:
+        archive = tmp / "upload.zip"
+        archive.write_bytes(content)
+        extract_dir = tmp / "x"
+        dataset_import.extract_archive(archive, extract_dir)
+
+        plan = dataset_import.analyse(extract_dir)
+        if not plan.groups:
+            raise ValueError("no images found in archive")
+        return dataset_import.execute(db, project_id, plan)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _merge_results(
+    results: list[dataset_import.ImportResult], extra_skipped: list[str]
+) -> dataset_import.ImportResult:
+    """Fold several zip imports (one per uploaded archive) into one summary."""
+    merged = dataset_import.ImportResult()
+    for r in results:
+        merged.images_added += r.images_added
+        merged.annotations_added += r.annotations_added
+        merged.classes_created.extend(r.classes_created)
+        merged.skipped.extend(r.skipped)
+        merged.notes.extend(r.notes)
+        merged.has_split_folders = merged.has_split_folders or r.has_split_folders
+        for split, n in r.splits.items():
+            merged.splits[split] = merged.splits.get(split, 0) + n
+    merged.skipped.extend(extra_skipped)
+    return merged
+
+
+def _result_to_response(
+    db: Session, project_id: int, merged: dataset_import.ImportResult
+) -> UploadResult:
+    """Shape an ImportResult into the upload response the frontend expects."""
+    recent = list(
+        db.scalars(
+            select(Image)
+            .where(Image.project_id == project_id)
+            .order_by(Image.id.desc())
+            .limit(merged.images_added)
+        ).all()
+    )
+    return UploadResult(
+        uploaded=[ImageRead.model_validate(r) for r in reversed(recent)],
+        skipped=merged.skipped,
+        annotations_imported=merged.annotations_added,
+        classes_created=merged.classes_created,
+        splits=merged.splits,
+        has_split_folders=merged.has_split_folders,
+        notes=merged.notes,
     )
 
 

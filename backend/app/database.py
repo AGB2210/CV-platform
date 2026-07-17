@@ -80,16 +80,80 @@ def get_db() -> Generator[Session, None, None]:
         db.close()
 
 
-def init_db() -> None:
-    """Create any tables that don't exist yet.
+def _add_missing_columns() -> None:
+    """Add columns that exist on the models but not yet in the database.
 
-    `create_all` only issues CREATE TABLE for missing tables — it will NOT alter
-    an existing table to match a changed model. That's fine while the schema is
-    still in flux (delete the .db file and restart to reset). Once there's data
-    worth keeping, this is the seam where Alembic migrations would slot in.
+    WHY THIS EXISTS
+    ---------------
+    `create_all()` only issues CREATE TABLE for MISSING tables. It will not
+    touch a table that already exists, so adding a field to a model is silently
+    a no-op against an existing database — the app then crashes on the first
+    query with "no such column", which is a confusing way to learn this.
+
+    This is a deliberately tiny migration step covering the one case that
+    actually comes up while a schema is still in flux: a new nullable-or-
+    defaulted column. It reads the live schema, diffs it against the model, and
+    issues ALTER TABLE ADD COLUMN for anything absent.
+
+    WHAT IT DELIBERATELY DOES NOT DO
+    --------------------------------
+    Dropped columns, renames, type changes, new constraints, or backfills that
+    need real logic. SQLite can't do most of those without rebuilding the table
+    anyway. The moment one of those is needed, this should be deleted and
+    replaced with Alembic — which is the real answer, and is exactly what this
+    function is standing in for. It is a convenience, not a migration system.
+    """
+    from sqlalchemy import inspect, text
+
+    inspector = inspect(engine)
+    existing_tables = set(inspector.get_table_names())
+
+    with engine.begin() as conn:
+        for table in Base.metadata.sorted_tables:
+            if table.name not in existing_tables:
+                continue  # create_all will handle it
+
+            live_columns = {c["name"] for c in inspector.get_columns(table.name)}
+            for column in table.columns:
+                if column.name in live_columns:
+                    continue
+
+                # SQLite requires a non-NULL default when adding a NOT NULL
+                # column to a table with existing rows — there's no other value
+                # it could give them.
+                type_sql = column.type.compile(dialect=engine.dialect)
+                clause = f"ALTER TABLE {table.name} ADD COLUMN {column.name} {type_sql}"
+
+                default = column.default.arg if column.default is not None else None
+                if not column.nullable:
+                    if default is None:
+                        # Can't invent a value. Skip rather than corrupt the
+                        # table, and say so loudly.
+                        print(
+                            f"  ! cannot auto-add NOT NULL column "
+                            f"{table.name}.{column.name} without a default — "
+                            f"delete the DB or write a migration"
+                        )
+                        continue
+                    literal = f"'{default}'" if isinstance(default, str) else int(default)
+                    clause += f" NOT NULL DEFAULT {literal}"
+                elif default is not None:
+                    literal = f"'{default}'" if isinstance(default, str) else default
+                    clause += f" DEFAULT {literal}"
+
+                print(f"  + {table.name}.{column.name}")
+                conn.execute(text(clause))
+
+
+def init_db() -> None:
+    """Create missing tables, then add any missing columns.
+
+    Once there's data worth keeping, `_add_missing_columns` should be replaced
+    by Alembic — see its docstring.
     """
     # Importing the models package registers every model class on Base.metadata.
     # Without this import, create_all() would find nothing to create.
     from app import models  # noqa: F401  (imported for side effect)
 
     Base.metadata.create_all(bind=engine)
+    _add_missing_columns()

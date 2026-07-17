@@ -7,7 +7,7 @@ includes one router, and new feature areas are registered in this file.
 
 from fastapi import APIRouter
 
-from app.api.routes import annotate, categories, health, images, projects
+from app.api.routes import annotate, categories, dataset, health, images, projects
 
 # Importing the annotators package runs each module's @register decorator, which
 # is what populates the model registry. Without this import the /api/annotators
@@ -28,3 +28,4 @@ api_router.include_router(annotate.router)
 api_router.include_router(projects.router, prefix="/projects")
 api_router.include_router(images.router)
 api_router.include_router(categories.router)
+api_router.include_router(dataset.router)
