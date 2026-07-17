@@ -9,7 +9,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from fastapi.responses import FileResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.routes.projects import get_project_or_404
@@ -115,6 +115,7 @@ def start_annotation(
         total_images=image_count,
         box_threshold=payload.box_threshold,
         text_threshold=payload.text_threshold,
+        clear_existing=payload.clear_existing,
         prompts_json=json.dumps(payload.prompts) if payload.prompts else None,
     )
     db.add(job)
@@ -308,6 +309,41 @@ def approve_image(image_id: int, db: Session = Depends(get_db)) -> list[Annotati
     for ann in anns:
         db.refresh(ann)
     return anns
+
+
+@router.get("/projects/{project_id}/annotate/preview")
+def annotate_preview(project_id: int, db: Session = Depends(get_db)) -> dict:
+    """What a run would destroy, so the UI can say so before the click.
+
+    Auto-annotation is not additive — it clears prior output before writing new
+    output. Without this, the only way to discover that a re-run wiped your 40
+    hand-drawn boxes is to notice they're gone.
+    """
+    get_project_or_404(project_id, db)
+
+    rows = db.execute(
+        select(Annotation.source, func.count(Annotation.id))
+        .join(Image, Image.id == Annotation.image_id)
+        .where(Image.project_id == project_id)
+        .group_by(Annotation.source)
+    ).all()
+    by_source = {source: n for source, n in rows}
+
+    in_dataset = db.scalar(
+        select(func.count(Image.id)).where(
+            Image.project_id == project_id, Image.in_dataset.is_(True)
+        )
+    ) or 0
+
+    return {
+        "auto_boxes": by_source.get("auto", 0),
+        # These two survive a default run and are destroyed by clear_existing —
+        # the number the user actually needs before ticking that box.
+        "manual_boxes": by_source.get("manual", 0),
+        "imported_boxes": by_source.get("imported", 0),
+        # Annotated images return to staging for re-review, which empties this.
+        "images_in_dataset": in_dataset,
+    }
 
 
 @router.get("/projects/{project_id}/annotations/summary")

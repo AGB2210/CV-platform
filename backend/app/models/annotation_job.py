@@ -28,7 +28,7 @@ imports FastAPI.
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -76,6 +76,12 @@ class AnnotationJob(Base):
     # "this job used threshold 0.35" months later.
     box_threshold: Mapped[float] = mapped_column(Float, nullable=False, default=0.30)
     text_threshold: Mapped[float] = mapped_column(Float, nullable=False, default=0.25)
+    # Whether this run wiped human work as well as its own prior output. Worth
+    # recording: it's the difference between "the model found 3 boxes" and "the
+    # model found 3 boxes and I deleted your 40".
+    clear_existing: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
     # JSON blob of {class_name: prompt}. Stored as Text and serialised by hand
     # rather than using a JSON column: SQLite's JSON support is fine, but we
     # only ever read this whole-value, so a column type buys nothing.

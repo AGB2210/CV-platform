@@ -255,6 +255,17 @@ export const listAnnotators = () => api.get<AnnotatorInfo[]>('/annotators')
 export const getDevice = () => api.get<DeviceInfo>('/device')
 export const listExportFormats = () => api.get<ExportFormatInfo[]>('/export-formats')
 
+export interface AnnotatePreview {
+  auto_boxes: number
+  manual_boxes: number
+  imported_boxes: number
+  images_in_dataset: number
+}
+
+/** What a run would destroy. Auto-annotation is not additive. */
+export const getAnnotatePreview = (projectId: number) =>
+  api.get<AnnotatePreview>(`/projects/${projectId}/annotate/preview`)
+
 export const startAnnotation = (
   projectId: number,
   body: {
@@ -262,6 +273,7 @@ export const startAnnotation = (
     box_threshold?: number
     text_threshold?: number
     prompts?: Record<string, string>
+    clear_existing?: boolean
   },
 ) => api.post<AnnotationJob>(`/projects/${projectId}/annotate`, body)
 

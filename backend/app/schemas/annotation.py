@@ -77,6 +77,17 @@ class AnnotationJobCreate(BaseModel):
     """Request body to launch an auto-annotation run."""
 
     model_key: str
+
+    #: When True, delete EVERY existing box first — including human-drawn and
+    #: imported ones — so the result is purely the model's output.
+    #:
+    #: Defaults to False, which deletes only this pipeline's own previous
+    #: `auto` boxes and leaves human work alone. That default protects
+    #: corrections from being wiped by a re-run, but it does mean a project
+    #: with manual boxes shows a MIX afterwards, which surprises people who
+    #: expect "run the model" to mean "show me the model". Hence the switch,
+    #: surfaced in the UI with the counts it would destroy.
+    clear_existing: bool = False
     # Thresholds bounded 0..1 — they're probabilities. A typo'd 30 instead of
     # 0.30 would otherwise silently produce zero detections and look like a
     # broken model rather than a bad input.

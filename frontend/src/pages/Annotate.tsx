@@ -5,6 +5,7 @@ import { PageBody, PageHeader } from '@/components/layout/AppShell'
 import { StatusBadge, type Status } from '@/components/StatusBadge'
 import {
   exportUrl,
+  getAnnotatePreview,
   getAnnotationSummary,
   getDevice,
   getJob,
@@ -14,6 +15,7 @@ import {
   listJobs,
   startAnnotation,
   type AnnotationJob,
+  type AnnotatePreview,
   type AnnotationSummary,
   type AnnotatorInfo,
   type DeviceInfo,
@@ -41,18 +43,22 @@ export function Annotate() {
   const [boxThreshold, setBoxThreshold] = useState(0.3)
   const [textThreshold, setTextThreshold] = useState(0.25)
   const [prompts, setPrompts] = useState<Record<string, string>>({})
+  const [clearExisting, setClearExisting] = useState(false)
+  const [pre, setPre] = useState<AnnotatePreview | null>(null)
 
   const [activeJob, setActiveJob] = useState<AnnotationJob | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
 
   const refreshSummary = useCallback(async () => {
-    const [s, j] = await Promise.all([
+    const [s, j, p] = await Promise.all([
       getAnnotationSummary(projectId),
       listJobs(projectId),
+      getAnnotatePreview(projectId),
     ])
     setSummary(s)
     setJobs(j)
+    setPre(p)
   }, [projectId])
 
   // Initial load: everything the page needs, in parallel.
@@ -65,8 +71,9 @@ export function Annotate() {
       listExportFormats(),
       getAnnotationSummary(projectId),
       listJobs(projectId),
+      getAnnotatePreview(projectId),
     ])
-      .then(([a, d, c, f, s, j]) => {
+      .then(([a, d, c, f, s, j, p]) => {
         if (cancelled) return
         setAnnotators(a)
         setDevice(d)
@@ -74,6 +81,7 @@ export function Annotate() {
         setFormats(f)
         setSummary(s)
         setJobs(j)
+        setPre(p)
         // Default to the first registered model rather than hardcoding a key —
         // the backend decides what exists.
         if (a.length) setModelKey((k) => k || a[0].key)
@@ -139,6 +147,7 @@ export function Annotate() {
         model_key: modelKey,
         box_threshold: boxThreshold,
         text_threshold: textThreshold,
+        clear_existing: clearExisting,
         // Only send non-empty overrides; the backend falls back to class names.
         prompts: Object.fromEntries(
           Object.entries(prompts).filter(([, v]) => v.trim()),
@@ -282,6 +291,83 @@ export function Annotate() {
               )}
             </div>
 
+            {/* --- What this run will do to what's already there ---
+                Auto-annotation is NOT additive: it clears prior output before
+                writing new output. Leaving that implicit meant a re-run could
+                silently delete hand-drawn boxes, and it meant a project with
+                manual boxes showed a confusing mix afterwards with no way to
+                get a clean model-only result. */}
+            <div className="card">
+              <div className="border-b border-gray-200 px-4 py-3">
+                <h2 className="text-sm font-medium text-gray-900">Existing annotations</h2>
+                <p className="text-xs text-gray-500">
+                  A run always replaces its own previous output. Choose what happens to
+                  everything else.
+                </p>
+              </div>
+              <div className="space-y-3 p-4">
+                {pre && (
+                  <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
+                    <Stat label="From model" value={pre.auto_boxes} note="always replaced" />
+                    <Stat
+                      label="Hand-drawn"
+                      value={pre.manual_boxes}
+                      note={clearExisting ? 'will be DELETED' : 'kept'}
+                      danger={clearExisting && pre.manual_boxes > 0}
+                    />
+                    <Stat
+                      label="Imported"
+                      value={pre.imported_boxes}
+                      note={clearExisting ? 'will be DELETED' : 'kept'}
+                      danger={clearExisting && pre.imported_boxes > 0}
+                    />
+                  </div>
+                )}
+
+                <label className="flex cursor-pointer items-start gap-2">
+                  <input
+                    type="checkbox"
+                    checked={clearExisting}
+                    onChange={(e) => setClearExisting(e.target.checked)}
+                    disabled={isRunning}
+                    className="mt-0.5 accent-accent-600"
+                  />
+                  <span>
+                    <span className="block text-sm text-gray-900">
+                      Replace all annotations
+                    </span>
+                    <span className="block text-xs text-gray-500">
+                      Delete every existing box first, so the result is only this model's
+                      output. Leave unticked to keep hand-drawn and imported boxes.
+                    </span>
+                  </span>
+                </label>
+
+                {clearExisting && pre && pre.manual_boxes + pre.imported_boxes > 0 && (
+                  <p className="rounded-md border border-red-200 bg-red-50 px-2.5 py-1.5 text-xs text-red-800">
+                    <span className="font-medium">
+                      {pre.manual_boxes + pre.imported_boxes} hand-drawn/imported box
+                      {pre.manual_boxes + pre.imported_boxes === 1 ? '' : 'es'} will be
+                      permanently deleted.
+                    </span>{' '}
+                    This cannot be undone.
+                  </p>
+                )}
+
+                {/* Annotated images return to staging, which can empty a dataset
+                    someone spent time committing. Say so before, not after. */}
+                {pre && pre.images_in_dataset > 0 && (
+                  <p className="rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs text-amber-900">
+                    {pre.images_in_dataset} image
+                    {pre.images_in_dataset === 1 ? '' : 's'} currently in your dataset will
+                    return to staging for review, because their annotations change and
+                    nothing unreviewed should be trained on. Re-approve and use{' '}
+                    <span className="font-medium">Add to dataset</span> afterwards.
+                  </p>
+                )}
+              </div>
+            </div>
+
             <div className="flex items-center gap-3">
               <button className="btn-primary" onClick={() => void run()} disabled={!canRun}>
                 {isRunning ? (
@@ -314,6 +400,28 @@ export function Annotate() {
         </div>
       </PageBody>
     </>
+  )
+}
+
+function Stat({
+  label,
+  value,
+  note,
+  danger,
+}: {
+  label: string
+  value: number
+  note: string
+  danger?: boolean
+}) {
+  return (
+    <span className="flex items-baseline gap-1.5">
+      <span className="text-gray-500">{label}</span>
+      <span className="font-mono font-medium tabular-nums text-gray-900">{value}</span>
+      <span className={danger ? 'font-medium text-red-700' : 'text-gray-400'}>
+        ({note})
+      </span>
+    </span>
   )
 }
 

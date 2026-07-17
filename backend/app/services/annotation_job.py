@@ -135,17 +135,36 @@ def _run(db: Session, job: AnnotationJob) -> None:
             db.commit()
             continue
 
-        # Replace this model's previous auto boxes for this image, so re-running
-        # a job doesn't duplicate every box. Manual boxes (source="manual") are
-        # untouched — a human's work is never destroyed by a machine re-run.
-        # This is the rule that makes the review workflow safe to iterate on.
-        existing = db.scalars(
-            select(Annotation).where(
-                Annotation.image_id == image.id, Annotation.source == "auto"
-            )
-        ).all()
-        for old in existing:
+        # Clear out what's there before writing this run's output, so re-running
+        # doesn't pile duplicate boxes on top of each other.
+        #
+        # Two policies, and the choice belongs to the user:
+        #
+        #   clear_existing=False (default) — delete only this pipeline's own
+        #     previous `auto` boxes. Human and imported work survives, so a
+        #     re-run can never destroy corrections. The cost is that the image
+        #     then shows a MIX of model output and human boxes.
+        #
+        #   clear_existing=True — delete everything first, so the result is
+        #     purely what the model said. This is what people mean by "run the
+        #     model and show me the output", and without it there was no way to
+        #     get a clean slate short of deleting boxes by hand.
+        query = select(Annotation).where(Annotation.image_id == image.id)
+        if not job.clear_existing:
+            query = query.where(Annotation.source == "auto")
+        for old in db.scalars(query).all():
             db.delete(old)
+
+        # This image's annotations just changed and no human has looked at the
+        # new ones, so it goes back to staging. Leaving it in the dataset would
+        # mean training on boxes nobody has reviewed — which is the exact thing
+        # the staging/dataset split exists to prevent.
+        #
+        # It also repairs a dead end: once an image was committed, re-annotating
+        # it left no route back to "Add to dataset", because that button only
+        # offers approved STAGING images. Now the loop closes:
+        #   annotate -> staging -> review -> approve -> commit.
+        image.in_dataset = False
 
         for box in result.boxes:
             category = by_name.get(box.label)
