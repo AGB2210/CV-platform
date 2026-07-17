@@ -276,21 +276,37 @@ def _assign_splits(
     """
     shuffled = list(images)
     random.Random(42).shuffle(shuffled)
-
     n = len(shuffled)
-    n_train = int(n * train_pct)
-    n_val = int(n * val_pct)
-    # Any rounding remainder goes to train — the split with the most to gain
-    # from an extra sample, and never leaving val/test accidentally empty.
+
+    # round(), NOT int().
+    #
+    # int() truncates, which silently annihilates a small split: asking for
+    # 80/20 on 3 images gives int(3*0.2) == 0 val images — an empty validation
+    # set, which is the exact failure this app warns users about elsewhere. It
+    # only shows up on small datasets, so it would survive every test on a
+    # realistic one and then bite someone trying the tool with 5 images.
+    n_val = round(n * val_pct)
+    n_test = round(n * test_pct)
+
+    # Even round() gives 0 when n * pct < 0.5 (e.g. 20% of 2). If a split was
+    # explicitly asked for and there are enough images to afford it, it gets at
+    # least one — an empty val set is never what "20%" meant.
+    if val_pct > 0 and n_val == 0 and n >= 2:
+        n_val = 1
+    if test_pct > 0 and n_test == 0 and n >= 3:
+        n_test = 1
+
+    # Train takes the remainder, so the three always sum to exactly n and no
+    # image is left unassigned by a rounding artifact.
+    n_train = max(0, n - n_val - n_test)
+
     for i, image in enumerate(shuffled):
         if i < n_train:
             image.split = Split.TRAIN
         elif i < n_train + n_val:
             image.split = Split.VAL
-        elif test_pct > 0:
-            image.split = Split.TEST
         else:
-            image.split = Split.TRAIN
+            image.split = Split.TEST
 
 
 @router.post("/projects/{project_id}/dataset/split", response_model=SplitCounts)

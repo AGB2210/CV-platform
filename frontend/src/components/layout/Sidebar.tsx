@@ -1,5 +1,5 @@
 import { NavLink, useMatch } from 'react-router-dom'
-import { LayoutGrid, Boxes, Tags, Cpu, PlayCircle, SquarePen } from 'lucide-react'
+import { LayoutGrid, Boxes, Tags, Cpu, PlayCircle, SquarePen, Eye } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 
 /**
@@ -8,7 +8,15 @@ import type { LucideIcon } from 'lucide-react'
  * A fixed left sidebar — the predictable, boring choice for a tool with
  * distinct workflow stages. It keeps every stage one click away and always
  * visible, which is what you want when the mental model is a pipeline:
- * dataset -> annotate -> train -> deploy.
+ * dataset -> train -> deploy.
+ *
+ * STRUCTURE: annotation is nested UNDER Dataset, not beside it.
+ *
+ * Auto-annotate, Annotate and Visualize are all operations *on the dataset* —
+ * they don't exist independently of it. Listing them as peers of Dataset implied
+ * they were separate stages of the pipeline, which mis-taught the mental model:
+ * you don't "go to Annotate", you annotate your dataset. The real top-level
+ * stages are Dataset -> Train -> Deploy.
  *
  * The pipeline stages are PROJECT-SCOPED: "Annotate" is meaningless without
  * knowing which project's images to annotate. So they only become active once
@@ -23,20 +31,26 @@ interface NavItem {
   icon: LucideIcon
   /** Built yet? */
   ready: boolean
+  /** Rendered indented, as an operation on the section above it. */
+  nested?: boolean
 }
 
 // Ordered to match the actual pipeline, not alphabetically.
 const PROJECT_NAV: NavItem[] = [
   { suffix: '', label: 'Dataset', icon: Boxes, ready: true },
-  { suffix: '/annotate', label: 'Auto-annotate', icon: Tags, ready: true },
-  { suffix: '/review', label: 'Review', icon: SquarePen, ready: true },
+  { suffix: '/visualize', label: 'Visualize', icon: Eye, ready: true, nested: true },
+  { suffix: '/annotate', label: 'Auto-annotate', icon: Tags, ready: true, nested: true },
+  { suffix: '/review', label: 'Annotate', icon: SquarePen, ready: true, nested: true },
   { suffix: '/train', label: 'Train', icon: Cpu, ready: false },
   { suffix: '/deploy', label: 'Deploy', icon: PlayCircle, ready: false },
 ]
 
-const linkClass = (isActive: boolean) =>
+const linkClass = (isActive: boolean, nested = false) =>
   [
-    'flex items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm transition-colors',
+    'flex items-center gap-2.5 rounded-md py-1.5 text-sm transition-colors',
+    // Indent + a hairline rule on the left: the conventional way to show "this
+    // belongs to the thing above" without drawing a whole tree widget.
+    nested ? 'ml-3 border-l border-gray-200 pl-3.5 pr-2.5' : 'px-2.5',
     isActive
       ? 'bg-accent-50 font-medium text-accent-700'
       : 'text-gray-600 hover:bg-gray-50 hover:text-gray-900',
@@ -77,27 +91,30 @@ export function Sidebar() {
         {inProject && (
           <>
             <p className="label-eyebrow px-2.5 pb-1 pt-4">Project</p>
-            {PROJECT_NAV.map(({ suffix, label, icon: Icon, ready }) =>
+            {PROJECT_NAV.map(({ suffix, label, icon: Icon, ready, nested }) =>
               ready ? (
                 <NavLink
                   key={label}
                   to={`/projects/${id}${suffix}`}
                   // `end` ONLY for the project root (suffix ''), where it stops
                   // "Dataset" matching every sub-route. The others need prefix
-                  // matching so "Review" stays highlighted on /review/5.
+                  // matching so "Annotate" stays highlighted on /review/5.
                   end={suffix === ''}
-                  className={({ isActive }) => linkClass(isActive)}
+                  className={({ isActive }) => linkClass(isActive, nested)}
                 >
-                  <Icon size={16} strokeWidth={2} />
+                  <Icon size={nested ? 14 : 16} strokeWidth={2} />
                   {label}
                 </NavLink>
               ) : (
                 <div
                   key={label}
-                  className="flex cursor-not-allowed items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm text-gray-300"
+                  className={[
+                    'flex cursor-not-allowed items-center gap-2.5 rounded-md py-1.5 text-sm text-gray-300',
+                    nested ? 'ml-3 border-l border-gray-200 pl-3.5 pr-2.5' : 'px-2.5',
+                  ].join(' ')}
                   title="Not built yet"
                 >
-                  <Icon size={16} strokeWidth={2} />
+                  <Icon size={nested ? 14 : 16} strokeWidth={2} />
                   {label}
                 </div>
               ),

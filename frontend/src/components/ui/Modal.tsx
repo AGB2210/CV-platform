@@ -78,11 +78,16 @@ export function Modal({
 }
 
 /**
- * Confirmation prompt for destructive actions.
+ * Confirmation prompt.
  *
  * Deliberately spells out the consequence in `message` rather than asking a
  * generic "Are you sure?" — deleting a project takes its images and classes
  * with it, and that should be stated before the click, not discovered after.
+ *
+ * `destructive` defaults to true because that's what confirmation is usually
+ * for. It's a prop rather than always-on so that a consequential-but-reversible
+ * action (approving every box) doesn't get a red button: if everything is red,
+ * red stops meaning "this deletes data".
  */
 export function ConfirmDialog({
   open,
@@ -92,6 +97,7 @@ export function ConfirmDialog({
   message,
   confirmLabel = 'Delete',
   busy = false,
+  destructive = true,
 }: {
   open: boolean
   onClose: () => void
@@ -100,6 +106,7 @@ export function ConfirmDialog({
   message: string
   confirmLabel?: string
   busy?: boolean
+  destructive?: boolean
 }) {
   return (
     <Modal
@@ -112,14 +119,17 @@ export function ConfirmDialog({
             Cancel
           </button>
           <button
-            // The one place a red button is warranted: it marks an irreversible
-            // action. Using the normal accent here would make deleting look
-            // like any other primary action.
-            className="btn bg-red-600 text-white hover:bg-red-700"
+            // Red is reserved for irreversible actions. Using the normal accent
+            // for those would make deleting look like any other primary action.
+            className={
+              destructive
+                ? 'btn bg-red-600 text-white hover:bg-red-700'
+                : 'btn-primary'
+            }
             onClick={onConfirm}
             disabled={busy}
           >
-            {busy ? 'Deleting…' : confirmLabel}
+            {busy ? 'Working…' : confirmLabel}
           </button>
         </>
       }

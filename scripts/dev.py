@@ -209,6 +209,79 @@ def port_in_use(port: int) -> bool:
     return False
 
 
+def reap_stale_servers() -> int:
+    """Kill dev servers left over from a previous launcher run. Returns the count.
+
+    WHY THIS IS NECESSARY (learned the hard way, twice)
+    --------------------------------------------------
+    A previous session's uvicorn can survive — the launcher gets killed without
+    its `finally` running, or a task is torn down without a signal. The port
+    check alone does NOT catch it, because a leftover *reloader* isn't holding a
+    port; it's just sitting there watching files.
+
+    Then you edit a file and both reloaders wake up. Each kills and respawns its
+    own worker, and the two workers race for port 8000. Sometimes the ORPHAN
+    wins — so the server answering your requests is running last session's code.
+    WatchFiles cheerfully prints "Reloading..." the whole time.
+
+    The symptom is maddening and specific: you fix a bug, the reload message
+    appears, and the API keeps returning the old behaviour. You then debug
+    perfectly correct code.
+
+    Scoped to THIS repo's processes by matching the command line against our own
+    paths, so it can't touch an unrelated Python server you have running.
+    """
+    if not IS_WINDOWS:
+        return 0
+
+    try:
+        # Win32_Process gives us the full command line, which is the only
+        # reliable way to tell OUR uvicorn from anyone else's.
+        out = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                "Get-CimInstance Win32_Process | "
+                "Where-Object { $_.CommandLine -like '*uvicorn*' -or $_.CommandLine -like '*vite*' } | "
+                "ForEach-Object { \"$($_.ProcessId)|$($_.CommandLine)\" }",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=25,
+        ).stdout
+    except Exception:
+        return 0
+
+    # Match on the repo root, normalised — the command line may use either slash.
+    root_variants = {str(ROOT).lower(), str(ROOT).lower().replace("\\", "/")}
+
+    killed = 0
+    for line in out.splitlines():
+        if "|" not in line:
+            continue
+        pid_str, _, cmdline = line.partition("|")
+        pid_str = pid_str.strip()
+        if not pid_str.isdigit():
+            continue
+        low = cmdline.lower()
+        if not any(root in low for root in root_variants):
+            continue  # someone else's server — leave it alone
+        if int(pid_str) == os.getpid():
+            continue
+        subprocess.run(
+            ["taskkill", "/F", "/T", "/PID", pid_str], capture_output=True
+        )
+        killed += 1
+
+    if killed:
+        # Give the OS a moment to actually release the ports before preflight
+        # checks them, or we'd report a conflict against a process we just
+        # killed.
+        time.sleep(1.5)
+    return killed
+
+
 def pid_on_port(port: int) -> str | None:
     """Best-effort lookup of which PID holds a port, so the error can name it."""
     if not IS_WINDOWS:
@@ -458,6 +531,13 @@ def main() -> int:
     print(f"\n{C.BOLD}CV Platform{C.RESET} {C.DIM}{G.DASH} local development{C.RESET}\n")
 
     npm = preflight()
+
+    # Before anything else: clear out servers a previous run left behind. An
+    # orphaned reloader silently serves stale code — see reap_stale_servers().
+    stale = reap_stale_servers()
+    if stale:
+        warn(f"Stopped {stale} leftover dev server process(es) from a previous run")
+
     ensure_backend()
     ensure_frontend(npm)
 

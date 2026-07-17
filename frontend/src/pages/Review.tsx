@@ -1,17 +1,22 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useParams } from 'react-router-dom'
-import { Check, ChevronLeft, ChevronRight, Trash2 } from 'lucide-react'
+import { Check, CheckCheck, ChevronLeft, ChevronRight, Database, Trash2 } from 'lucide-react'
 import { AnnotationCanvas } from '@/components/AnnotationCanvas'
+import { CommitDialog } from '@/components/CommitDialog'
+import { ConfirmDialog } from '@/components/ui/Modal'
 import {
+  approveAll,
   approveImage,
   createAnnotation,
   deleteAnnotation,
+  getDatasetStats,
   listAnnotations,
   listClasses,
   listImages,
   updateAnnotation,
   type Annotation,
   type DatasetImage,
+  type DatasetStats,
   type ProjectClass,
 } from '@/lib/api'
 
@@ -39,6 +44,10 @@ export function Review() {
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [stats, setStats] = useState<DatasetStats | null>(null)
+  const [showCommit, setShowCommit] = useState(false)
+  const [confirmApproveAll, setConfirmApproveAll] = useState(false)
+  const [busy, setBusy] = useState(false)
 
   const current = useMemo(
     () => images.find((i) => i.id === Number(imageId)) ?? null,
@@ -53,9 +62,14 @@ export function Review() {
 
   const loadShell = useCallback(async () => {
     try {
-      const [imgs, cls] = await Promise.all([listImages(projectId), listClasses(projectId)])
+      const [imgs, cls, s] = await Promise.all([
+        listImages(projectId),
+        listClasses(projectId),
+        getDatasetStats(projectId),
+      ])
       setImages(imgs)
       setClasses(cls)
+      setStats(s)
       setActiveClassId((c) => c ?? cls[0]?.id ?? null)
       // No image in the URL: land on the first one rather than an empty screen.
       if (!imageId && imgs.length) {
@@ -86,14 +100,30 @@ export function Review() {
     }
   }, [imageId])
 
-  /** Refresh the filmstrip counts without refetching classes. */
+  /** Refresh the filmstrip counts and dataset stats without refetching classes. */
   const refreshCounts = useCallback(async () => {
     try {
-      setImages(await listImages(projectId))
+      const [imgs, s] = await Promise.all([listImages(projectId), getDatasetStats(projectId)])
+      setImages(imgs)
+      setStats(s)
     } catch {
       /* non-fatal: the counts are a nicety, not the work */
     }
   }, [projectId])
+
+  async function handleApproveAll() {
+    setBusy(true)
+    try {
+      await approveAll(projectId)
+      await refreshCounts()
+      if (current) setAnnotations(await listAnnotations(current.id))
+      setConfirmApproveAll(false)
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
 
   // --- mutations ---------------------------------------------------------
   //
@@ -316,20 +346,19 @@ export function Review() {
             </div>
           </div>
 
-          <div className="flex items-center gap-2">
-            <Link to={`/projects/${projectId}/annotate`} className="btn-secondary">
-              Auto-annotate
-            </Link>
-            <button
-              className="btn-primary"
-              onClick={() => void handleApprove()}
-              disabled={annotations.length === 0}
-              title="Approve all boxes on this image (Enter)"
-            >
-              <Check size={14} />
-              Approve
-            </button>
-          </div>
+          {/* ONLY image-level actions live here. Project-level ones (approve
+              all, add to dataset) are in the right panel — mixing the two
+              scopes in one toolbar both muddled the meaning and overflowed the
+              header at narrow widths. */}
+          <button
+            className="btn-primary shrink-0"
+            onClick={() => void handleApprove()}
+            disabled={annotations.length === 0}
+            title="Approve all boxes on this image (Enter)"
+          >
+            <Check size={14} />
+            Approve
+          </button>
         </header>
 
         {error && (
@@ -361,6 +390,58 @@ export function Review() {
 
       {/* --- Classes + boxes --- */}
       <aside className="flex w-60 shrink-0 flex-col border-l border-gray-200 bg-white">
+        {/* Project-scoped block, kept visually distinct from the per-image
+            controls below it. This is where you leave the review loop. */}
+        {stats && (
+          <div className="border-b border-gray-200 bg-gray-50 p-3">
+            <div className="mb-1.5 flex items-baseline justify-between">
+              <p className="label-eyebrow">Progress</p>
+              <span className="font-mono text-xs tabular-nums text-gray-600">
+                {stats.reviewed_boxes}/{stats.total_boxes}
+              </span>
+            </div>
+            <div className="h-1.5 w-full overflow-hidden rounded-full bg-gray-200">
+              <div
+                className="h-full rounded-full bg-status-good transition-all"
+                style={{
+                  width: `${stats.total_boxes ? (100 * stats.reviewed_boxes) / stats.total_boxes : 0}%`,
+                }}
+              />
+            </div>
+
+            <button
+              className="btn-secondary mt-2 w-full"
+              onClick={() => setConfirmApproveAll(true)}
+              disabled={stats.reviewed_boxes >= stats.total_boxes}
+              title="Approve every box in the project"
+            >
+              <CheckCheck size={13} />
+              {stats.reviewed_boxes >= stats.total_boxes
+                ? 'All approved'
+                : `Approve all ${stats.total_boxes - stats.reviewed_boxes}`}
+            </button>
+
+            {/* The commit step only appears once something is approved to
+                commit. Showing it permanently would invite clicking it before
+                reviewing anything — exactly what staging exists to prevent. */}
+            {stats.staging_approved > 0 && (
+              <button
+                className="btn-primary mt-1.5 w-full"
+                onClick={() => setShowCommit(true)}
+              >
+                <Database size={13} />
+                Add {stats.staging_approved} to dataset
+              </button>
+            )}
+            {stats.staging_total > 0 && stats.staging_approved === 0 && (
+              <p className="mt-1.5 text-[11px] text-gray-400">
+                {stats.staging_total} image(s) staged. Approve them to add to the
+                dataset.
+              </p>
+            )}
+          </div>
+        )}
+
         <div className="border-b border-gray-200 px-3 py-2">
           <p className="label-eyebrow">Draw as</p>
         </div>
@@ -451,6 +532,28 @@ export function Review() {
           <p className="pt-1">Dashed border = unreviewed model output</p>
         </div>
       </aside>
+
+      <CommitDialog
+        open={showCommit}
+        projectId={projectId}
+        onClose={() => setShowCommit(false)}
+        onCommitted={() => void refreshCounts()}
+      />
+
+      <ConfirmDialog
+        open={confirmApproveAll}
+        onClose={() => setConfirmApproveAll(false)}
+        onConfirm={handleApproveAll}
+        busy={busy}
+        destructive={false}
+        title="Approve all boxes"
+        confirmLabel="Approve all"
+        message={
+          stats
+            ? `Mark all ${stats.total_boxes - stats.reviewed_boxes} unreviewed box(es) across ${stats.staging_total + stats.dataset_total} image(s) as approved? This says the model's output is correct without looking at it — only do this if you've already checked the dataset.`
+            : ''
+        }
+      />
     </div>
   )
 }

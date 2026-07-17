@@ -4,6 +4,7 @@ import { Projects } from '@/pages/Projects'
 import { ProjectDetail } from '@/pages/ProjectDetail'
 import { Annotate } from '@/pages/Annotate'
 import { Review } from '@/pages/Review'
+import { Visualize } from '@/pages/Visualize'
 
 /**
  * Route table.
@@ -21,6 +22,7 @@ export default function App() {
           <Route path="/" element={<Projects />} />
           <Route path="/projects/:id" element={<ProjectDetail />} />
           <Route path="/projects/:id/annotate" element={<Annotate />} />
+          <Route path="/projects/:id/visualize" element={<Visualize />} />
           {/* Two review routes: with an image id (deep-linkable — you can send
               someone a link to a specific image) and without (lands on the
               first image). */}

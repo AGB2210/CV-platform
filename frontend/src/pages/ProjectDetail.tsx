@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { ArrowLeft, Plus, Trash2, Upload, X } from 'lucide-react'
+import { ArrowLeft, Eye, Plus, SquarePen, Tags, Trash2, Upload, X } from 'lucide-react'
 import { PageBody, PageHeader } from '@/components/layout/AppShell'
 import { ConfirmDialog } from '@/components/ui/Modal'
 import {
@@ -14,6 +14,7 @@ import {
   type DatasetImage,
   type Project,
   type ProjectClass,
+  type UploadResult,
 } from '@/lib/api'
 
 export function ProjectDetail() {
@@ -85,10 +86,32 @@ export function ProjectDetail() {
         title={project.name}
         description={project.description ?? 'Object detection'}
         actions={
-          <Link to="/" className="btn-secondary">
-            <ArrowLeft size={14} />
-            All projects
-          </Link>
+          <>
+            {/* The three things you do TO a dataset, offered at the point you're
+                looking at it. "Annotate" is deliberately a peer of
+                "Auto-annotate", not a step after it: nobody should have to run a
+                model they don't want in order to reach the canvas. */}
+            {images.length > 0 && (
+              <>
+                <Link to={`/projects/${projectId}/visualize`} className="btn-secondary">
+                  <Eye size={14} />
+                  Visualize
+                </Link>
+                <Link to={`/projects/${projectId}/annotate`} className="btn-secondary">
+                  <Tags size={14} />
+                  Auto-annotate
+                </Link>
+                <Link to={`/projects/${projectId}/review`} className="btn-primary">
+                  <SquarePen size={14} />
+                  Annotate
+                </Link>
+              </>
+            )}
+            <Link to="/" className="btn-secondary">
+              <ArrowLeft size={14} />
+              All projects
+            </Link>
+          </>
         }
       />
       <PageBody>
@@ -124,7 +147,10 @@ function UploadPanel({
 }) {
   const [dragging, setDragging] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [result, setResult] = useState<{ ok: number; skipped: string[] } | null>(null)
+  // Keep the whole UploadResult, not just a count. A zip that turned out to be
+  // an annotated COCO dataset did far more than "upload 1,200 images", and
+  // reporting it as a plain upload hides the interesting half.
+  const [result, setResult] = useState<UploadResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -134,8 +160,7 @@ function UploadPanel({
     setError(null)
     setResult(null)
     try {
-      const res = await uploadImages(projectId, files)
-      setResult({ ok: res.uploaded_count, skipped: res.skipped })
+      setResult(await uploadImages(projectId, files))
       onUploaded()
     } catch (err) {
       setError((err as Error).message)
@@ -176,7 +201,14 @@ function UploadPanel({
           {busy ? 'Uploading…' : 'Drop images here, or click to browse'}
         </p>
         <p className="mt-0.5 text-xs text-gray-400">
-          JPG, PNG, BMP, WEBP — or a .zip containing them
+          JPG, PNG, BMP, WEBP — or a .zip
+        </p>
+        {/* Say that dataset import exists. It's the kind of feature nobody
+            discovers by guessing, and "just drop the whole export" is a much
+            better first experience than manually recreating classes. */}
+        <p className="mt-1 text-xs text-gray-400">
+          A COCO export or Roboflow zip (train/valid/test) imports its annotations
+          and splits automatically.
         </p>
         <input
           ref={inputRef}
@@ -199,7 +231,47 @@ function UploadPanel({
           real problem with the user's data. */}
       {result && (
         <div className="mt-2 rounded-md border border-gray-200 bg-gray-50 px-2.5 py-1.5 text-xs">
-          <span className="font-medium text-gray-800">{result.ok} uploaded</span>
+          <span className="font-medium text-gray-800">{result.uploaded_count} uploaded</span>
+
+          {/* An import did more than copy files — say what. */}
+          {result.annotations_imported > 0 && (
+            <span className="text-gray-600">
+              {' · '}
+              <span className="font-medium text-gray-800">
+                {result.annotations_imported} annotations imported
+              </span>
+            </span>
+          )}
+          {result.classes_created.length > 0 && (
+            <span className="text-gray-600">
+              {' · '}
+              {result.classes_created.length} class
+              {result.classes_created.length === 1 ? '' : 'es'} created (
+              {result.classes_created.slice(0, 4).join(', ')}
+              {result.classes_created.length > 4 ? '…' : ''})
+            </span>
+          )}
+          {result.has_split_folders && Object.keys(result.splits).length > 0 && (
+            <span className="text-gray-600">
+              {' · splits '}
+              {(['train', 'val', 'test'] as const)
+                .filter((s) => result.splits[s])
+                .map((s) => `${s} ${result.splits[s]}`)
+                .join(' / ')}
+            </span>
+          )}
+
+          {/* Imported train data with no validation set. Training without one
+              produces a model that looks flawless and generalises like a rock,
+              and nothing else would ever tell you. */}
+          {result.needs_val_split && (
+            <p className="mt-1.5 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-amber-900">
+              <span className="font-medium">No validation set in this dataset.</span> Use
+              the split control before training, or you'll have no way to detect
+              overfitting.
+            </p>
+          )}
+
           {result.skipped.length > 0 && (
             <>
               <span className="text-gray-500"> · {result.skipped.length} skipped</span>

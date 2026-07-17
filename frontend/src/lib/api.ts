@@ -139,6 +139,8 @@ export interface DatasetImage {
   url: string
   annotation_count: number
   reviewed_count: number
+  in_dataset: boolean
+  split: Split
 }
 
 export interface UploadResult {
@@ -146,6 +148,18 @@ export interface UploadResult {
   skipped: string[]
   uploaded_count: number
   skipped_count: number
+
+  // Populated when an uploaded zip turned out to be an annotated dataset.
+  annotations_imported: number
+  classes_created: string[]
+  /** split name -> image count, e.g. {train: 700, val: 200, test: 100} */
+  splits: Record<string, number>
+  /** True when the archive used train/valid/test folders — i.e. the split came
+   *  from the user's own data rather than being defaulted by us. */
+  has_split_folders: boolean
+  notes: string[]
+  /** Imported train data with no validation set — prompt for a percentage. */
+  needs_val_split: boolean
 }
 
 // --- Endpoints ------------------------------------------------------------
@@ -275,6 +289,69 @@ export const updateAnnotation = (
 export const deleteAnnotation = (id: number) => api.delete<void>(`/annotations/${id}`)
 export const approveImage = (imageId: number) =>
   api.post<Annotation[]>(`/images/${imageId}/annotations/approve`)
+
+// --- Dataset lifecycle & splits -------------------------------------------
+
+export type Split = 'train' | 'val' | 'test'
+export type CommitMode = 'append' | 'merge' | 'replace'
+
+export interface SplitCounts {
+  train: number
+  val: number
+  test: number
+}
+
+export interface DatasetStats {
+  staging_total: number
+  staging_annotated: number
+  staging_approved: number
+  dataset_total: number
+  splits: SplitCounts
+  total_boxes: number
+  reviewed_boxes: number
+}
+
+export interface CommitPreview {
+  staged_total: number
+  staged_approved: number
+  staged_unapproved: number
+  dataset_current: number
+  would_add: number
+  would_remove: number
+  dataset_after: number
+}
+
+export const getDatasetStats = (projectId: number) =>
+  api.get<DatasetStats>(`/projects/${projectId}/dataset/stats`)
+
+export const approveAll = (projectId: number) =>
+  api.post<{ approved: number }>(`/projects/${projectId}/annotations/approve-all`)
+
+export const getCommitPreview = (projectId: number, mode: CommitMode) =>
+  api.get<CommitPreview>(`/projects/${projectId}/dataset/preview?mode=${mode}`)
+
+export const commitToDataset = (
+  projectId: number,
+  body: {
+    mode: CommitMode
+    train_pct?: number
+    val_pct?: number
+    test_pct?: number
+    assign_splits?: boolean
+  },
+) =>
+  api.post<{ committed: number; merged: number; removed: number; mode: string }>(
+    `/projects/${projectId}/dataset/commit`,
+    body,
+  )
+
+export const resplitDataset = (
+  projectId: number,
+  body: { train_pct: number; val_pct: number; test_pct: number; only_train?: boolean },
+) => api.post<SplitCounts>(`/projects/${projectId}/dataset/split`, body)
+
+export const setImageSplit = (imageId: number, split: Split) =>
+  api.patch<{ id: number; split: string }>(`/images/${imageId}/split?split=${split}`)
 export const getAnnotationSummary = (projectId: number) =>
   api.get<AnnotationSummary>(`/projects/${projectId}/annotations/summary`)
 
