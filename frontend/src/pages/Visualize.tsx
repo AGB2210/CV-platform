@@ -1,12 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
+import { Database, SquarePen } from 'lucide-react'
 import { PageBody, PageHeader } from '@/components/layout/AppShell'
+import { CommitDialog } from '@/components/CommitDialog'
 import {
+  getDatasetStats,
   listAnnotations,
   listClasses,
   listImages,
   type Annotation,
   type DatasetImage,
+  type DatasetStats,
   type ProjectClass,
   type Split,
 } from '@/lib/api'
@@ -31,6 +35,8 @@ export function Visualize() {
   const [classes, setClasses] = useState<ProjectClass[]>([])
   /** image_id -> boxes. Fetched per image, then cached. */
   const [boxes, setBoxes] = useState<Record<number, Annotation[]>>({})
+  const [stats, setStats] = useState<DatasetStats | null>(null)
+  const [showCommit, setShowCommit] = useState(false)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -42,9 +48,14 @@ export function Visualize() {
 
   const load = useCallback(async () => {
     try {
-      const [imgs, cls] = await Promise.all([listImages(projectId), listClasses(projectId)])
+      const [imgs, cls, s] = await Promise.all([
+        listImages(projectId),
+        listClasses(projectId),
+        getDatasetStats(projectId),
+      ])
       setImages(imgs)
       setClasses(cls)
+      setStats(s)
 
       // Fetch every image's boxes in parallel rather than sequentially. For a
       // few hundred images this is fine; past that the right answer is a bulk
@@ -98,15 +109,64 @@ export function Visualize() {
         title="Visualize"
         description="Every image with its annotations drawn on"
         actions={
-          <Link to={`/projects/${projectId}`} className="btn-secondary">
-            Dataset
-          </Link>
+          <>
+            {/* The commit action belongs wherever you're LOOKING at the
+                dataset, not only in the review screen. Seeing "staging" here
+                with no way to act on it was a dead end. */}
+            {stats && stats.staging_approved > 0 && (
+              <button className="btn-primary" onClick={() => setShowCommit(true)}>
+                <Database size={14} />
+                Add {stats.staging_approved} to dataset
+              </button>
+            )}
+            <Link to={`/projects/${projectId}`} className="btn-secondary">
+              Dataset
+            </Link>
+          </>
         }
       />
       <PageBody>
         {error && (
           <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
             {error}
+          </div>
+        )}
+
+        {/* Explain "staging" rather than leaving a chip nobody asked for.
+            The label is meaningless without knowing what moves an image out of
+            it, and the answer differs depending on whether the boxes are
+            approved yet — so the banner states which case you're in and links
+            to the one action that resolves it. */}
+        {stats && stats.staging_total > 0 && (
+          <div className="mb-4 flex flex-wrap items-center gap-x-3 gap-y-2 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs">
+            <span className="text-amber-900">
+              <span className="font-medium">
+                {stats.staging_total} image{stats.staging_total === 1 ? '' : 's'} in
+                staging.
+              </span>{' '}
+              Staging images are not part of the trainable dataset and are excluded from
+              exports and training.
+            </span>
+
+            {stats.staging_approved > 0 ? (
+              <span className="text-amber-900">
+                {stats.staging_approved}{' '}
+                {stats.staging_approved === stats.staging_total ? 'are' : 'of them are'}{' '}
+                approved and ready to add.
+              </span>
+            ) : (
+              <span className="text-amber-900">
+                They still have unreviewed boxes — approve them first.
+              </span>
+            )}
+
+            <Link
+              to={`/projects/${projectId}/review`}
+              className="ml-auto inline-flex items-center gap-1 font-medium text-amber-900 underline underline-offset-2"
+            >
+              <SquarePen size={12} />
+              {stats.staging_approved > 0 ? 'Review' : 'Approve them'}
+            </Link>
           </div>
         )}
 
@@ -225,6 +285,13 @@ export function Visualize() {
           </div>
         )}
       </PageBody>
+
+      <CommitDialog
+        open={showCommit}
+        projectId={projectId}
+        onClose={() => setShowCommit(false)}
+        onCommitted={() => void load()}
+      />
     </>
   )
 }
@@ -328,7 +395,10 @@ function AnnotatedTile({
           </span>
         )}
         {!image.in_dataset && (
-          <span className="absolute left-1 top-1 rounded bg-white/90 px-1 py-0.5 text-[10px] font-medium text-gray-600">
+          <span
+            className="absolute left-1 top-1 rounded bg-white/90 px-1 py-0.5 text-[10px] font-medium text-gray-600"
+            title="Not in the trainable dataset yet — approve its boxes, then use Add to dataset"
+          >
             staging
           </span>
         )}
