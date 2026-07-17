@@ -71,6 +71,36 @@ def run_annotation_job(job_id: int) -> None:
         db.close()
 
 
+def _images_in_scope(db: Session, job: AnnotationJob) -> list[Image]:
+    """The images this job is allowed to touch.
+
+    Scoping exists because an unscoped run was quietly destructive. It
+    re-annotated images already committed to the dataset; their boxes changed,
+    so they were unreviewed; so each bounced back to staging. Net effect:
+    annotating three new uploads emptied a 500-image dataset. No data was
+    deleted, but the dataset membership was — indistinguishable from deletion
+    if you're looking at the numbers.
+
+      staging      only images not in the dataset. The default, and it CANNOT
+                   disturb committed work.
+      unannotated  only images with zero boxes, wherever they live.
+      all          everything, including the dataset (which then re-stages).
+    """
+    query = select(Image).where(Image.project_id == job.project_id)
+
+    if job.scope == "staging":
+        query = query.where(Image.in_dataset.is_(False))
+    elif job.scope == "unannotated":
+        # NOT IN over a correlated subquery: images that have no annotation
+        # rows at all. One query rather than fetching every image and counting
+        # its boxes in Python.
+        annotated = select(Annotation.image_id).distinct()
+        query = query.where(Image.id.not_in(annotated))
+    # "all" adds no filter.
+
+    return list(db.scalars(query).all())
+
+
 def _run(db: Session, job: AnnotationJob) -> None:
     job.status = JobStatus.RUNNING
     job.started_at = datetime.now()
@@ -90,9 +120,7 @@ def _run(db: Session, job: AnnotationJob) -> None:
     class_names = [c.name for c in categories]
     prompts = json.loads(job.prompts_json) if job.prompts_json else {}
 
-    images = list(
-        db.scalars(select(Image).where(Image.project_id == job.project_id)).all()
-    )
+    images = _images_in_scope(db, job)
     job.total_images = len(images)
     db.commit()
 
@@ -155,15 +183,12 @@ def _run(db: Session, job: AnnotationJob) -> None:
         for old in db.scalars(query).all():
             db.delete(old)
 
-        # This image's annotations just changed and no human has looked at the
-        # new ones, so it goes back to staging. Leaving it in the dataset would
-        # mean training on boxes nobody has reviewed — which is the exact thing
-        # the staging/dataset split exists to prevent.
+        # A committed image whose boxes just changed goes back to staging: the
+        # new boxes are unreviewed, and unreviewed data must not be trained on.
         #
-        # It also repairs a dead end: once an image was committed, re-annotating
-        # it left no route back to "Add to dataset", because that button only
-        # offers approved STAGING images. Now the loop closes:
-        #   annotate -> staging -> review -> approve -> commit.
+        # This only reaches dataset images under scope="all", which the UI
+        # warns about explicitly. Under the default staging scope the image is
+        # already staged and this is a no-op — the dataset is untouched.
         image.in_dataset = False
 
         for box in result.boxes:

@@ -18,6 +18,7 @@ import {
   type AnnotatePreview,
   type AnnotationSummary,
   type AnnotatorInfo,
+  type JobScope,
   type DeviceInfo,
   type ExportFormatInfo,
   type ProjectClass,
@@ -44,6 +45,7 @@ export function Annotate() {
   const [textThreshold, setTextThreshold] = useState(0.25)
   const [prompts, setPrompts] = useState<Record<string, string>>({})
   const [clearExisting, setClearExisting] = useState(false)
+  const [scope, setScope] = useState<JobScope>('staging')
   const [pre, setPre] = useState<AnnotatePreview | null>(null)
 
   const [activeJob, setActiveJob] = useState<AnnotationJob | null>(null)
@@ -148,6 +150,7 @@ export function Annotate() {
         box_threshold: boxThreshold,
         text_threshold: textThreshold,
         clear_existing: clearExisting,
+        scope,
         // Only send non-empty overrides; the backend falls back to class names.
         prompts: Object.fromEntries(
           Object.entries(prompts).filter(([, v]) => v.trim()),
@@ -161,7 +164,10 @@ export function Annotate() {
 
   const selected = annotators.find((a) => a.key === modelKey)
   const isRunning = activeJob?.status === 'running' || activeJob?.status === 'queued'
-  const canRun = !isRunning && classes.length > 0 && (summary?.total_images ?? 0) > 0
+  // Gate on the SELECTED scope's count, not the project total: with everything
+  // committed, "Staging only" has nothing to do and the run would 400.
+  const scopeCount = pre?.scope_counts?.[scope] ?? 0
+  const canRun = !isRunning && classes.length > 0 && scopeCount > 0
 
   if (loading) {
     return (
@@ -291,6 +297,87 @@ export function Annotate() {
               )}
             </div>
 
+            {/* --- Which images ---
+                An unscoped run re-annotated images already committed to the
+                dataset, which bounced every one back to staging — so labelling
+                three new uploads silently emptied a whole dataset. Scoping to
+                staging by default makes the normal case incapable of touching
+                committed work. */}
+            <div className="card">
+              <div className="border-b border-gray-200 px-4 py-3">
+                <h2 className="text-sm font-medium text-gray-900">Which images</h2>
+                <p className="text-xs text-gray-500">
+                  Images already in your dataset are left alone unless you say otherwise.
+                </p>
+              </div>
+              <div className="space-y-1.5 p-4">
+                {(
+                  [
+                    {
+                      value: 'staging' as const,
+                      label: 'Staging only',
+                      blurb:
+                        'Images not yet added to the dataset. Your dataset is not touched.',
+                    },
+                    {
+                      value: 'unannotated' as const,
+                      label: 'Unannotated only',
+                      blurb: 'Images with no boxes yet. Fills gaps, changes nothing else.',
+                    },
+                    {
+                      value: 'all' as const,
+                      label: 'All images',
+                      blurb:
+                        'Re-annotate everything, including images already in the dataset.',
+                    },
+                  ]
+                ).map((o) => (
+                  <label
+                    key={o.value}
+                    className={`flex cursor-pointer gap-2 rounded-md border p-2 transition-colors ${
+                      scope === o.value
+                        ? 'border-accent-500 bg-accent-50'
+                        : 'border-gray-200 hover:bg-gray-50'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="scope"
+                      checked={scope === o.value}
+                      onChange={() => setScope(o.value)}
+                      disabled={isRunning}
+                      className="mt-0.5 accent-accent-600"
+                    />
+                    <span className="min-w-0 flex-1">
+                      <span className="flex items-baseline justify-between gap-2">
+                        <span className="text-sm font-medium text-gray-900">{o.label}</span>
+                        <span className="font-mono text-xs tabular-nums text-gray-500">
+                          {pre?.scope_counts?.[o.value] ?? 0} image
+                          {(pre?.scope_counts?.[o.value] ?? 0) === 1 ? '' : 's'}
+                        </span>
+                      </span>
+                      <span className="block text-xs text-gray-500">{o.blurb}</span>
+                    </span>
+                  </label>
+                ))}
+
+                {/* Only "all" can disturb the dataset, so this fires only there
+                    rather than on every run regardless of scope. */}
+                {scope === 'all' && pre && pre.images_in_dataset > 0 && (
+                  <p className="rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs text-amber-900">
+                    <span className="font-medium">
+                      {pre.images_in_dataset} image
+                      {pre.images_in_dataset === 1 ? '' : 's'} will leave your dataset and
+                      return to staging.
+                    </span>{' '}
+                    Their boxes change, so they need re-approving before they can be
+                    trained on. Nothing is deleted — re-approve and use Add to dataset to
+                    put them back.
+                  </p>
+                )}
+              </div>
+            </div>
+
             {/* --- What this run will do to what's already there ---
                 Auto-annotation is NOT additive: it clears prior output before
                 writing new output. Leaving that implicit meant a re-run could
@@ -354,17 +441,6 @@ export function Annotate() {
                   </p>
                 )}
 
-                {/* Annotated images return to staging, which can empty a dataset
-                    someone spent time committing. Say so before, not after. */}
-                {pre && pre.images_in_dataset > 0 && (
-                  <p className="rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs text-amber-900">
-                    {pre.images_in_dataset} image
-                    {pre.images_in_dataset === 1 ? '' : 's'} currently in your dataset will
-                    return to staging for review, because their annotations change and
-                    nothing unreviewed should be trained on. Re-approve and use{' '}
-                    <span className="font-medium">Add to dataset</span> afterwards.
-                  </p>
-                )}
               </div>
             </div>
 
@@ -375,15 +451,23 @@ export function Annotate() {
                 ) : (
                   <>
                     <Play size={14} />
-                    Run auto-annotation
+                    Annotate {scopeCount} image{scopeCount === 1 ? '' : 's'}
                   </>
                 )}
               </button>
               {classes.length === 0 && (
                 <span className="text-xs text-gray-500">Add a class first</span>
               )}
-              {(summary?.total_images ?? 0) === 0 && (
-                <span className="text-xs text-gray-500">Upload images first</span>
+              {/* Say WHY it's disabled. "0 images" with a full grid on screen is
+                  baffling unless you know they're all committed. */}
+              {classes.length > 0 && scopeCount === 0 && !isRunning && (
+                <span className="text-xs text-gray-500">
+                  {(summary?.total_images ?? 0) === 0
+                    ? 'Upload images first'
+                    : scope === 'staging'
+                      ? 'No staging images — everything is already in the dataset. Choose "All images" to re-annotate.'
+                      : 'No images match this scope.'}
+                </span>
               )}
             </div>
 

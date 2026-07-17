@@ -100,12 +100,16 @@ def start_annotation(
             f"Job {active.id} is already {active.status} for this project",
         )
 
-    image_count = len(
-        db.scalars(select(Image.id).where(Image.project_id == project_id)).all()
-    )
+    counts = _scope_counts(db, project_id)
+    image_count = counts.get(payload.scope, 0)
     if image_count == 0:
+        # Name the scope in the error. "No images to annotate" is baffling when
+        # you can see 500 of them on screen — they're just all committed.
         raise HTTPException(
-            status.HTTP_400_BAD_REQUEST, "This project has no images to annotate"
+            status.HTTP_400_BAD_REQUEST,
+            f"No images match scope '{payload.scope}'. "
+            f"Available — staging: {counts['staging']}, "
+            f"unannotated: {counts['unannotated']}, all: {counts['all']}.",
         )
 
     job = AnnotationJob(
@@ -116,6 +120,7 @@ def start_annotation(
         box_threshold=payload.box_threshold,
         text_threshold=payload.text_threshold,
         clear_existing=payload.clear_existing,
+        scope=payload.scope,
         prompts_json=json.dumps(payload.prompts) if payload.prompts else None,
     )
     db.add(job)
@@ -311,13 +316,33 @@ def approve_image(image_id: int, db: Session = Depends(get_db)) -> list[Annotati
     return anns
 
 
+def _scope_counts(db: Session, project_id: int) -> dict:
+    """How many images each scope would process."""
+    total = db.scalar(
+        select(func.count(Image.id)).where(Image.project_id == project_id)
+    ) or 0
+    staging = db.scalar(
+        select(func.count(Image.id)).where(
+            Image.project_id == project_id, Image.in_dataset.is_(False)
+        )
+    ) or 0
+    annotated = select(Annotation.image_id).distinct()
+    unannotated = db.scalar(
+        select(func.count(Image.id)).where(
+            Image.project_id == project_id, Image.id.not_in(annotated)
+        )
+    ) or 0
+    return {"staging": staging, "unannotated": unannotated, "all": total}
+
+
 @router.get("/projects/{project_id}/annotate/preview")
 def annotate_preview(project_id: int, db: Session = Depends(get_db)) -> dict:
-    """What a run would destroy, so the UI can say so before the click.
+    """What a run would touch and destroy, so the UI can say so before the click.
 
     Auto-annotation is not additive — it clears prior output before writing new
-    output. Without this, the only way to discover that a re-run wiped your 40
-    hand-drawn boxes is to notice they're gone.
+    output, and under scope="all" it also re-stages committed images. Without
+    this, the only way to discover that a run wiped your 40 hand-drawn boxes or
+    emptied your dataset is to notice afterwards.
     """
     get_project_or_404(project_id, db)
 
@@ -341,8 +366,10 @@ def annotate_preview(project_id: int, db: Session = Depends(get_db)) -> dict:
         # the number the user actually needs before ticking that box.
         "manual_boxes": by_source.get("manual", 0),
         "imported_boxes": by_source.get("imported", 0),
-        # Annotated images return to staging for re-review, which empties this.
+        # Only scope="all" puts these at risk of re-staging.
         "images_in_dataset": in_dataset,
+        # Drives the scope selector's per-option counts.
+        "scope_counts": _scope_counts(db, project_id),
     }
 
 

@@ -255,11 +255,14 @@ export const listAnnotators = () => api.get<AnnotatorInfo[]>('/annotators')
 export const getDevice = () => api.get<DeviceInfo>('/device')
 export const listExportFormats = () => api.get<ExportFormatInfo[]>('/export-formats')
 
+export type JobScope = 'staging' | 'unannotated' | 'all'
+
 export interface AnnotatePreview {
   auto_boxes: number
   manual_boxes: number
   imported_boxes: number
   images_in_dataset: number
+  scope_counts: Record<JobScope, number>
 }
 
 /** What a run would destroy. Auto-annotation is not additive. */
@@ -274,6 +277,7 @@ export const startAnnotation = (
     text_threshold?: number
     prompts?: Record<string, string>
     clear_existing?: boolean
+    scope?: JobScope
   },
 ) => api.post<AnnotationJob>(`/projects/${projectId}/annotate`, body)
 

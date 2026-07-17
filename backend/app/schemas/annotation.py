@@ -73,10 +73,34 @@ class AnnotationUpdate(BaseModel):
     reviewed: bool | None = None
 
 
+class JobScope:
+    """Which images an auto-annotation run touches."""
+
+    #: Only images not yet committed to the dataset. THE DEFAULT.
+    STAGING = "staging"
+    #: Only images with no boxes at all — fill in the gaps, touch nothing else.
+    UNANNOTATED = "unannotated"
+    #: Everything, including committed dataset images. Those return to staging
+    #: for re-review, so this empties the dataset until you re-approve.
+    ALL = "all"
+
+
 class AnnotationJobCreate(BaseModel):
     """Request body to launch an auto-annotation run."""
 
     model_key: str
+
+    #: Defaults to STAGING, and that default matters a great deal.
+    #:
+    #: Running over every image meant a run also re-annotated images already
+    #: committed to the dataset — and since changed boxes are unreviewed, each
+    #: one bounced back to staging. The effect was that annotating three new
+    #: uploads silently emptied a 500-image dataset. Nothing was deleted, but
+    #: the membership was, which looks identical from the outside.
+    #:
+    #: Scoping to staging means the normal case — "I added images, label them"
+    #: — cannot touch the dataset at all.
+    scope: str = Field(default=JobScope.STAGING, pattern="^(staging|unannotated|all)$")
 
     #: When True, delete EVERY existing box first — including human-drawn and
     #: imported ones — so the result is purely the model's output.
