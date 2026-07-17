@@ -531,13 +531,6 @@ def main() -> int:
     print(f"\n{C.BOLD}CV Platform{C.RESET} {C.DIM}{G.DASH} local development{C.RESET}\n")
 
     npm = preflight()
-
-    # Before anything else: clear out servers a previous run left behind. An
-    # orphaned reloader silently serves stale code — see reap_stale_servers().
-    stale = reap_stale_servers()
-    if stale:
-        warn(f"Stopped {stale} leftover dev server process(es) from a previous run")
-
     ensure_backend()
     ensure_frontend(npm)
 
@@ -545,7 +538,18 @@ def main() -> int:
         ok("Setup complete")
         return 0
 
-    # Only now do we care about ports — after setup, before binding.
+    # Everything below here is about STARTING servers, so nothing above may
+    # touch running ones. `--setup-only` installs dependencies and exits — it
+    # has no business killing an app you have running in another terminal, which
+    # is exactly what it did while the reap sat above this guard.
+    #
+    # Clear out any servers a previous run left behind BEFORE checking ports:
+    # an orphaned reloader silently serves stale code, and the port check can't
+    # see it because an idle reloader holds no port. See reap_stale_servers().
+    stale = reap_stale_servers()
+    if stale:
+        warn(f"Stopped {stale} leftover dev server process(es) from a previous run")
+
     check_ports()
 
     # PYTHONUNBUFFERED forces uvicorn's logs through immediately. Without it,
