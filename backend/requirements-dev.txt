@@ -1,0 +1,9 @@
+# Test/dev tooling. Kept out of requirements.txt so a plain install stays lean.
+#
+#   pip install -r requirements-dev.txt
+#   pytest
+#
+# httpx is already pulled in by fastapi/starlette (TestClient needs it), so
+# pytest is the only real add here.
+
+pytest>=8.0
