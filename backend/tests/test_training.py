@@ -78,6 +78,8 @@ def fake_trainer():
     from app.ml.trainers import registry
     from app.ml.trainers.base import EpochMetrics, TrainConfig, TrainResult, Trainer
 
+    received: list[TrainConfig] = []
+
     class FakeTrainer(Trainer):
         key = "fake"
         display_name = "Fake Trainer"
@@ -89,6 +91,7 @@ def fake_trainer():
         default_image_size = 64
 
         def train(self, config: TrainConfig, on_epoch) -> TrainResult:
+            received.append(config)
             # The runner must have exported a real dataset before calling us.
             assert (config.dataset_dir / "data.yaml").exists(), "dataset not exported"
             for e in range(1, config.epochs + 1):
@@ -109,6 +112,10 @@ def fake_trainer():
                 epochs_completed=config.epochs,
             )
 
+    # Expose the captured configs on the class so tests can assert on what the
+    # runner passed. Set after the class body to avoid the assignment-makes-it-
+    # local trap inside it.
+    FakeTrainer.received = received  # type: ignore[attr-defined]
     registry.register(FakeTrainer)
     yield FakeTrainer
     registry._REGISTRY.pop("fake", None)
@@ -261,3 +268,44 @@ def test_run_exports_records_metrics_and_checkpoint(client, monkeypatch, fake_tr
     # The checkpoint was recorded and actually exists on disk.
     assert job["checkpoint_path"]
     assert Path(job["checkpoint_path"]).exists()
+
+
+def test_finetune_rejects_unusable_source(client, no_train_run, fake_trainer):
+    """Can't continue from a run that doesn't exist or never produced weights."""
+    pid, _ = make_trainable_project(client)
+    # Non-existent source.
+    r = client.post(
+        f"/api/projects/{pid}/train",
+        json={"trainer_key": "fake", "init_from_job_id": 999},
+    )
+    assert r.status_code == 400
+
+
+def test_finetune_continues_from_prior_checkpoint(client, monkeypatch, fake_trainer):
+    """A second run started 'from' the first is handed the first's checkpoint as
+    init_weights — building on it instead of the pretrained base."""
+    monkeypatch.setattr(
+        "app.services.training_job.SessionLocal",
+        client.SessionLocal,  # type: ignore[attr-defined]
+    )
+    pid, _ = make_trainable_project(client)
+
+    first = client.post(
+        f"/api/projects/{pid}/train", json={"trainer_key": "fake", "epochs": 2}
+    ).json()
+    assert client.get(f"/api/training-jobs/{first['id']}").json()["status"] == "done"
+    ckpt = client.get(f"/api/training-jobs/{first['id']}").json()["checkpoint_path"]
+
+    second = client.post(
+        f"/api/projects/{pid}/train",
+        json={"trainer_key": "fake", "epochs": 2, "init_from_job_id": first["id"]},
+    )
+    assert second.status_code == 202, second.text
+    second_job = client.get(f"/api/training-jobs/{second.json()['id']}").json()
+    assert second_job["status"] == "done"
+    assert second_job["init_from_job_id"] == first["id"]
+
+    # The runner passed the first run's checkpoint to the trainer as init_weights.
+    last_config = fake_trainer.received[-1]
+    assert last_config.init_weights is not None
+    assert str(last_config.init_weights) == ckpt

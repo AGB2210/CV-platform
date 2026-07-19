@@ -29,6 +29,7 @@ import json
 import logging
 import traceback
 from datetime import datetime
+from pathlib import Path
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -110,6 +111,25 @@ def _run(db: Session, job: TrainingJob) -> None:
             "This project has no classes. Add at least one class before training."
         )
     class_names = [c.name for c in categories]
+    job.num_classes = len(class_names)
+
+    # Finetuning: resolve the source run's checkpoint to start from. Re-checked
+    # here (not just at the route) because this runs later and the file could
+    # have gone — a stale id must fail loudly, not silently train from scratch.
+    init_weights: Path | None = None
+    if job.init_from_job_id is not None:
+        source = db.get(TrainingJob, job.init_from_job_id)
+        if source is None or not source.checkpoint_path:
+            raise ValueError(
+                f"Cannot continue from run {job.init_from_job_id}: it has no saved "
+                "checkpoint."
+            )
+        init_weights = Path(source.checkpoint_path)
+        if not init_weights.exists():
+            raise ValueError(
+                f"The checkpoint for run {job.init_from_job_id} is missing on disk "
+                f"({init_weights}). Train a fresh model instead."
+            )
 
     # A run learns from ACCEPTED boxes in the TRAIN split. Validate that some
     # exist before paying to export and spin up a framework — a run over zero
@@ -170,6 +190,7 @@ def _run(db: Session, job: TrainingJob) -> None:
         num_classes=len(class_names),
         class_names=class_names,
         device=get_device(),
+        init_weights=init_weights,
     )
 
     history: list[dict] = []

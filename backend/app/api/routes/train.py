@@ -87,6 +87,12 @@ def start_training(
             "and assign images to 'train' on the Dataset page, then train.",
         )
 
+    # Finetuning from a previous run: validate the source is usable and its class
+    # set still matches, so we fail with a clear 400 now rather than a cryptic
+    # framework error 30 seconds into the run.
+    if payload.init_from_job_id is not None:
+        _validate_finetune_source(db, project_id, payload.init_from_job_id)
+
     job = TrainingJob(
         project_id=project_id,
         trainer_key=payload.trainer_key,
@@ -96,6 +102,7 @@ def start_training(
         image_size=payload.image_size,
         learning_rate=payload.learning_rate,
         total_epochs=payload.epochs,
+        init_from_job_id=payload.init_from_job_id,
     )
     db.add(job)
     db.commit()
@@ -221,6 +228,38 @@ def _reject_if_gpu_busy(db: Session, project_id: int) -> None:
             status.HTTP_409_CONFLICT,
             f"An auto-annotation job ({active_annotate.id}) is still "
             f"{active_annotate.status}; it holds the GPU. Wait for it to finish.",
+        )
+
+
+def _validate_finetune_source(db: Session, project_id: int, source_id: int) -> None:
+    """400 unless `source_id` is a finished run in this project with a checkpoint
+    and a class set matching the project's current classes."""
+    source = db.get(TrainingJob, source_id)
+    if source is None or source.project_id != project_id:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"Run {source_id} was not found in this project.",
+        )
+    if source.status != JobStatus.DONE or not source.checkpoint_path:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"Run {source_id} has no finished checkpoint to continue from.",
+        )
+    current_classes = (
+        db.scalar(
+            select(func.count(Category.id)).where(Category.project_id == project_id)
+        )
+        or 0
+    )
+    # source.num_classes is 0 on runs from before it was recorded — skip the
+    # check there rather than block continuing a perfectly good old checkpoint.
+    if source.num_classes and source.num_classes != current_classes:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"Run {source_id} was trained on {source.num_classes} class"
+            f"{'es' if source.num_classes != 1 else ''}, but the project now has "
+            f"{current_classes}. Finetuning needs a matching class set — train a "
+            "fresh model instead.",
         )
 
 

@@ -74,6 +74,12 @@ class TrainConfig:
     #: "cuda" | "cpu", from app.ml.device.get_device().
     device: str
 
+    #: Weights to START from. None = the trainer's pretrained base (train from
+    #: scratch-ish). A path = continue/finetune from a previous run's checkpoint,
+    #: so you build on prior training instead of re-learning from zero each time.
+    #: The class set must match what that checkpoint was trained on.
+    init_weights: Path | None = None
+
 
 @dataclass
 class EpochMetrics:

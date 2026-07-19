@@ -46,6 +46,11 @@ class TrainingJobCreate(BaseModel):
     # only when the user deliberately overrides it.
     learning_rate: float | None = Field(default=None, gt=0.0, le=1.0)
 
+    # Continue/finetune from a previous run's checkpoint instead of the
+    # pretrained base. None = fresh start. Validated at the route (same project,
+    # completed, has a checkpoint, matching class count).
+    init_from_job_id: int | None = None
+
 
 class EpochPoint(BaseModel):
     """One epoch on the loss/mAP curve."""
@@ -72,6 +77,9 @@ class TrainingJobRead(BaseModel):
     learning_rate: float | None
     train_images: int
     val_images: int
+    num_classes: int
+    #: Set when this run continued another run's checkpoint (finetune).
+    init_from_job_id: int | None
 
     current_epoch: int
     total_epochs: int

@@ -64,6 +64,16 @@ class TrainingJob(Base):
     # the job record should reflect what THIS run saw.
     train_images: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     val_images: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # Class count this run trained on, snapshotted. Used to reject finetuning a
+    # checkpoint whose class set no longer matches the project's current classes.
+    num_classes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    # When set, this run was initialised from ANOTHER run's checkpoint (continue
+    # / finetune) rather than the pretrained base — provenance: "run 7 continued
+    # run 4". A plain nullable int, not a FK: the _add_missing_columns stopgap
+    # can't ALTER in a constraint, and a dangling id is harmless — the runner
+    # re-checks the source exists and has a checkpoint before using it.
+    init_from_job_id: Mapped[int | None] = mapped_column(Integer, default=None)
 
     # --- Live progress the frontend polls -----------------------------------
     current_epoch: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

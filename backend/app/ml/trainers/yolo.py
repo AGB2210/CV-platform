@@ -83,7 +83,12 @@ class YoloTrainer(Trainer):
         if not data_yaml.exists():
             raise FileNotFoundError(f"Expected exported dataset at {data_yaml}")
 
-        model = YOLO(self.base_weights)
+        # Finetune from a prior run's checkpoint when asked, else the pretrained
+        # base. Loading a .pt trained on the same classes continues improving it;
+        # YOLO reads the architecture + weights (including the trained detection
+        # head) straight from the file.
+        start_weights = str(config.init_weights) if config.init_weights else self.base_weights
+        model = YOLO(start_weights)
 
         # Bridge ultralytics' per-epoch signal to our callback. The framework
         # hands us ITS trainer object; we defensively dig the numbers out of it,
