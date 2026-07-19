@@ -386,7 +386,13 @@ export function Review() {
               <p className="truncate text-sm font-medium text-gray-900">
                 {current?.original_filename}
               </p>
-              <p className="text-xs tabular-nums text-gray-500">
+              {/* truncate, like the title above: this header is a fixed-height
+                  (h-12) items-center row, so if this metadata line wraps — which
+                  it does once the canvas column gets narrow and the shrink-0
+                  accept/reject buttons squeeze it — the taller block overflows
+                  the row and spills UP into the proposal banner above. One line,
+                  ellipsised, keeps it contained at any width. */}
+              <p className="truncate text-xs tabular-nums text-gray-500">
                 {index + 1} of {images.length} · {current?.width}×{current?.height} ·{' '}
                 {accepted.length} box{accepted.length === 1 ? '' : 'es'}
                 {unreviewed > 0 && (
