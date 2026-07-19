@@ -424,6 +424,9 @@ export interface TrainingJob {
   learning_rate: number | null
   train_images: number
   val_images: number
+  num_classes: number
+  /** Set when this run continued another run's checkpoint (finetune). */
+  init_from_job_id: number | null
   current_epoch: number
   total_epochs: number
   train_loss: number | null
@@ -463,6 +466,8 @@ export const startTraining = (
     batch_size?: number
     image_size?: number
     learning_rate?: number | null
+    /** Continue/finetune from this completed run's checkpoint. */
+    init_from_job_id?: number | null
   },
 ) => api.post<TrainingJob>(`/projects/${projectId}/train`, body)
 export const getTrainingJob = (jobId: number) =>
