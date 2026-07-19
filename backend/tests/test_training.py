@@ -117,12 +117,17 @@ def fake_trainer():
 # --- capability + readiness -------------------------------------------------
 
 
-def test_trainers_list_empty_without_deps(client):
-    """Phase 4a ships no concrete trainer — the dropdown is legitimately empty,
-    and the endpoint must still answer 200 with a list, not error."""
+def test_trainers_lists_registered_backends(client):
+    """The dropdown is fetched, not hardcoded: whatever trainers are registered
+    show up, each carrying the metadata and form defaults the UI needs. YOLO is
+    registered in Phase 4b."""
     r = client.get("/api/trainers")
     assert r.status_code == 200
-    assert r.json() == []
+    keys = {t["key"] for t in r.json()}
+    assert "yolo" in keys
+    yolo = next(t for t in r.json() if t["key"] == "yolo")
+    assert yolo["export_format"] == "yolo"
+    assert yolo["default_epochs"] > 0 and yolo["default_image_size"] > 0
 
 
 def test_preview_reports_split_readiness(client):

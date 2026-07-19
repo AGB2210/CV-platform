@@ -25,10 +25,11 @@ accelerate>=1.0.0
 supervision>=0.25.0
 
 # --- Phase 4: training ---
-# Commented until Phase 4 — installing them now would pull conflicting pins
-# before we need them.
-# rfdetr>=1.1.0              # RF-DETR (default trainer)
-# ultralytics>=8.3.0         # YOLO26
+# YOLO11 (Ultralytics) — the first training backend (app/ml/trainers/yolo.py).
+# Pulls polars + nvidia-ml-py + thop; torch is already satisfied, so the CUDA
+# build is left untouched. Nano fine-tunes within 4 GB.
+ultralytics>=8.3.0
+# rfdetr>=1.1.0             # RF-DETR (COCO) — a later trainer, not yet wired
 
 # --- Phase 4/5: metrics ---
 # pycocotools>=2.0.8         # standard COCO mAP evaluation

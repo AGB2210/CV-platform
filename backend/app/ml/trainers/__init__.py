@@ -8,11 +8,9 @@ imports is invisible — so this file is the single list of "which trainers exis
 Adding one is two steps: write the class, add the import below. No route, schema
 or component changes.
 
-Phase 4a ships the pipeline (interface, registry, job, routes, page) with NO
-concrete trainer registered yet — the dropdown is intentionally empty until the
-heavy training deps are installed. Phase 4b adds the first one:
-
-    from app.ml.trainers.yolo import YoloTrainer   # noqa: F401
+Phase 4b registers the first concrete trainer, YOLO. Its module imports
+ultralytics lazily (inside train()), so this import stays free — the trainer
+appears in the registry, but the heavy deps only load when a run actually starts.
 """
 
 from app.ml.trainers.base import (
@@ -21,10 +19,12 @@ from app.ml.trainers.base import (
     TrainResult,
     Trainer,
 )
+from app.ml.trainers.yolo import YoloTrainer
 
 __all__ = [
     "EpochMetrics",
     "TrainConfig",
     "TrainResult",
     "Trainer",
+    "YoloTrainer",
 ]
