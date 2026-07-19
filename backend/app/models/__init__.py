@@ -14,6 +14,7 @@ from app.models.annotation_job import AnnotationJob, JobStatus
 from app.models.category import Category
 from app.models.image import Image
 from app.models.project import Project
+from app.models.training_job import TrainingJob
 
 __all__ = [
     "Annotation",
@@ -22,4 +23,5 @@ __all__ = [
     "Category",
     "Image",
     "Project",
+    "TrainingJob",
 ]

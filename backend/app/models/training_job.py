@@ -1,0 +1,113 @@
+"""
+TrainingJob ORM model — one training run of one model over a project's dataset.
+
+The training sibling of AnnotationJob, and a table for the same reasons (see that
+model's docstring): the frontend polls, so progress must survive a
+`uvicorn --reload`; failures need a durable record with their traceback; and job
+history is a SELECT, not in-memory bookkeeping.
+
+The seam is identical too: `services/training_job.py::run_training_job` takes a
+job id and makes its own session, touching no request state — so moving off
+FastAPI BackgroundTasks to Celery/RQ is a one-line change at the route and
+nothing else. That is again why the ML code never imports FastAPI.
+
+WHAT DIFFERS FROM AnnotationJob
+-------------------------------
+Annotation progress is measured in IMAGES (processed / total). Training progress
+is measured in EPOCHS, and the interesting output is metrics over time — loss and
+mAP — not a box count. So the counters and result columns are different, but the
+lifecycle (queued -> running -> done/failed) and the JobStatus vocabulary are
+shared, which keeps the frontend's StatusBadge working unchanged.
+"""
+
+from datetime import datetime
+
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.database import Base
+
+
+class TrainingJob(Base):
+    __tablename__ = "training_jobs"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    project_id: Mapped[int] = mapped_column(
+        ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+
+    # Which trainer ran — a registry key like "yolo". A string, not a FK,
+    # because the registry lives in code, not the DB (same as AnnotationJob).
+    trainer_key: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    # Reuses AnnotationJob's JobStatus vocabulary (queued/running/done/failed).
+    # Not imported as a type here — it's a bag of string constants, and the
+    # column just stores the string — but the values are deliberately identical
+    # so one StatusBadge component renders both kinds of job.
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="queued", index=True
+    )
+
+    # --- Hyperparameters, recorded so a run is reproducible ------------------
+    # "which settings produced this checkpoint" is unanswerable months later
+    # unless the settings are stored next to the result.
+    epochs: Mapped[int] = mapped_column(Integer, nullable=False, default=50)
+    batch_size: Mapped[int] = mapped_column(Integer, nullable=False, default=8)
+    image_size: Mapped[int] = mapped_column(Integer, nullable=False, default=640)
+    # NULL means "the framework's own default schedule" — see TrainConfig. A real
+    # column, not omitted, because a reproducible record must distinguish "we
+    # chose the default" from "we chose 0.01".
+    learning_rate: Mapped[float | None] = mapped_column(Float, default=None)
+
+    # Dataset size the run actually trained on, snapshotted at export time.
+    # Stored rather than recomputed because the split can change afterwards and
+    # the job record should reflect what THIS run saw.
+    train_images: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    val_images: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    # --- Live progress the frontend polls -----------------------------------
+    current_epoch: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    total_epochs: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    # Latest and best validation mAP (@.50:.95), plus the most recent train loss.
+    # `best_map` is tracked separately from `val_map` because mAP is noisy epoch
+    # to epoch — the last epoch is often not the best, and it's the best
+    # checkpoint we keep and report.
+    train_loss: Mapped[float | None] = mapped_column(Float, default=None)
+    val_map: Mapped[float | None] = mapped_column(Float, default=None)
+    best_map: Mapped[float | None] = mapped_column(Float, default=None)
+
+    # Per-epoch history as a JSON array of {epoch, train_loss, val_map, ...},
+    # for a loss/mAP curve. Text + hand-serialised for the same reason as
+    # AnnotationJob.prompts_json: we only ever read it whole, so a JSON column
+    # type buys nothing over a string.
+    metrics_json: Mapped[str | None] = mapped_column(Text, default=None)
+
+    # Filesystem path to the best checkpoint. On disk, not in the DB, exactly
+    # like image bytes — weights are large binaries and belong on the filesystem
+    # with only their path recorded here. Consumed by Phase 5 (evaluate/deploy).
+    checkpoint_path: Mapped[str | None] = mapped_column(String(512), default=None)
+
+    # Populated on failure. Text, not String(n) — tracebacks are long, and
+    # truncating the one thing that explains a failure is a cruel default.
+    error: Mapped[str | None] = mapped_column(Text, default=None)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+    # Split for the same reason as AnnotationJob: created->started is queue wait,
+    # started->finished is actual compute, and conflating them makes "why was
+    # that slow" unanswerable.
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, default=None)
+
+    project: Mapped["Project"] = relationship()  # noqa: F821
+
+    @property
+    def progress_pct(self) -> float:
+        if not self.total_epochs:
+            return 0.0
+        return round(100.0 * self.current_epoch / self.total_epochs, 1)
+
+    def __repr__(self) -> str:
+        return f"<TrainingJob id={self.id} {self.trainer_key} {self.status}>"

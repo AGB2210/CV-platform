@@ -15,12 +15,17 @@ from app.api.routes import (
     images,
     projects,
     proposals,
+    train,
 )
 
 # Importing the annotators package runs each module's @register decorator, which
 # is what populates the model registry. Without this import the /api/annotators
 # dropdown would be empty — the classes exist but nothing has referenced them.
 import app.ml.annotators  # noqa: F401
+
+# Same for trainers: importing the package runs the @register decorators that
+# populate the trainer registry (empty until the Phase 4 deps are installed).
+import app.ml.trainers  # noqa: F401
 
 api_router = APIRouter()
 
@@ -38,3 +43,4 @@ api_router.include_router(images.router)
 api_router.include_router(categories.router)
 api_router.include_router(dataset.router)
 api_router.include_router(proposals.router)
+api_router.include_router(train.router)
