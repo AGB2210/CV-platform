@@ -365,7 +365,11 @@ export function Review() {
           />
         )}
         <header className="flex h-12 shrink-0 items-center justify-between border-b border-gray-200 bg-white px-4">
-          <div className="flex items-center gap-2">
+          {/* min-w-0 is load-bearing: without it this group won't shrink below
+              its content, so the truncating title never actually truncates and
+              instead shoves the shrink-0 action buttons off the right edge and
+              behind the panel. With it, the title gives up width first. */}
+          <div className="flex min-w-0 items-center gap-2">
             <button
               className="btn-secondary px-1.5"
               onClick={() => goTo(-1)}
@@ -418,8 +422,18 @@ export function Review() {
                 {/* Scoped to the CURRENT image. The bar above does the whole
                     batch and says "all" — this pair says "this image", because
                     two identical "Reject" buttons with different blast radii is
-                    a trap. */}
-                <span className="hidden text-[11px] uppercase tracking-wide text-gray-400 sm:inline">
+                    a trap.
+
+                    RESPONSIVE: this whole group is ~340px, which overflows the
+                    right panel below ~1216px. Rather than block those widths
+                    outright, it degrades — the "This image" hint and the word
+                    "image" on each button drop below `xl` (1280px), shrinking
+                    the group to ~190px so it fits down to the 1024px floor.
+                    The VERB stays ("Reject"/"Accept") at every width: that plus
+                    hue (green/red) and fill (solid here, outlined for the batch
+                    in the panel) is what keeps the destructive action legible —
+                    we never fall back to a bare, ambiguous icon. */}
+                <span className="hidden text-[11px] uppercase tracking-wide text-gray-400 xl:inline">
                   This image
                 </span>
                 {/* SOLID — the batch pair in the panel is outlined. Hue says
@@ -430,7 +444,7 @@ export function Review() {
                   title="Discard THIS image's model boxes and keep your own. Other images are unaffected."
                 >
                   <X size={14} />
-                  Reject image
+                  Reject<span className="hidden xl:inline">&nbsp;image</span>
                 </button>
                 <button
                   className="btn-accept"
@@ -438,7 +452,7 @@ export function Review() {
                   title="Keep THIS image's model boxes, replacing your own. Other images are unaffected."
                 >
                   <Check size={14} />
-                  Accept image ({proposals.length})
+                  Accept<span className="hidden xl:inline">&nbsp;image</span> ({proposals.length})
                 </button>
               </>
             ) : null}

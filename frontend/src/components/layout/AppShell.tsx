@@ -4,17 +4,21 @@ import { Minimize2 } from 'lucide-react'
 import { Sidebar } from './Sidebar'
 
 /**
- * Below this viewport width the dense multi-column layouts can't fit without
- * overlapping — the worst case is the Review screen, where the sidebar,
- * filmstrip, right panel and a ~340px-wide action header together need this
- * much room before the accept/reject buttons stop colliding with the right
- * panel. Measured empirically: the Review header clears the panel at ~1216px,
- * so 1280 gives a little margin and is a conventional desktop minimum.
+ * Below this viewport width the dense multi-column layouts stop being usable.
  *
- * It's a single knob on purpose. Lower it and you trade a little button overlap
- * on Review for supporting narrower windows; the guard below reads it live.
+ * The Review header used to be the binding constraint — its ~340px action group
+ * overflowed the right panel below ~1216px — but that header now degrades (it
+ * drops the "image" word off the accept/reject buttons below Tailwind's `xl`,
+ * 1280px, so they shrink to ~190px and fit). With that gone, the floor is set
+ * by the fixed chrome plus a canvas big enough to actually draw on: sidebar
+ * (224) + filmstrip (160) + right panel (240) leave the canvas at ~394px here,
+ * which is cramped but workable. Below this the canvas is too small to annotate,
+ * so the guard takes over. 1024 is also the conventional desktop-min breakpoint.
+ *
+ * It's a single knob on purpose. Raise it for a roomier canvas, lower it (and
+ * you'll want a second, icon-only degradation step on the header) to go narrower.
  */
-const MIN_SUPPORTED_WIDTH = 1280
+const MIN_SUPPORTED_WIDTH = 1024
 
 /** Live viewport width. SPA only (no SSR), so reading `window` at init is safe. */
 function useViewportWidth() {
