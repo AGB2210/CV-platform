@@ -1,30 +1,18 @@
 """
-Model proposals: accept or reject. That's the whole vocabulary.
+Model proposals: accept or reject.
 
-Auto-annotation writes PROPOSALS, not annotations. They're excluded from
+Auto-annotation writes PROPOSALS, not annotations. They are excluded from
 exports, training, and every count until a decision is made:
 
     Accept  the model's boxes become your annotations. Your previous boxes ON
             THE IMAGES THIS RUN COVERED are deleted — you asked for the model's
-            output, so that's what you get.
+            output, so that's what you get. Images the run never looked at keep
+            their annotations.
     Reject  the proposals are thrown away and your boxes stay exactly as they
             were.
 
-WHY THERE ARE NO MODES HERE
----------------------------
-This used to offer append/merge/replace. Append was the default, so accepting a
-batch piled the model's boxes ON TOP of the previous run's — re-running four
-times gave you the same three objects boxed four times over, and the canvas drew
-both layers at once so you couldn't tell which was which.
-
-The append and merge cases have no real use: if you wanted to keep your own
-boxes you'd reject the batch, and if you wanted the model's you'd want ONLY the
-model's. Two buttons say everything three modes did, and can't produce
-duplicates.
-
-Note that append/merge/replace still exist for the staging -> dataset commit
-(see routes/dataset.py). That's a different decision about IMAGES, where a
-filename can genuinely collide.
+There are deliberately no other options. Anything that kept BOTH sets would
+accumulate duplicates across runs, and "keep mine" is what reject already means.
 """
 
 from __future__ import annotations
