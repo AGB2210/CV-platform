@@ -388,6 +388,88 @@ export const setSplitForImages = (projectId: number, imageIds: number[], split: 
     split,
   })
 
+// --- Training (Phase 4) ---------------------------------------------------
+// Mirrors the auto-annotation shape: fetch the trainer list (never hardcode
+// it), POST to start a background job, poll it while it runs. Same StatusBadge
+// vocabulary as AnnotationJob, on purpose.
+
+export interface TrainerInfo {
+  key: string
+  display_name: string
+  description: string
+  approx_vram_gb: number
+  export_format: string
+  default_epochs: number
+  default_batch_size: number
+  default_image_size: number
+}
+
+/** One epoch on the loss/mAP curve. Any metric may be null for an epoch that
+ *  didn't measure it — that's "not measured", not zero. */
+export interface EpochPoint {
+  epoch: number
+  train_loss: number | null
+  val_map: number | null
+  val_map50: number | null
+}
+
+export interface TrainingJob {
+  id: number
+  project_id: number
+  trainer_key: string
+  status: 'queued' | 'running' | 'done' | 'failed'
+  epochs: number
+  batch_size: number
+  image_size: number
+  learning_rate: number | null
+  train_images: number
+  val_images: number
+  current_epoch: number
+  total_epochs: number
+  train_loss: number | null
+  /** Latest validation mAP@.50:.95. */
+  val_map: number | null
+  /** Best mAP across all epochs — the checkpoint we keep. */
+  best_map: number | null
+  checkpoint_path: string | null
+  error: string | null
+  created_at: string
+  started_at: string | null
+  finished_at: string | null
+  progress_pct: number
+  /** Per-epoch history for the curve. Always present (possibly empty). */
+  metrics: EpochPoint[]
+}
+
+/** Dataset readiness — answered before the click so a doomed run is never
+ *  launched. */
+export interface TrainPreview {
+  num_classes: number
+  splits: Record<Split, { images: number; boxes: number }>
+  can_train: boolean
+  warnings: string[]
+}
+
+/** Fetched, never hardcoded — registering a trainer on the backend makes it
+ *  appear here. Empty until the Phase 4 training deps are installed. */
+export const listTrainers = () => api.get<TrainerInfo[]>('/trainers')
+export const getTrainPreview = (projectId: number) =>
+  api.get<TrainPreview>(`/projects/${projectId}/train/preview`)
+export const startTraining = (
+  projectId: number,
+  body: {
+    trainer_key: string
+    epochs?: number
+    batch_size?: number
+    image_size?: number
+    learning_rate?: number | null
+  },
+) => api.post<TrainingJob>(`/projects/${projectId}/train`, body)
+export const getTrainingJob = (jobId: number) =>
+  api.get<TrainingJob>(`/training-jobs/${jobId}`)
+export const listTrainingJobs = (projectId: number) =>
+  api.get<TrainingJob[]>(`/projects/${projectId}/training-jobs`)
+
 export const bulkDeleteProjects = (projectIds: number[]) =>
   api.post<{ deleted: number; not_found: number[] }>('/projects/bulk-delete', {
     project_ids: projectIds,

@@ -5,6 +5,7 @@ import { ProjectDetail } from '@/pages/ProjectDetail'
 import { Annotate } from '@/pages/Annotate'
 import { Review } from '@/pages/Review'
 import { Visualize } from '@/pages/Visualize'
+import { Train } from '@/pages/Train'
 
 /**
  * Route table.
@@ -28,8 +29,8 @@ export default function App() {
               first image). */}
           <Route path="/projects/:id/review" element={<Review />} />
           <Route path="/projects/:id/review/:imageId" element={<Review />} />
-          {/* Phase 4: /projects/:id/train
-              Phase 5: /projects/:id/deploy   */}
+          <Route path="/projects/:id/train" element={<Train />} />
+          {/* Phase 5: /projects/:id/deploy   */}
         </Route>
       </Routes>
     </BrowserRouter>

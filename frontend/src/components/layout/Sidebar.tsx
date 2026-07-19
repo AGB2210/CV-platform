@@ -41,7 +41,7 @@ const PROJECT_NAV: NavItem[] = [
   { suffix: '/visualize', label: 'Visualize', icon: Eye, ready: true, nested: true },
   { suffix: '/annotate', label: 'Auto-annotate', icon: Tags, ready: true, nested: true },
   { suffix: '/review', label: 'Annotate', icon: SquarePen, ready: true, nested: true },
-  { suffix: '/train', label: 'Train', icon: Cpu, ready: false },
+  { suffix: '/train', label: 'Train', icon: Cpu, ready: true },
   { suffix: '/deploy', label: 'Deploy', icon: PlayCircle, ready: false },
 ]
 
