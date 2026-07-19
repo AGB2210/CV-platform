@@ -23,6 +23,14 @@ from app.services.training_job import run_training_job
 
 router = APIRouter(tags=["train"])
 
+# Below this many training images, fine-tuning a detector effectively can't work:
+# batch-sized steps per epoch mean the freshly-initialised class head never gets
+# enough gradient updates, so mAP sits at ~0 no matter how long you run. It's not
+# a hard block — you can still launch a run — but saying so up front turns a
+# baffling "training looks broken" into an understood "add more images". Dozens
+# per class is a realistic floor; 10 total is the point below which it's futile.
+MIN_USEFUL_TRAIN_IMAGES = 10
+
 
 # --- Capability discovery ---------------------------------------------------
 # Like /annotators: the frontend asks what trainers exist rather than hardcoding
@@ -159,6 +167,17 @@ def train_preview(project_id: int, db: Session = Depends(get_db)) -> dict:
         warnings.append(
             "The train split has no accepted boxes — nothing to learn from."
         )
+    else:
+        # Only when there IS something to train on: flagging "too few images" on
+        # a project with zero boxes would just be noise on top of the real
+        # problem above.
+        train_imgs = counts[Split.TRAIN]["images"]
+        if train_imgs < MIN_USEFUL_TRAIN_IMAGES:
+            warnings.append(
+                f"Only {train_imgs} training image{'s' if train_imgs != 1 else ''} — "
+                "far too few to fine-tune a detector. Expect a near-zero mAP until "
+                "you add more (dozens per class is a realistic floor)."
+            )
     if counts[Split.VAL]["images"] == 0:
         # Not fatal: the exporter falls back to evaluating on train, but the mAP
         # is then meaningless as a generalisation estimate. Say so up front.

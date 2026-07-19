@@ -148,6 +148,28 @@ def test_preview_warns_when_no_val_split(client):
     assert any("validation" in w.lower() for w in p["warnings"])
 
 
+def test_preview_warns_on_tiny_train_set(client):
+    """A handful of images can't fine-tune a detector — mAP will sit at ~0. The
+    preview must say so, so a small-data run doesn't just look broken."""
+    pid, _ = make_trainable_project(client)  # 4 train images
+    p = client.get(f"/api/projects/{pid}/train/preview").json()
+    assert p["can_train"] is True  # not blocked, just warned
+    assert any("too few" in w.lower() for w in p["warnings"])
+
+
+def test_preview_no_tiny_warning_on_larger_set(client):
+    """The warning must not nag once the set is a reasonable size, or it teaches
+    people to ignore warnings."""
+    pid = make_project(client, "Big", classes=("car",))
+    imgs = upload_images(client, pid, [f"i{i}.png" for i in range(14)])
+    car = _class_ids(client, pid)[0]
+    _assign_split(client, pid, [imgs[12]["id"], imgs[13]["id"]], "val")
+    for img in imgs[:12]:
+        _add_box(client, img["id"], car)
+    p = client.get(f"/api/projects/{pid}/train/preview").json()
+    assert not any("too few" in w.lower() for w in p["warnings"])
+
+
 # --- launch guards ----------------------------------------------------------
 
 
