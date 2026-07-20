@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import json
 import logging
+import shutil
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -229,12 +230,47 @@ def _run(db: Session, job: TrainingJob) -> None:
     job.status = JobStatus.DONE
     job.finished_at = datetime.now()
     db.commit()
+
+    _reclaim_space(run_dir, job)
+
     logger.info(
         "Training job %s done: %d epochs, best mAP %s",
         job.id,
         result.epochs_completed,
         result.best_map,
     )
+
+
+def _reclaim_space(run_dir: Path, job: TrainingJob) -> None:
+    """Drop the run's bulky, redundant artifacts once it has succeeded.
+
+    WHY: a run exports the whole dataset — IMAGE FILES INCLUDED — into its own
+    directory. Keeping that forever means every training run permanently
+    duplicates the entire dataset on disk. On a real project (gigabytes of
+    photos) ten runs is ten copies, which fills a disk and slows the machine
+    down. It was measured at 11 MB/run on a 130-image toy set, and that scales
+    linearly with dataset size.
+
+    It's safe to drop precisely because dataset VERSIONS exist now: the run
+    records which version it trained, and that snapshot is the durable,
+    reproducible answer to "what went into this model". The copy was the only
+    record before versions; now it's redundant.
+
+    `last.pt` goes too — ultralytics writes it for resuming, but we continue
+    training by loading `best.pt` into a fresh run, so it's dead weight at
+    ~5 MB a time.
+
+    Only on SUCCESS. A failed run keeps everything, because when an export or a
+    trainer misbehaves those files are the evidence.
+    """
+    try:
+        shutil.rmtree(run_dir / "dataset", ignore_errors=True)
+        if job.checkpoint_path:
+            last = Path(job.checkpoint_path).with_name("last.pt")
+            last.unlink(missing_ok=True)
+    except Exception:  # noqa: BLE001
+        # Housekeeping must never fail a run that actually succeeded.
+        logger.warning("Could not reclaim space for run %s", job.id, exc_info=True)
 
 
 def _resolve_snapshot(db: Session, job: TrainingJob):

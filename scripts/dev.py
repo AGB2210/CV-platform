@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import json
 import os
 import shutil
 import socket
@@ -209,6 +210,87 @@ def port_in_use(port: int) -> bool:
     return False
 
 
+#: PIDs of the server processes this launcher owned, written while running so
+#: the NEXT run can attribute orphans (see reap_stale_servers). Gitignored.
+STATE_FILE = ROOT / ".dev-pids.json"
+
+
+def _read_recorded_pids() -> set[int]:
+    try:
+        return {int(p) for p in json.loads(STATE_FILE.read_text(encoding="utf-8"))}
+    except Exception:
+        return set()
+
+
+def _write_recorded_pids(pids: set[int]) -> None:
+    try:
+        STATE_FILE.write_text(json.dumps(sorted(pids)), encoding="utf-8")
+    except OSError:
+        pass  # best effort; losing this only costs us orphan attribution
+
+
+def _scan_processes() -> list[tuple[int, int, str]]:
+    """(pid, parent_pid, commandline) for every python/node process.
+
+    One WMI call. Broader than the old query on purpose: the uvicorn RELOAD
+    WORKER — the process that actually holds the app, torch included, at several
+    hundred MB — has a command line of
+    `python -c "from multiprocessing.spawn import spawn_main; parent_pid=..."`.
+    It contains neither "uvicorn" nor this repo's path, so a query filtered on
+    those can't see it at all. It normally dies anyway because we taskkill its
+    parent with /T; it survives only when that parent is gone, and then nothing
+    ever reclaims it.
+    """
+    if not IS_WINDOWS:
+        return []
+    try:
+        out = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                "Get-CimInstance Win32_Process | "
+                "Where-Object { $_.Name -match 'python|node' } | "
+                "ForEach-Object { \"$($_.ProcessId)|$($_.ParentProcessId)|$($_.CommandLine)\" }",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=25,
+        ).stdout
+    except Exception:
+        return []
+
+    rows: list[tuple[int, int, str]] = []
+    for line in out.splitlines():
+        parts = line.split("|", 2)
+        if len(parts) != 3 or not parts[0].strip().isdigit():
+            continue
+        parent = parts[1].strip()
+        rows.append(
+            (int(parts[0].strip()), int(parent) if parent.isdigit() else 0, parts[2])
+        )
+    return rows
+
+
+def record_running_pids() -> None:
+    """Snapshot which processes are ours, once the servers are up.
+
+    Attribution, not bookkeeping: an orphaned worker names its parent in its own
+    command line, so knowing that parent was ours is what lets the next run kill
+    the orphan WITHOUT guessing about other people's processes.
+    """
+    root_variants = {str(ROOT).lower(), str(ROOT).lower().replace("\\", "/")}
+    ours = set()
+    for pid, _parent, cmd in _scan_processes():
+        low = cmd.lower()
+        # Servers only, same predicate the reaper uses — recording the launcher
+        # itself would be misleading and buys nothing.
+        if any(root in low for root in root_variants) and ("uvicorn" in low or "vite" in low):
+            ours.add(pid)
+    if ours:
+        _write_recorded_pids(ours)
+
+
 def reap_stale_servers() -> int:
     """Kill dev servers left over from a previous launcher run. Returns the count.
 
@@ -234,43 +316,62 @@ def reap_stale_servers() -> int:
     if not IS_WINDOWS:
         return 0
 
-    try:
-        # Win32_Process gives us the full command line, which is the only
-        # reliable way to tell OUR uvicorn from anyone else's.
-        out = subprocess.run(
-            [
-                "powershell",
-                "-NoProfile",
-                "-Command",
-                "Get-CimInstance Win32_Process | "
-                "Where-Object { $_.CommandLine -like '*uvicorn*' -or $_.CommandLine -like '*vite*' } | "
-                "ForEach-Object { \"$($_.ProcessId)|$($_.CommandLine)\" }",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=25,
-        ).stdout
-    except Exception:
+    rows = _scan_processes()
+    if not rows:
         return 0
 
     # Match on the repo root, normalised — the command line may use either slash.
     root_variants = {str(ROOT).lower(), str(ROOT).lower().replace("\\", "/")}
+    live_pids = {pid for pid, _p, _c in rows}
+    recorded = _read_recorded_pids()
+
+    def is_our_server(cmd: str) -> bool:
+        """A SERVER of ours — not the launcher itself.
+
+        The "uvicorn"/"vite" requirement is load-bearing, not decoration. This
+        launcher's own command line is
+        `...\\cv app\\backend\\venv\\Scripts\\python.exe scripts/dev.py`, which
+        contains the repo root — so matching on the root alone makes the reaper
+        match ITSELF, and taskkill /T then takes down its own process tree
+        mid-startup. (Verified the hard way: the launcher silently died right
+        after the dependency checks.)
+        """
+        low = cmd.lower()
+        if not any(root in low for root in root_variants):
+            return False
+        return "uvicorn" in low or "vite" in low
+
+    doomed: list[int] = []
+    for pid, parent, cmd in rows:
+        if pid == os.getpid():
+            continue
+
+        # 1. Our uvicorn (shim + reloader) and our vite. Killed with /T, which
+        #    takes their workers with them — the normal, healthy path.
+        if is_our_server(cmd):
+            doomed.append(pid)
+            continue
+
+        # 2. An ORPHANED multiprocessing worker: it names its parent in its own
+        #    command line, that parent is gone, and we recorded that parent as
+        #    ours on a previous run. That last condition is what keeps this from
+        #    touching an unrelated program's orphan — without it we'd be
+        #    guessing, and this function promises it only kills our own.
+        if "spawn_main" in cmd and "parent_pid=" in cmd:
+            try:
+                claimed = int(cmd.split("parent_pid=", 1)[1].split(",", 1)[0].strip(") "))
+            except (ValueError, IndexError):
+                continue
+            if claimed not in live_pids and claimed in recorded:
+                doomed.append(pid)
+        # 3. Same idea for a live worker whose parent we're about to kill: the
+        #    /T on the parent handles it, so nothing to do here.
+        _ = parent
 
     killed = 0
-    for line in out.splitlines():
-        if "|" not in line:
-            continue
-        pid_str, _, cmdline = line.partition("|")
-        pid_str = pid_str.strip()
-        if not pid_str.isdigit():
-            continue
-        low = cmdline.lower()
-        if not any(root in low for root in root_variants):
-            continue  # someone else's server — leave it alone
-        if int(pid_str) == os.getpid():
-            continue
+    for pid in doomed:
         subprocess.run(
-            ["taskkill", "/F", "/T", "/PID", pid_str], capture_output=True
+            ["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True
         )
         killed += 1
 
@@ -592,6 +693,13 @@ def main() -> int:
         if not wait_until_ready(WEB_URL, web, timeout=90):
             die("Frontend failed to start", "Check the [web] output above.")
         ok(f"Frontend ready {C.DIM}{WEB_URL}{C.RESET}")
+
+        # Both servers are up and their workers spawned, so this is the moment
+        # the picture of "what belongs to us" is complete. Recorded for the NEXT
+        # run's reaper, which needs it to identify an orphaned worker — those
+        # name their parent but nothing else, so without this they're
+        # indistinguishable from any other program's stray process.
+        record_running_pids()
 
         print(
             f"\n  {C.BOLD}App{C.RESET}       {WEB_URL}"

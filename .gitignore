@@ -145,3 +145,7 @@ scratch/
 # HANDOFF.md is a live working note, rewritten only at end stages — kept on disk
 # but out of version control so it doesn't churn history mid-work.
 HANDOFF.md
+
+# Which server processes the dev launcher owned last run, so the next run can
+# attribute and clean up orphans. Machine-local runtime state.
+.dev-pids.json
