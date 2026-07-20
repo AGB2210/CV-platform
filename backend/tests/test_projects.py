@@ -110,3 +110,70 @@ def test_renaming_a_class_to_fix_its_own_capitalisation(client):
     r = client.patch(f"/api/classes/{cid}", json={"name": "Car"})
     assert r.status_code == 200, "a class does not collide with itself"
     assert r.json()["name"] == "Car"
+
+
+# --- deleting a project must not leak its bytes -----------------------------
+
+
+def test_deleting_a_project_removes_all_of_its_files(client, tmp_path):
+    """A project owns bytes in THREE places, and delete cleaned up one.
+
+    THE LEAK THIS GUARDS: images/, versions/ and runs/ all belong to a project.
+    The rows for all three cascade away with it, so nothing dangles in the
+    database and the leak is invisible from inside the app — but the files
+    stayed forever. A project with ten training runs left ~50 MB of checkpoints
+    behind, and the only way to notice was to look at the disk.
+    """
+    from app.config import settings
+    from app.models import TrainingJob
+    from tests.conftest import make_project, upload_images
+
+    pid = make_project(client, "Leaky", classes=("car",))
+    imgs = upload_images(client, pid, ["a.png", "b.png"])
+    client.post(
+        f"/api/images/{imgs[0]['id']}/annotations",
+        json={"category_id": client.get(f"/api/projects/{pid}/classes").json()[0]["id"],
+              "x": 1, "y": 1, "width": 10, "height": 10},
+    )
+    client.post(f"/api/projects/{pid}/dataset/versions", json={"note": None})
+
+    # A finished training run, with the run directory one would leave on disk.
+    db = client.SessionLocal()  # type: ignore[attr-defined]
+    job = TrainingJob(project_id=pid, trainer_key="yolo", version=1, status="done")
+    db.add(job)
+    db.commit()
+    job_id = job.id
+    db.close()
+
+    run_dir = settings.runs_dir / str(job_id)
+    (run_dir / "output").mkdir(parents=True, exist_ok=True)
+    (run_dir / "output" / "best.pt").write_text("fake weights")
+
+    images_dir = settings.images_dir / str(pid)
+    versions_dir = settings.versions_dir / str(pid)
+    assert images_dir.exists() and versions_dir.exists() and run_dir.exists()
+
+    assert client.delete(f"/api/projects/{pid}").status_code == 204
+
+    assert not images_dir.exists(), "uploads left behind"
+    assert not versions_dir.exists(), "dataset snapshots left behind"
+    assert not run_dir.exists(), "training checkpoints left behind"
+
+
+def test_bulk_delete_also_removes_every_projects_files(client):
+    """Same cleanup on the bulk path — it's how "delete all" is sent."""
+    from app.config import settings
+    from tests.conftest import make_project, upload_images
+
+    a = make_project(client, "One", classes=("car",))
+    b = make_project(client, "Two", classes=("car",))
+    for pid in (a, b):
+        upload_images(client, pid, ["x.png"])
+        client.post(f"/api/projects/{pid}/dataset/versions", json={"note": None})
+
+    r = client.post("/api/projects/bulk-delete", json={"project_ids": [a, b]})
+    assert r.json()["deleted"] == 2
+
+    for pid in (a, b):
+        assert not (settings.images_dir / str(pid)).exists()
+        assert not (settings.versions_dir / str(pid)).exists()

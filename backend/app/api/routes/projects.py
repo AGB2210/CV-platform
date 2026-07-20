@@ -32,6 +32,15 @@ def get_project_or_404(project_id: int, db: Session) -> Project:
     return project
 
 
+def _training_job_ids(db: Session, project_id: int) -> list[int]:
+    """Run ids for a project — i.e. which storage/runs/<id>/ dirs it owns."""
+    return list(
+        db.scalars(
+            select(TrainingJob.id).where(TrainingJob.project_id == project_id)
+        ).all()
+    )
+
+
 def _reject_duplicate_project(
     db: Session, name: str, exclude_id: int | None = None
 ) -> None:
@@ -240,10 +249,14 @@ def delete_project(project_id: int, db: Session = Depends(get_db)) -> None:
     transaction). So we choose the failure mode that degrades gracefully.
     """
     project = get_project_or_404(project_id, db)
+    # Collected BEFORE the delete: the cascade removes the training_jobs rows,
+    # and with them the only record of which run directories belonged here.
+    job_ids = _training_job_ids(db, project_id)
+
     db.delete(project)  # cascades to images + categories, via ORM and FK pragma
     db.commit()
 
-    storage.delete_project_dir(project_id)
+    storage.delete_project_files(project_id, job_ids)
 
 
 class BulkDelete(BaseModel):
@@ -270,13 +283,16 @@ def bulk_delete(payload: BulkDelete, db: Session = Depends(get_db)) -> dict:
         db.scalars(select(Project).where(Project.id.in_(payload.project_ids))).all()
     )
     deleted_ids = [p.id for p in projects]
+    # Same reason as the single delete: gather the run directories while the
+    # rows naming them still exist.
+    jobs_by_project = {pid: _training_job_ids(db, pid) for pid in deleted_ids}
 
     for project in projects:
         db.delete(project)
     db.commit()
 
     for project_id in deleted_ids:
-        storage.delete_project_dir(project_id)
+        storage.delete_project_files(project_id, jobs_by_project[project_id])
 
     return {
         "deleted": len(deleted_ids),

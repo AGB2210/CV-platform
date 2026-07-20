@@ -186,3 +186,34 @@ def delete_image_file(project_id: int, filename: str) -> None:
 def delete_project_dir(project_id: int) -> None:
     """Remove a project's entire image directory."""
     shutil.rmtree(settings.images_dir / str(project_id), ignore_errors=True)
+
+
+def delete_project_files(project_id: int, job_ids: list[int]) -> None:
+    """Remove EVERYTHING a project owns on disk.
+
+    A project's bytes live in three places, and deleting one used to be the
+    whole cleanup:
+
+        storage/images/<project_id>/   uploads
+        storage/versions/<project_id>/ dataset snapshots
+        storage/runs/<job_id>/         checkpoints, one dir per training run
+
+    The rows for all three go by FK cascade when the project row is deleted, so
+    nothing dangles in the database and the leak is invisible from inside the
+    app — but the files stayed forever. A project with ten training runs left
+    ~50 MB of checkpoints behind, and the only way to notice was to look at the
+    disk.
+
+    `job_ids` has to be collected BEFORE the project row is deleted, because
+    afterwards there is nothing left to say which run directories were its.
+
+    ignore_errors throughout: this runs after the DB commit, so a file that
+    can't be removed (locked on Windows, already gone) must not raise. The row
+    is already gone and the caller's intent is satisfied; a leftover file is
+    wasted disk, while an exception here would surface as a failed delete for
+    an operation that actually succeeded.
+    """
+    delete_project_dir(project_id)
+    shutil.rmtree(settings.versions_dir / str(project_id), ignore_errors=True)
+    for job_id in job_ids:
+        shutil.rmtree(settings.runs_dir / str(job_id), ignore_errors=True)
