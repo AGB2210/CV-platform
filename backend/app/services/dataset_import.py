@@ -58,6 +58,10 @@ class CocoDoc:
     images_by_name: dict[str, dict]
     #: COCO image_id -> list of raw annotation dicts
     anns_by_image: dict[int, list[dict]]
+    #: How many boxes were computed from a segmentation polygon because the
+    #: annotation carried no usable bbox. Surfaced in the import notes — the
+    #: user should know their segmentation dataset was read as detection.
+    derived_boxes: int = 0
 
     @property
     def class_names(self) -> list[str]:
@@ -139,16 +143,82 @@ def parse_coco(path: Path) -> CocoDoc | None:
         }
 
     anns_by_image: dict[int, list[dict]] = {}
+    derived_boxes = 0
     for ann in data["annotations"]:
-        if "image_id" not in ann or "bbox" not in ann:
+        if "image_id" not in ann:
             continue
+        if not _valid_bbox(ann.get("bbox")):
+            # No usable bbox. Before dropping the annotation, try to derive one
+            # from its segmentation — see _bbox_from_segmentation.
+            box = _bbox_from_segmentation(ann.get("segmentation"))
+            if box is None:
+                continue
+            ann = {**ann, "bbox": box}
+            derived_boxes += 1
         anns_by_image.setdefault(int(ann["image_id"]), []).append(ann)
 
     return CocoDoc(
         categories=categories,
         images_by_name=images_by_name,
         anns_by_image=anns_by_image,
+        derived_boxes=derived_boxes,
     )
+
+
+def _valid_bbox(bbox) -> bool:
+    """A COCO bbox we can actually use: four numbers with positive extent."""
+    if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+        return False
+    try:
+        _, _, w, h = (float(v) for v in bbox)
+    except (TypeError, ValueError):
+        return False
+    return w > 0 and h > 0
+
+
+def _bbox_from_segmentation(segmentation) -> list[float] | None:
+    """The tightest box around a segmentation polygon, or None.
+
+    WHY THIS EXISTS: this app is object detection only, so it reads `bbox` and
+    ignores `segmentation`. That's fine for a dataset carrying both — but
+    instance-segmentation exports frequently omit `bbox` entirely, since the
+    polygon is the label and the box is derivable. Those datasets used to import
+    as images with ZERO boxes, silently: no error, no warning, just a dataset
+    that looked like it had lost its annotations.
+
+    A polygon's bounding box is exactly what a detector wants from it, and
+    computing it is the same thing COCO tooling does. So a segmentation dataset
+    becomes a usable detection dataset instead of an empty one.
+
+    RLE masks (`{"counts": ..., "size": ...}`, used for crowd regions) are NOT
+    handled: decoding them needs pycocotools, and they're a small minority. They
+    return None and the annotation is skipped, as before.
+    """
+    # COCO polygons: [[x1, y1, x2, y2, ...], ...] — one flat list per part.
+    if not isinstance(segmentation, list) or not segmentation:
+        return None
+
+    xs: list[float] = []
+    ys: list[float] = []
+    for part in segmentation:
+        if not isinstance(part, (list, tuple)) or len(part) < 6:
+            # Fewer than 3 points isn't a polygon.
+            continue
+        try:
+            coords = [float(v) for v in part]
+        except (TypeError, ValueError):
+            continue
+        xs.extend(coords[0::2])
+        ys.extend(coords[1::2])
+
+    if not xs or not ys:
+        return None
+
+    x, y = min(xs), min(ys)
+    w, h = max(xs) - x, max(ys) - y
+    if w <= 0 or h <= 0:
+        return None
+    return [x, y, w, h]
 
 
 def _strip_wrapper(root: Path) -> Path:
@@ -270,6 +340,16 @@ def analyse(root: Path) -> ImportPlan:
         if group.coco:
             names.extend(group.coco.class_names)
     plan.class_names = list(dict.fromkeys(names))
+
+    # Say so when boxes came from polygons. The dataset imported fine, but the
+    # user handed over a segmentation dataset and got a detection one — that's a
+    # conversion, and conversions should be visible.
+    derived = sum(g.coco.derived_boxes for g in plan.groups if g.coco)
+    if derived:
+        plan.notes.append(
+            f"{derived} box(es) derived from segmentation outlines — this project "
+            "is object detection, so each polygon became its bounding box."
+        )
 
     return plan
 
