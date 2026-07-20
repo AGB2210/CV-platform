@@ -430,6 +430,8 @@ export interface TrainingJob {
   num_classes: number
   /** Set when this run continued another run's checkpoint (finetune). */
   init_from_job_id: number | null
+  /** The saved dataset version this run trained on. */
+  dataset_version_id: number | null
   current_epoch: number
   total_epochs: number
   train_loss: number | null
@@ -452,6 +454,10 @@ export interface TrainingJob {
 export interface TrainPreview {
   num_classes: number
   splits: Record<Split, { images: number; boxes: number }>
+  /** Training is gated on the dataset having been saved at least once. */
+  has_saved_version: boolean
+  latest_version: number | null
+  latest_version_id: number | null
   can_train: boolean
   warnings: string[]
 }
@@ -471,12 +477,53 @@ export const startTraining = (
     learning_rate?: number | null
     /** Continue/finetune from this completed run's checkpoint. */
     init_from_job_id?: number | null
+    /** Which saved dataset version to train. Omit for the latest save. */
+    dataset_version_id?: number | null
   },
 ) => api.post<TrainingJob>(`/projects/${projectId}/train`, body)
 export const getTrainingJob = (jobId: number) =>
   api.get<TrainingJob>(`/training-jobs/${jobId}`)
 export const listTrainingJobs = (projectId: number) =>
   api.get<TrainingJob[]>(`/projects/${projectId}/training-jobs`)
+
+// --- Dataset versions -----------------------------------------------------
+// Save points for the dataset. Created only by "Save dataset", which is also the
+// gate into training — you train a saved version, so a run stays reproducible.
+
+export interface DatasetVersion {
+  id: number
+  project_id: number
+  /** 1-based per project. */
+  version: number
+  note: string | null
+  total_images: number
+  train_images: number
+  val_images: number
+  test_images: number
+  total_boxes: number
+  /** Boxes in the train split — what a run actually learns from. */
+  train_boxes: number
+  num_classes: number
+  created_at: string
+}
+
+/** What a restore actually did. `missing_files` non-empty = partial restore. */
+export interface RestoreResult {
+  restored_version: number
+  images_restored: number
+  boxes_restored: number
+  images_removed: number
+  missing_files: string[]
+  /** The safety version taken of the pre-restore state — restoring is undoable. */
+  backup_version: number
+}
+
+export const listDatasetVersions = (projectId: number) =>
+  api.get<DatasetVersion[]>(`/projects/${projectId}/dataset/versions`)
+export const saveDatasetVersion = (projectId: number, note?: string) =>
+  api.post<DatasetVersion>(`/projects/${projectId}/dataset/versions`, { note: note ?? null })
+export const restoreDatasetVersion = (projectId: number, versionId: number) =>
+  api.post<RestoreResult>(`/projects/${projectId}/dataset/versions/${versionId}/restore`)
 
 export const bulkDeleteProjects = (projectIds: number[]) =>
   api.post<{ deleted: number; not_found: number[] }>('/projects/bulk-delete', {

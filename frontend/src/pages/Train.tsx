@@ -7,10 +7,12 @@ import { MetricsChart } from '@/components/MetricsChart'
 import {
   getDevice,
   getTrainPreview,
+  listDatasetVersions,
   listTrainers,
   listTrainingJobs,
   getTrainingJob,
   startTraining,
+  type DatasetVersion,
   type DeviceInfo,
   type TrainerInfo,
   type TrainingJob,
@@ -29,6 +31,9 @@ export function Train() {
   const [device, setDevice] = useState<DeviceInfo | null>(null)
   const [preview, setPreview] = useState<TrainPreview | null>(null)
   const [jobs, setJobs] = useState<TrainingJob[]>([])
+  const [datasetVersions, setDatasetVersions] = useState<DatasetVersion[]>([])
+  // Which saved dataset version to train. null = the latest save.
+  const [datasetVersionId, setDatasetVersionId] = useState<number | null>(null)
 
   const [trainerKey, setTrainerKey] = useState('')
   const [epochs, setEpochs] = useState(50)
@@ -54,12 +59,14 @@ export function Train() {
   }, [activeJob])
 
   const refresh = useCallback(async () => {
-    const [p, j] = await Promise.all([
+    const [p, j, dv] = await Promise.all([
       getTrainPreview(projectId),
       listTrainingJobs(projectId),
+      listDatasetVersions(projectId),
     ])
     setPreview(p)
     setJobs(j)
+    setDatasetVersions(dv)
   }, [projectId])
 
   useEffect(() => {
@@ -69,13 +76,15 @@ export function Train() {
       getDevice(),
       getTrainPreview(projectId),
       listTrainingJobs(projectId),
+      listDatasetVersions(projectId),
     ])
-      .then(([t, d, p, j]) => {
+      .then(([t, d, p, j, dv]) => {
         if (cancelled) return
         setTrainers(t)
         setDevice(d)
         setPreview(p)
         setJobs(j)
+        setDatasetVersions(dv)
         if (t.length) {
           setTrainerKey((k) => k || t[0].key)
           setEpochs(t[0].default_epochs)
@@ -154,6 +163,7 @@ export function Train() {
         image_size: imageSize,
         learning_rate: lr.trim() ? Number(lr) : null,
         init_from_job_id: initFromId,
+        dataset_version_id: datasetVersionId,
       })
       setActiveJob(job)
       setSelectedId(null) // show the live run, not whatever was being inspected
@@ -184,6 +194,9 @@ export function Train() {
 
   /** Version label for a job id — used for the "continued from" provenance. */
   const versionOf = (jobId: number) => jobs.find((j) => j.id === jobId)?.version ?? null
+  /** Dataset version number a run trained on. */
+  const datasetVersionOf = (id: number | null) =>
+    id === null ? null : (datasetVersions.find((v) => v.id === id)?.version ?? null)
 
   if (loading) {
     return (
@@ -228,6 +241,7 @@ export function Train() {
                       ? versionOf(displayedJob.init_from_job_id)
                       : null
                   }
+                  datasetVersion={datasetVersionOf(displayedJob.dataset_version_id)}
                 />
               </div>
             )}
@@ -260,6 +274,40 @@ export function Train() {
                       ))}
                     </select>
                     {selected && <p className="mt-1 text-xs text-gray-500">{selected.description}</p>}
+                  </div>
+
+                  {/* --- Which saved dataset to train ---
+                      Training always runs against a SAVED version, never the
+                      live rows, so a run's results stay attributable. */}
+                  <div>
+                    <label htmlFor="dsver" className="mb-1 block text-xs font-medium text-gray-700">
+                      Dataset version
+                    </label>
+                    <select
+                      id="dsver"
+                      value={datasetVersionId ?? ''}
+                      onChange={(e) =>
+                        setDatasetVersionId(e.target.value ? Number(e.target.value) : null)
+                      }
+                      disabled={isRunning || datasetVersions.length === 0}
+                      className="w-full rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-sm focus:border-accent-500 focus:outline-none disabled:bg-gray-50"
+                    >
+                      <option value="">
+                        {datasetVersions.length
+                          ? `Latest saved (v${datasetVersions[0].version})`
+                          : 'No saved dataset yet'}
+                      </option>
+                      {datasetVersions.map((v) => (
+                        <option key={v.id} value={v.id}>
+                          v{v.version} · {v.total_images} imgs · {v.total_boxes} boxes
+                          {v.note ? ` · ${v.note}` : ''}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="mt-0.5 flex items-center gap-1 text-xs text-gray-400">
+                      <Database size={11} />
+                      Trains that saved snapshot — later dataset edits don't change it.
+                    </p>
                   </div>
 
                   {/* --- Start from: pretrained vs continue a previous run --- */}
@@ -338,9 +386,22 @@ export function Train() {
                 )}
               </button>
               {!isRunning && noTrainers && <span className="text-xs text-gray-500">No backend installed</span>}
+              {/* Say exactly what's missing. "Save the dataset" is the common
+                  one and is actionable, so it links straight there. */}
               {!isRunning && !noTrainers && preview && !preview.can_train && (
                 <span className="text-xs text-gray-500">
-                  {preview.num_classes === 0 ? 'Add a class first' : 'No accepted boxes in the train split'}
+                  {!preview.has_saved_version ? (
+                    <>
+                      <Link to={`/projects/${projectId}`} className="text-accent-700 underline">
+                        Save the dataset
+                      </Link>{' '}
+                      first — training runs against a saved version.
+                    </>
+                  ) : preview.num_classes === 0 ? (
+                    'Add a class first'
+                  ) : (
+                    'The saved dataset has no boxes in its train split'
+                  )}
                 </span>
               )}
             </div>
@@ -377,10 +438,12 @@ function RunDetail({
   job,
   live,
   fromVersion,
+  datasetVersion,
 }: {
   job: TrainingJob
   live: boolean
   fromVersion: number | null
+  datasetVersion: number | null
 }) {
   return (
     <div className={`card transition-shadow ${live ? 'ring-2 ring-accent-400 ring-offset-2' : ''}`}>
@@ -424,6 +487,10 @@ function RunDetail({
         {/* How this run was configured — the "how it did it" for history. */}
         <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1 text-xs sm:grid-cols-4">
           <Detail label="Backend" value={job.trainer_key} />
+          <Detail
+            label="Dataset"
+            value={datasetVersion !== null ? `v${datasetVersion}` : '—'}
+          />
           <Detail label="Epochs" value={String(job.total_epochs)} />
           <Detail label="Batch" value={String(job.batch_size)} />
           <Detail label="Image size" value={`${job.image_size}px`} />

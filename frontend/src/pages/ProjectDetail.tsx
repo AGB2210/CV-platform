@@ -2,8 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import {
   ArrowLeft,
+  Cpu,
   Eye,
+  History,
   Plus,
+  RotateCcw,
+  Save,
   Shuffle,
   SquarePen,
   Tags,
@@ -19,11 +23,15 @@ import {
   deleteImage,
   getProject,
   listClasses,
+  listDatasetVersions,
   listImages,
+  restoreDatasetVersion,
   resplitDataset,
+  saveDatasetVersion,
   setSplitForImages,
   uploadImages,
   type DatasetImage,
+  type DatasetVersion,
   type Project,
   type ProjectClass,
   type Split,
@@ -39,6 +47,7 @@ export function ProjectDetail() {
   const [project, setProject] = useState<Project | null>(null)
   const [images, setImages] = useState<DatasetImage[]>([])
   const [classes, setClasses] = useState<ProjectClass[]>([])
+  const [versions, setVersions] = useState<DatasetVersion[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
@@ -67,14 +76,16 @@ export function ProjectDetail() {
       // Promise.all, not three sequential awaits: the requests don't depend on
       // each other, so serialising them would triple the time to first paint
       // for no reason.
-      const [p, imgs, cls] = await Promise.all([
+      const [p, imgs, cls, vers] = await Promise.all([
         getProject(projectId),
         listImages(projectId),
         listClasses(projectId),
+        listDatasetVersions(projectId),
       ])
       setProject(p)
       setImages(imgs)
       setClasses(cls)
+      setVersions(vers)
       setError(null)
     } catch (err) {
       setError((err as Error).message)
@@ -195,10 +206,190 @@ export function ProjectDetail() {
             )}
           </section>
 
-          <ClassPanel projectId={projectId} classes={classes} onChanged={refresh} />
+          <div className="space-y-4">
+            <ClassPanel projectId={projectId} classes={classes} onChanged={refresh} />
+            <VersionPanel
+              projectId={projectId}
+              versions={versions}
+              hasImages={images.length > 0}
+              onChanged={refresh}
+              onError={setError}
+            />
+          </div>
         </div>
       </PageBody>
     </>
+  )
+}
+
+/**
+ * Dataset versions: save points, and the way back from a bad one.
+ *
+ * "Save dataset" is the only thing that creates a version — one deliberate
+ * gesture rather than a version per box drawn — and it's the gate into training,
+ * so a run always points at a dataset that still exists exactly as it was.
+ *
+ * Restore is offered without a red button on purpose: it saves the current state
+ * first, so it's consequential but reversible, and colouring it like a delete
+ * would teach people to fear the recovery tool.
+ */
+function VersionPanel({
+  projectId,
+  versions,
+  hasImages,
+  onChanged,
+  onError,
+}: {
+  projectId: number
+  versions: DatasetVersion[]
+  hasImages: boolean
+  onChanged: () => void
+  onError: (msg: string | null) => void
+}) {
+  const [note, setNote] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [target, setTarget] = useState<DatasetVersion | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [outcome, setOutcome] = useState<string | null>(null)
+
+  async function save() {
+    setSaving(true)
+    onError(null)
+    try {
+      const v = await saveDatasetVersion(projectId, note.trim() || undefined)
+      setNote('')
+      setOutcome(`Saved as v${v.version}.`)
+      onChanged()
+    } catch (e) {
+      onError((e as Error).message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function restore() {
+    if (!target) return
+    setBusy(true)
+    onError(null)
+    try {
+      const r = await restoreDatasetVersion(projectId, target.id)
+      // Report what actually happened, including a partial restore — silently
+      // presenting an incomplete recovery as a complete one would be the worst
+      // possible outcome for a safety feature.
+      const bits = [
+        `Restored v${r.restored_version}: ${r.images_restored} image(s), ${r.boxes_restored} box(es).`,
+        r.images_removed ? `${r.images_removed} later image(s) removed.` : '',
+        `Previous state saved as v${r.backup_version}.`,
+        r.missing_files.length
+          ? `${r.missing_files.length} image(s) could not be recovered — their files are gone.`
+          : '',
+      ].filter(Boolean)
+      setOutcome(bits.join(' '))
+      setTarget(null)
+      onChanged()
+    } catch (e) {
+      onError((e as Error).message)
+      setTarget(null)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const latest = versions[0] ?? null
+
+  return (
+    <div className="card">
+      <div className="flex items-center gap-2 border-b border-gray-200 px-3 py-2.5">
+        <History size={14} className="text-gray-400" />
+        <div className="min-w-0">
+          <h2 className="text-sm font-medium text-gray-900">Dataset versions</h2>
+          <p className="text-xs text-gray-500">Save points you can return to</p>
+        </div>
+      </div>
+
+      <div className="space-y-2 border-b border-gray-200 p-3">
+        <input
+          value={note}
+          onChange={(e) => setNote(e.target.value)}
+          placeholder="Note (optional)"
+          maxLength={255}
+          disabled={saving || !hasImages}
+          className="w-full rounded-md border border-gray-300 px-2 py-1 text-xs placeholder:text-gray-300 focus:border-accent-500 focus:outline-none disabled:bg-gray-50"
+        />
+        <button
+          className="btn-primary w-full"
+          onClick={() => void save()}
+          disabled={saving || !hasImages}
+        >
+          <Save size={13} />
+          {saving ? 'Saving…' : 'Save dataset'}
+        </button>
+        {!hasImages ? (
+          <p className="text-xs text-gray-400">Upload images before saving a version.</p>
+        ) : !latest ? (
+          <p className="text-xs text-amber-700">
+            Not saved yet — save to create v1. Training needs a saved version.
+          </p>
+        ) : (
+          <Link to={`/projects/${projectId}/train`} className="btn-secondary w-full">
+            <Cpu size={13} />
+            Train v{latest.version}
+          </Link>
+        )}
+        {outcome && <p className="text-xs text-gray-600">{outcome}</p>}
+      </div>
+
+      {versions.length > 0 && (
+        <ul className="max-h-72 divide-y divide-gray-100 overflow-y-auto">
+          {versions.map((v) => (
+            <li key={v.id} className="px-3 py-2 text-xs">
+              <div className="flex items-center justify-between gap-2">
+                <span className="flex items-center gap-1.5 font-medium text-gray-800">
+                  v{v.version}
+                  {v.id === latest?.id && (
+                    <span className="rounded bg-accent-100 px-1 py-px text-[9px] font-medium uppercase tracking-wide text-accent-700">
+                      latest
+                    </span>
+                  )}
+                </span>
+                {/* Every version is restorable, INCLUDING the latest. Being the
+                    newest save doesn't mean the live dataset still matches it —
+                    delete some images and the two diverge immediately, and
+                    restoring the latest save is exactly the recovery you want. */}
+                <button
+                  onClick={() => setTarget(v)}
+                  className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-accent-700 hover:bg-accent-50"
+                >
+                  <RotateCcw size={11} />
+                  Restore
+                </button>
+              </div>
+              <p className="tabular-nums text-gray-500">
+                {v.total_images} imgs · {v.total_boxes} boxes ·{' '}
+                {new Date(v.created_at).toLocaleString()}
+              </p>
+              {v.note && <p className="truncate text-gray-400">{v.note}</p>}
+            </li>
+          ))}
+        </ul>
+      )}
+
+      <ConfirmDialog
+        open={target !== null}
+        onClose={() => setTarget(null)}
+        onConfirm={() => void restore()}
+        title={`Restore dataset v${target?.version ?? ''}?`}
+        message={
+          `The dataset will be reset to v${target?.version ?? ''}: ` +
+          `${target?.total_images ?? 0} image(s) and ${target?.total_boxes ?? 0} box(es).\n\n` +
+          `Images added since then are removed, and images deleted since then come back.\n\n` +
+          `Your current dataset is saved as a new version first, so you can undo this.`
+        }
+        confirmLabel="Restore"
+        busy={busy}
+        destructive={false}
+      />
+    </div>
   )
 }
 
