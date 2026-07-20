@@ -79,3 +79,11 @@ class CategoryRead(BaseModel):
     name: str
     color: str
     created_at: datetime
+
+    #: How many boxes carry this class. Computed per request, not stored.
+    #:
+    #: It exists so the UI can state what deleting the class destroys. Deleting
+    #: a class cascades to every box using it, and that was a one-click,
+    #: unconfirmed, unrecoverable action — the single most dangerous control in
+    #: the app. A confirmation that can't name a number isn't much of one.
+    annotation_count: int = 0

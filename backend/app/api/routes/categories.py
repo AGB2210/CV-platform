@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.enums import CLASS_COLORS
-from app.models import Category
+from app.models import Annotation, Category
 from app.schemas import CategoryCreate, CategoryRead, CategoryUpdate
 from app.services.naming import collides
 from app.api.routes.projects import get_project_or_404
@@ -47,13 +47,35 @@ def _next_color(db: Session, project_id: int) -> str:
 
 
 @router.get("/projects/{project_id}/classes", response_model=list[CategoryRead])
-def list_classes(project_id: int, db: Session = Depends(get_db)) -> list[Category]:
+def list_classes(project_id: int, db: Session = Depends(get_db)) -> list[CategoryRead]:
+    """A project's classes, each with how many boxes use it.
+
+    The count comes from one GROUP BY joined on, not a COUNT per class — the
+    N+1 problem. It's here rather than in a separate endpoint because the UI
+    needs it at exactly the moment it renders the list: the delete control sits
+    on each row, and it has to be able to say what deleting destroys.
+    """
     get_project_or_404(project_id, db)
-    return list(
-        db.scalars(
-            select(Category).where(Category.project_id == project_id).order_by(Category.id)
+
+    counts = dict(
+        db.execute(
+            select(Annotation.category_id, func.count(Annotation.id))
+            .join(Category, Category.id == Annotation.category_id)
+            .where(Category.project_id == project_id)
+            .group_by(Annotation.category_id)
         ).all()
     )
+
+    rows = db.scalars(
+        select(Category).where(Category.project_id == project_id).order_by(Category.id)
+    ).all()
+
+    results = []
+    for row in rows:
+        data = CategoryRead.model_validate(row)
+        data.annotation_count = counts.get(row.id, 0)
+        results.append(data)
+    return results
 
 
 @router.post(

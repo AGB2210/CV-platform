@@ -292,6 +292,9 @@ export interface ProjectClass {
   id: number
   project_id: number
   name: string
+  /** Boxes using this class. Deleting the class cascades to all of them, so
+   *  the confirm dialog can state exactly what is lost. */
+  annotation_count: number
   color: string
   created_at: string
 }
@@ -356,6 +359,9 @@ export const listProjects = () => api.get<Project[]>('/projects')
 export const getProject = (id: number) => api.get<Project>(`/projects/${id}`)
 export const createProject = (body: { name: string; description?: string }) =>
   api.post<Project>('/projects', body)
+/** Rename a project (or edit its description). 409 on a duplicate name. */
+export const updateProject = (projectId: number, patch: { name?: string; description?: string | null }) =>
+  api.patch<Project>(`/projects/${projectId}`, patch)
 export const deleteProject = (id: number) => api.delete<void>(`/projects/${id}`)
 
 export const listClasses = (projectId: number) =>

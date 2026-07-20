@@ -47,6 +47,7 @@ import {
   restoreDatasetVersion,
   resplitDataset,
   saveDatasetVersion,
+  updateProject,
   setSplitForImages,
   discardUnsavedImages,
   getStorageReport,
@@ -84,6 +85,7 @@ export function ProjectDetail() {
   // Bumped on every refresh so the storage figures re-read after an upload,
   // a delete or a save rather than showing what was true on page load.
   const [storageKey, setStorageKey] = useState(0)
+  const [renaming, setRenaming] = useState(false)
   const [classes, setClasses] = useState<ProjectClass[]>([])
   const [versions, setVersions] = useState<DatasetVersion[]>([])
   const [loading, setLoading] = useState(true)
@@ -174,6 +176,17 @@ export function ProjectDetail() {
         description={project.description ?? 'Object detection'}
         actions={
           <>
+            {/* Rename. The endpoint existed and nothing called it, so a typo in
+                a project name was permanent — you'd have to delete the project
+                and re-upload everything to fix a letter. */}
+            <button
+              className="btn-secondary"
+              onClick={() => setRenaming(true)}
+              title="Rename this project"
+            >
+              <Pencil size={14} />
+              Rename
+            </button>
             {/* The three things you do TO a dataset, offered at the point you're
                 looking at it. "Annotate" is deliberately a peer of
                 "Auto-annotate", not a step after it: nobody should have to run a
@@ -281,6 +294,21 @@ export function ProjectDetail() {
           </div>
         </div>
       </PageBody>
+
+      <RenameDialog
+        open={renaming}
+        currentName={project.name}
+        fallbackLabel={project.name}
+        onClose={() => setRenaming(false)}
+        onSave={async (name) => {
+          // A project must be called something, so a cleared box means "leave
+          // it alone" rather than sending null and surfacing a validation error
+          // for an empty field.
+          await updateProject(projectId, { name: name ?? project.name })
+          setRenaming(false)
+          await refresh()
+        }}
+      />
     </>
   )
 }
@@ -1564,9 +1592,24 @@ function ClassPanel({
     }
   }
 
-  async function remove(classId: number) {
-    await deleteClass(classId)
-    onChanged()
+  // Deleting a class CASCADES to every box using it. That was a one-click,
+  // unconfirmed, unrecoverable action — the most dangerous control in the app,
+  // and the only one with no dialog. A class with no boxes still confirms, but
+  // the message says there is nothing to lose so the two cases read differently.
+  const [pendingClass, setPendingClass] = useState<ProjectClass | null>(null)
+
+  async function remove() {
+    if (!pendingClass) return
+    setBusy(true)
+    try {
+      await deleteClass(pendingClass.id)
+      setPendingClass(null)
+      onChanged()
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setBusy(false)
+    }
   }
 
   return (
@@ -1610,8 +1653,15 @@ function ClassPanel({
                 style={{ backgroundColor: c.color }}
               />
               <span className="flex-1 truncate text-sm text-gray-800">{c.name}</span>
+              {/* How much work this class represents, visible before the
+                  delete rather than only inside the dialog. */}
+              {c.annotation_count > 0 && (
+                <span className="shrink-0 tabular-nums text-[11px] text-gray-400">
+                  {c.annotation_count}
+                </span>
+              )}
               <button
-                onClick={() => void remove(c.id)}
+                onClick={() => setPendingClass(c)}
                 className="rounded p-0.5 text-gray-400 opacity-0 hover:text-red-600 focus:opacity-100 group-hover:opacity-100"
                 aria-label={`Delete class ${c.name}`}
               >
@@ -1621,6 +1671,26 @@ function ClassPanel({
           ))}
         </ul>
       )}
+
+      <ConfirmDialog
+        open={pendingClass !== null}
+        onClose={() => setPendingClass(null)}
+        onConfirm={() => void remove()}
+        busy={busy}
+        title={`Delete class “${pendingClass?.name ?? ''}”?`}
+        message={
+          pendingClass?.annotation_count
+            ? `This also deletes ${pendingClass.annotation_count} box(es) using this ` +
+              `class, across every image. That cannot be undone unless a saved ` +
+              `dataset version contains them.`
+            : 'No boxes use this class, so nothing else is affected.'
+        }
+        confirmLabel="Delete class"
+        // Red only when there is genuinely something to lose. An unused class
+        // is a trivial tidy-up, and colouring it like a catastrophe is how
+        // people learn to click through red.
+        destructive={Boolean(pendingClass?.annotation_count)}
+      />
     </aside>
   )
 }
