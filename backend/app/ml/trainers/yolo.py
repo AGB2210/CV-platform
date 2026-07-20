@@ -38,11 +38,14 @@ class YoloTrainer(Trainer):
     key = "yolo"
     display_name = "YOLO11 (Ultralytics)"
     description = (
-        "Fine-tunes a pretrained YOLO11-nano detector. Small and fast — the "
-        "safest fit for 4 GB. Consumes the YOLO export format."
+        "Fine-tunes a pretrained YOLO11-nano detector. The lightest variant, so "
+        "it trains on modest GPUs. Consumes the YOLO export format."
     )
-    # Nano at 640px / batch 8 sits around here on this card; batch and image size
-    # move it. Surfaced so the user can see it should fit before waiting.
+    # Rough peak VRAM for nano at 640px / batch 8; batch and image size move it.
+    # Surfaced as a NUMBER rather than baked into prose, so the UI can compare it
+    # against whatever GPU the app is actually running on — this ships to other
+    # machines, and hardcoding one developer's card into user-facing text would
+    # be wrong everywhere else.
     approx_vram_gb = 3.0
     export_format = "yolo"
 
@@ -124,7 +127,7 @@ class YoloTrainer(Trainer):
                         train_loss = None
 
             try:
-                on_epoch(
+                should_stop = on_epoch(
                     EpochMetrics(
                         epoch=int(yolo_trainer.epoch) + 1,  # ultralytics is 0-based
                         total_epochs=int(yolo_trainer.epochs),
@@ -136,6 +139,16 @@ class YoloTrainer(Trainer):
             except Exception:  # noqa: BLE001
                 # A DB hiccup writing progress must never kill the training run.
                 logger.exception("Failed to record epoch progress")
+                return
+
+            if should_stop:
+                # Ultralytics' own early-stopping flag: it's checked at the top
+                # of each epoch, so setting it here lets the epoch in flight
+                # finish and checkpoint before the loop exits. Requesting a stop
+                # therefore keeps a usable best.pt rather than truncating mid-
+                # epoch, which is exactly the behaviour the user asked for.
+                logger.info("Stop requested — finishing after epoch %s", yolo_trainer.epoch + 1)
+                yolo_trainer.stop = True
 
         model.add_callback("on_fit_epoch_end", _on_fit_epoch_end)
 

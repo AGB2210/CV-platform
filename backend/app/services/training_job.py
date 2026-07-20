@@ -41,7 +41,7 @@ from app.ml import registry as annotator_registry
 from app.ml.device import empty_cache, get_device
 from app.ml.trainers import registry as trainer_registry
 from app.ml.trainers.base import EpochMetrics, TrainConfig
-from app.models import Annotation, Category, Image, JobStatus, TrainingJob
+from app.models import Annotation, Category, Image, JobControl, JobStatus, TrainingJob
 from app.models.image import Split
 from app.services import exporters
 from app.services.dataset_snapshot import build_snapshot
@@ -92,10 +92,27 @@ def run_training_job(job_id: int) -> None:
         db.close()
 
 
+def _discard(db: Session, job: TrainingJob) -> None:
+    """Throw a cancelled run away: its row and everything it wrote."""
+    run_dir = settings.runs_dir / str(job.id)
+    job_id = job.id
+    db.delete(job)
+    db.commit()
+    shutil.rmtree(run_dir, ignore_errors=True)
+    logger.info("Training job %s cancelled and discarded", job_id)
+
+
 def _run(db: Session, job: TrainingJob) -> None:
     job.status = JobStatus.RUNNING
     job.started_at = datetime.now()
     db.commit()
+
+    # Cancelled while still queued — before a single epoch ran. Bail out here
+    # rather than exporting a dataset and loading a framework for work that has
+    # already been called off.
+    if job.control == JobControl.CANCEL:
+        _discard(db, job)
+        return
 
     # THE DATASET THIS RUN TRAINS ON IS A SAVED VERSION, not the live rows.
     # Everything below — classes, counts, validation, the export — is derived
@@ -190,12 +207,17 @@ def _run(db: Session, job: TrainingJob) -> None:
 
     history: list[dict] = []
 
-    def on_epoch(m: EpochMetrics) -> None:
-        """Persist one epoch's metrics as the framework reports them.
+    def on_epoch(m: EpochMetrics) -> bool:
+        """Persist one epoch's metrics, and report whether to keep going.
 
         Commits per epoch, for the same reason the annotation runner commits per
         image: it's what makes the progress bar actually move, and a crash at
         epoch 40 keeps the record of the first 39 instead of losing the lot.
+
+        The commit is also what makes Stop/Cancel work. expire_on_commit means
+        reading `job.control` afterwards re-queries the row, so a flag written by
+        a completely different session — the HTTP request that pressed the button
+        — becomes visible here without any polling machinery of our own.
         """
         job.current_epoch = m.epoch
         job.total_epochs = m.total_epochs
@@ -216,7 +238,18 @@ def _run(db: Session, job: TrainingJob) -> None:
         job.metrics_json = json.dumps(history)
         db.commit()
 
+        return job.control in (JobControl.STOP, JobControl.CANCEL)
+
     result = trainer.train(config, on_epoch)
+
+    # Cancel: throw the run away entirely. No version is kept, and the weights
+    # and run directory go with it — the user asked for this training not to
+    # exist, so leaving a half-trained model in the list would be the wrong
+    # kind of helpful. Deleting the row also frees its version number for the
+    # next run, since numbering is a count.
+    if job.control == JobControl.CANCEL:
+        _discard(db, job)
+        return
 
     # Authoritative end-of-run values from the trainer override the live
     # estimates: best_map is the true best across all epochs, and the checkpoint
@@ -226,6 +259,10 @@ def _run(db: Session, job: TrainingJob) -> None:
     if result.best_map is not None:
         job.best_map = result.best_map
     job.current_epoch = result.epochs_completed
+    # Record that this finished short of its schedule, so the UI can say
+    # "stopped at epoch 13 of 50" instead of implying it ran the full course.
+    job.stopped_early = job.control == JobControl.STOP
+    job.control = None
 
     job.status = JobStatus.DONE
     job.finished_at = datetime.now()

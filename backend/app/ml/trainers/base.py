@@ -113,7 +113,17 @@ class TrainResult:
 
 #: The callback a trainer invokes once per epoch. It writes progress to the DB;
 #: the trainer must not assume anything about what it does or how long it takes.
-EpochCallback = Callable[[EpochMetrics], None]
+#:
+#: RETURNS True to mean "stop after this epoch". That's how the user's Stop and
+#: Cancel reach a framework that owns its own loop: we can't interrupt training
+#: from outside, but we are handed control once per epoch and can decline to
+#: continue. A trainer MUST honour it — gracefully, letting the epoch in flight
+#: finish and its checkpoint be written, because a half-written epoch is worse
+#: than one more epoch of waiting.
+#:
+#: Both Stop and Cancel look identical here. The difference is what the runner
+#: does with the result afterwards, which is none of the trainer's business.
+EpochCallback = Callable[[EpochMetrics], bool]
 
 
 class Trainer(ABC):

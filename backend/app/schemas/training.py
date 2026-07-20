@@ -25,10 +25,11 @@ class TrainerInfo(BaseModel):
 class TrainingJobCreate(BaseModel):
     """Request body to launch a training run.
 
-    Bounds exist to catch fat-finger inputs before they cost an OOM or a
-    days-long run: this is a 4 GB laptop GPU, not a cluster. They are generous
-    ceilings, not recommendations — the trainer's own defaults are the sane
-    starting point, surfaced via TrainerInfo.
+    Bounds exist to catch fat-finger inputs before they cost an out-of-memory
+    error or a days-long run. They are generous ceilings, not recommendations —
+    the trainer's own defaults are the sane starting point, surfaced per-backend
+    via TrainerInfo, and what actually fits depends on the GPU this is running
+    on rather than on any figure baked in here.
     """
 
     trainer_key: str
@@ -110,6 +111,10 @@ class TrainingJobRead(BaseModel):
     init_from_job_id: int | None
     #: The saved dataset version this run trained on.
     dataset_version_id: int | None
+    #: "stop" | "cancel" once requested, so the UI can show it's winding down.
+    control: str | None
+    #: True when the run ended because the user stopped it short.
+    stopped_early: bool
 
     current_epoch: int
     total_epochs: int

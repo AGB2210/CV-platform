@@ -22,10 +22,24 @@ shared, which keeps the frontend's StatusBadge working unchanged.
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
+
+
+class JobControl:
+    """What the user has asked an in-flight run to do.
+
+    Plain string constants, not a DB Enum — same reason as JobStatus: SQLite
+    can't ALTER a CHECK constraint, so adding a third instruction later would
+    mean rebuilding the table.
+    """
+
+    #: Finish the epoch in flight, then stop and KEEP the model.
+    STOP = "stop"
+    #: Finish the epoch in flight, then stop and THROW THE RUN AWAY.
+    CANCEL = "cancel"
 
 
 class TrainingJob(Base):
@@ -115,6 +129,23 @@ class TrainingJob(Base):
     # like image bytes — weights are large binaries and belong on the filesystem
     # with only their path recorded here. Consumed by Phase 5 (evaluate/deploy).
     checkpoint_path: Mapped[str | None] = mapped_column(String(512), default=None)
+
+    # --- User control of a run in flight ------------------------------------
+    #
+    # NULL | "stop" | "cancel", set by the route and read by the runner between
+    # epochs. A DB column rather than an in-process event because the runner and
+    # the request that interrupts it are different sessions (and, after a
+    # reload, potentially different processes) — a flag in memory would be
+    # invisible to exactly the code that needs it.
+    #
+    # Both mean "stop after the epoch in flight"; they differ in what happens
+    # next. "stop" keeps the model trained so far; "cancel" throws it away.
+    control: Mapped[str | None] = mapped_column(String(16), default=None)
+
+    #: True when the run finished because the user asked it to stop early, so
+    #: the UI can say "stopped at epoch 13 of 50" rather than implying it ran
+    #: the full schedule.
+    stopped_early: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
     # Populated on failure. Text, not String(n) — tracebacks are long, and
     # truncating the one thing that explains a failure is a cruel default.

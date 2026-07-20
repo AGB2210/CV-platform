@@ -18,6 +18,7 @@ from app.models import (
     Category,
     DatasetVersion,
     Image,
+    JobControl,
     JobStatus,
     TrainingJob,
 )
@@ -176,6 +177,45 @@ def list_training_jobs(
             .limit(20)
         ).all()
     )
+
+
+@router.post("/training-jobs/{job_id}/stop", response_model=TrainingJobRead)
+def stop_training_job(job_id: int, db: Session = Depends(get_db)) -> TrainingJob:
+    """Stop early, KEEPING what's been trained.
+
+    The epoch in flight is allowed to finish so its checkpoint is written — an
+    epoch abandoned halfway is worse than waiting for one more. So a run at
+    epoch 13 of 50 completes 13 and stops there, and the resulting version is
+    a real, usable model.
+    """
+    return _request_control(db, job_id, JobControl.STOP)
+
+
+@router.post("/training-jobs/{job_id}/cancel", status_code=status.HTTP_204_NO_CONTENT)
+def cancel_training_job(job_id: int, db: Session = Depends(get_db)) -> None:
+    """Cancel outright: no version is kept and the run's output is discarded.
+
+    Returns as soon as the request is recorded — the runner picks it up at the
+    end of the epoch in flight and deletes the job itself, so the row is gone
+    moments later. That's why this is 204 rather than returning the job: there
+    will shortly be nothing to return.
+    """
+    _request_control(db, job_id, JobControl.CANCEL)
+
+
+def _request_control(db: Session, job_id: int, control: str) -> TrainingJob:
+    job = db.get(TrainingJob, job_id)
+    if job is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Training job {job_id} not found")
+    if job.status not in (JobStatus.QUEUED, JobStatus.RUNNING):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"That run already finished ({job.status}) — there's nothing to stop.",
+        )
+    job.control = control
+    db.commit()
+    db.refresh(job)
+    return job
 
 
 @router.patch("/training-jobs/{job_id}", response_model=TrainingJobRead)

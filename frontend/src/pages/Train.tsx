@@ -11,7 +11,9 @@ import {
   Pencil,
   Play,
   SlidersHorizontal,
+  Square,
   Trash2,
+  X,
 } from 'lucide-react'
 import { PageBody, PageHeader } from '@/components/layout/AppShell'
 import { StatusBadge, type Status } from '@/components/StatusBadge'
@@ -25,7 +27,9 @@ import {
 } from '@/components/VersionAdmin'
 import { useVersionSelection } from '@/lib/useVersionSelection'
 import {
+  ApiError,
   bulkDeleteTrainingJobs,
+  cancelTrainingJob,
   deleteTrainingJob,
   getDevice,
   getTrainPreview,
@@ -35,6 +39,7 @@ import {
   getTrainingJob,
   renameTrainingJob,
   startTraining,
+  stopTrainingJob,
   versionLabel,
   type DatasetVersion,
   type DeviceInfo,
@@ -74,7 +79,32 @@ export function Train() {
   // Which past run the user is inspecting in the detail panel.
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [error, setError] = useState<string | null>(null)
+  //: Non-error feedback, e.g. a cancel that completed as intended.
+  const [notice, setNotice] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
+
+  async function requestStop() {
+    setError(null)
+    try {
+      setActiveJob(await stopTrainingJob(activeJob!.id))
+      setNotice('Stopping after the current epoch — the model so far will be kept.')
+    } catch (e) {
+      setError((e as Error).message)
+    }
+  }
+
+  async function requestCancel() {
+    setError(null)
+    try {
+      await cancelTrainingJob(activeJob!.id)
+      // The runner tears the row down at the end of the epoch in flight, so the
+      // poller sees a 404 shortly and clears the card.
+      setNotice('Cancelling after the current epoch — this run will be discarded.')
+      setActiveJob((j) => (j ? { ...j, control: 'cancel' } : j))
+    } catch (e) {
+      setError((e as Error).message)
+    }
+  }
 
   const jobRef = useRef<HTMLDivElement>(null)
   const scrolledForJob = useRef<number | null>(null)
@@ -176,9 +206,17 @@ export function Train() {
           void refresh()
         }
       } catch (e) {
-        setError((e as Error).message)
         if (pollRef.current) clearInterval(pollRef.current)
         pollRef.current = null
+        // A cancelled run deletes itself, so the very next poll 404s. That's the
+        // expected end of a cancel, not a failure to report as one.
+        if ((e as ApiError).status === 404) {
+          setActiveJob(null)
+          setNotice('Training cancelled — nothing was saved.')
+          void refresh()
+          return
+        }
+        setError((e as Error).message)
       }
     }, POLL_MS)
     return () => {
@@ -263,6 +301,15 @@ export function Train() {
             {error}
           </div>
         )}
+        {/* Neutral, not red: a cancel that worked is an outcome, not a fault. */}
+        {notice && (
+          <div className="mb-4 flex items-start justify-between gap-2 rounded-md border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-700">
+            <span>{notice}</span>
+            <button onClick={() => setNotice(null)} className="text-gray-400 hover:text-gray-600">
+              Dismiss
+            </button>
+          </div>
+        )}
 
         <div className="grid grid-cols-1 gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
           {/* --- Left: run detail + configure --- */}
@@ -278,6 +325,8 @@ export function Train() {
                       : null
                   }
                   datasetVersion={datasetVersionOf(displayedJob.dataset_version_id)}
+                  onStop={requestStop}
+                  onCancel={requestCancel}
                 />
               </div>
             )}
@@ -440,8 +489,7 @@ export function Train() {
 
                         <div className="flex items-center justify-between gap-2">
                           <p className="rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs text-amber-900">
-                            On a 4 GB GPU, keep batch and image size small. If a run fails
-                            with an out-of-memory error, halve the batch size and retry.
+                            {vramHint(device, selected)}
                           </p>
                           <button
                             type="button"
@@ -516,6 +564,34 @@ export function Train() {
   )
 }
 
+/**
+ * Memory guidance for THIS machine, not the one the app was written on.
+ *
+ * The app ships to other people's computers, so a hardcoded "on a 4 GB GPU…"
+ * is wrong for almost everyone who runs it. The two numbers needed are already
+ * available and both come from the running system: how much VRAM the detected
+ * device reports, and roughly how much the selected backend wants. Comparing
+ * them says something true on a 2 GB laptop and on a 24 GB workstation.
+ */
+function vramHint(device: DeviceInfo | null, trainer: TrainerInfo | undefined): string {
+  const fallback =
+    'If a run fails with an out-of-memory error, halve the batch size and try again.'
+  if (!device || device.device !== 'cuda' || !device.total_vram_gb) return fallback
+
+  const have = device.total_vram_gb
+  const need = trainer?.approx_vram_gb ?? 0
+  const name = trainer?.display_name ?? 'This backend'
+  if (!need) return `This GPU reports ${have} GB. ${fallback}`
+
+  if (have < need) {
+    return `${name} needs roughly ${need} GB and this GPU has ${have} GB — lower the batch size and image size, or expect an out-of-memory error.`
+  }
+  if (have < need * 1.5) {
+    return `${name} needs roughly ${need} GB of the ${have} GB on this GPU. It fits, but keep batch and image size modest — if a run runs out of memory, halve the batch size.`
+  }
+  return `This GPU has ${have} GB, comfortably above the ~${need} GB ${name} needs. ${fallback}`
+}
+
 function toStatus(s: TrainingJob['status']): Status {
   return s === 'done' ? 'done' : s === 'failed' ? 'failed' : s === 'running' ? 'running' : 'queued'
 }
@@ -529,12 +605,20 @@ function RunDetail({
   live,
   fromVersion,
   datasetVersion,
+  onStop,
+  onCancel,
 }: {
   job: TrainingJob
   live: boolean
   fromVersion: number | null
   datasetVersion: number | null
+  onStop: () => void
+  onCancel: () => void
 }) {
+  // Once an instruction is in, both buttons go — pressing Cancel after Stop (or
+  // twice) has no further meaning and would only invite doubt about what's
+  // happening.
+  const winding = job.control !== null
   return (
     <div className={`card transition-shadow ${live ? 'ring-2 ring-accent-400 ring-offset-2' : ''}`}>
       <div className="flex items-center justify-between border-b border-gray-200 px-4 py-2.5">
@@ -546,8 +630,42 @@ function RunDetail({
               {fromVersion !== null ? `continued from v${fromVersion}` : 'continued'}
             </span>
           )}
+          {job.stopped_early && (
+            <span className="rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-normal text-gray-500">
+              stopped early
+            </span>
+          )}
         </h2>
-        <StatusBadge status={toStatus(job.status)} />
+        <span className="flex items-center gap-2">
+          {live &&
+            (winding ? (
+              <span className="text-[11px] text-gray-500">
+                {job.control === 'cancel' ? 'Cancelling…' : 'Stopping…'} after this epoch
+              </span>
+            ) : (
+              <>
+                {/* Stop keeps the model; Cancel throws it away. Different words,
+                    different colours: cancel is the destructive one. */}
+                <button
+                  onClick={onStop}
+                  className="rounded border border-gray-300 px-1.5 py-0.5 text-[11px] text-gray-700 hover:bg-gray-50"
+                  title="Finish the current epoch, then stop and keep this model"
+                >
+                  <Square size={9} className="mr-1 inline" />
+                  Stop early
+                </button>
+                <button
+                  onClick={onCancel}
+                  className="rounded border border-red-300 px-1.5 py-0.5 text-[11px] text-red-700 hover:bg-red-50"
+                  title="Stop and discard this run entirely — no version is kept"
+                >
+                  <X size={9} className="mr-1 inline" />
+                  Cancel
+                </button>
+              </>
+            ))}
+          <StatusBadge status={toStatus(job.status)} />
+        </span>
       </div>
       <div className="p-4">
         <div className="mb-1.5 flex items-baseline justify-between text-xs">

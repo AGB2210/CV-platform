@@ -15,7 +15,7 @@ from app.models.category import Category
 from app.models.dataset_version import DatasetVersion
 from app.models.image import Image
 from app.models.project import Project
-from app.models.training_job import TrainingJob
+from app.models.training_job import JobControl, TrainingJob
 
 __all__ = [
     "Annotation",
@@ -24,6 +24,7 @@ __all__ = [
     "JobStatus",
     "Category",
     "Image",
+    "JobControl",
     "Project",
     "TrainingJob",
 ]

@@ -434,6 +434,10 @@ export interface TrainingJob {
   init_from_job_id: number | null
   /** The saved dataset version this run trained on. */
   dataset_version_id: number | null
+  /** "stop" | "cancel" once requested — the run is winding down. */
+  control: string | null
+  /** True when the run ended because the user stopped it short. */
+  stopped_early: boolean
   current_epoch: number
   total_epochs: number
   train_loss: number | null
@@ -539,6 +543,13 @@ export const bulkDeleteDatasetVersions = (projectId: number, versionIds: number[
     `/projects/${projectId}/dataset/versions/bulk-delete`,
     { version_ids: versionIds },
   )
+
+/** Stop early, keeping the model trained so far. The epoch in flight finishes. */
+export const stopTrainingJob = (jobId: number) =>
+  api.post<TrainingJob>(`/training-jobs/${jobId}/stop`)
+/** Cancel outright — no version kept, output discarded. The row disappears. */
+export const cancelTrainingJob = (jobId: number) =>
+  api.post<void>(`/training-jobs/${jobId}/cancel`)
 
 /** Model-version housekeeping. Uniqueness is per project + trainer. */
 export const renameTrainingJob = (jobId: number, name: string | null) =>

@@ -359,6 +359,165 @@ def test_train_defaults_to_the_latest_saved_version(client, no_train_run, fake_t
     assert job["dataset_version_id"] == v2["id"], "no version given => newest save"
 
 
+# --- stopping and cancelling a run ------------------------------------------
+
+
+@pytest.fixture()
+def controllable_trainer():
+    """A trainer that asks the runner, each epoch, whether to keep going — and
+    obeys. Stands in for a real backend's early-stop flag."""
+    from app.ml.trainers import registry
+    from app.ml.trainers.base import EpochMetrics, TrainConfig, TrainResult, Trainer
+
+    class ControllableTrainer(Trainer):
+        key = "ctl"
+        display_name = "Controllable"
+        description = "Test double honouring the stop signal."
+        approx_vram_gb = 0.0
+        export_format = "yolo"
+        default_epochs = 10
+        default_batch_size = 2
+        default_image_size = 64
+
+        def train(self, config: TrainConfig, on_epoch) -> TrainResult:
+            completed = 0
+            for e in range(1, config.epochs + 1):
+                completed = e
+                stop = on_epoch(
+                    EpochMetrics(epoch=e, total_epochs=config.epochs, val_map=0.1 * e)
+                )
+                if stop:
+                    break  # finish THIS epoch, then stop — never mid-epoch
+            ckpt = config.output_dir / "best.pt"
+            ckpt.write_text("weights")
+            return TrainResult(
+                best_checkpoint_path=ckpt, best_map=0.1 * completed, epochs_completed=completed
+            )
+
+    registry.register(ControllableTrainer)
+    yield ControllableTrainer
+    registry._REGISTRY.pop("ctl", None)
+
+
+def test_stop_finishes_current_epoch_and_keeps_the_model(client, monkeypatch, controllable_trainer):
+    """Stop at epoch 1 of 10: the epoch in flight completes, the run ends there,
+    and the version survives with a usable checkpoint."""
+    from pathlib import Path
+
+    from app.models import JobControl, TrainingJob
+
+    monkeypatch.setattr(
+        "app.services.training_job.SessionLocal",
+        client.SessionLocal,  # type: ignore[attr-defined]
+    )
+    pid, _ = make_trainable_project(client)
+
+    # Pre-set the stop flag by intercepting the queue, so it's already pending
+    # when the first epoch reports — the runner should then stop at epoch 1.
+    real_runner = None
+
+    def queue(job_id: int):
+        db = client.SessionLocal()  # type: ignore[attr-defined]
+        try:
+            job = db.get(TrainingJob, job_id)
+            job.control = JobControl.STOP
+            db.commit()
+        finally:
+            db.close()
+        real_runner(job_id)
+
+    from app.services.training_job import run_training_job as _real
+
+    real_runner = _real
+    monkeypatch.setattr("app.api.routes.train.run_training_job", queue)
+
+    r = client.post(f"/api/projects/{pid}/train", json={"trainer_key": "ctl", "epochs": 10})
+    job = client.get(f"/api/training-jobs/{r.json()['id']}").json()
+
+    assert job["status"] == "done", job.get("error")
+    assert job["stopped_early"] is True
+    assert job["current_epoch"] == 1, "stopped after the epoch in flight, not at 10"
+    assert job["total_epochs"] == 10, "the schedule it was asked for is still recorded"
+    assert Path(job["checkpoint_path"]).exists(), "a stopped run still yields a model"
+
+
+def test_cancel_discards_the_run_entirely(client, monkeypatch, controllable_trainer):
+    """Cancel: no version is kept and the run's directory is removed."""
+    from app.models import JobControl, TrainingJob
+
+    monkeypatch.setattr(
+        "app.services.training_job.SessionLocal",
+        client.SessionLocal,  # type: ignore[attr-defined]
+    )
+    pid, _ = make_trainable_project(client)
+
+    from app.services.training_job import run_training_job as _real
+
+    def queue(job_id: int):
+        db = client.SessionLocal()  # type: ignore[attr-defined]
+        try:
+            job = db.get(TrainingJob, job_id)
+            job.control = JobControl.CANCEL
+            db.commit()
+        finally:
+            db.close()
+        _real(job_id)
+
+    monkeypatch.setattr("app.api.routes.train.run_training_job", queue)
+
+    r = client.post(f"/api/projects/{pid}/train", json={"trainer_key": "ctl", "epochs": 10})
+    job_id = r.json()["id"]
+
+    assert client.get(f"/api/training-jobs/{job_id}").status_code == 404, "no version kept"
+    assert client.get(f"/api/projects/{pid}/training-jobs").json() == []
+
+    from app.config import settings
+
+    assert not (settings.runs_dir / str(job_id)).exists(), "its output was discarded"
+
+
+def test_cancelled_version_number_is_reused(client, monkeypatch, controllable_trainer, fake_trainer):
+    """A cancelled run leaves no gap: numbering counts what exists, so the next
+    run takes the number the cancelled one was using."""
+    from app.models import JobControl, TrainingJob
+
+    monkeypatch.setattr(
+        "app.services.training_job.SessionLocal",
+        client.SessionLocal,  # type: ignore[attr-defined]
+    )
+    pid, _ = make_trainable_project(client)
+    from app.services.training_job import run_training_job as _real
+
+    def cancelling_queue(job_id: int):
+        db = client.SessionLocal()  # type: ignore[attr-defined]
+        try:
+            db.get(TrainingJob, job_id).control = JobControl.CANCEL
+            db.commit()
+        finally:
+            db.close()
+        _real(job_id)
+
+    monkeypatch.setattr("app.api.routes.train.run_training_job", cancelling_queue)
+    first = client.post(f"/api/projects/{pid}/train", json={"trainer_key": "ctl"}).json()
+    assert first["version"] == 1
+
+    monkeypatch.setattr("app.api.routes.train.run_training_job", _real)
+    second = client.post(f"/api/projects/{pid}/train", json={"trainer_key": "ctl"}).json()
+    assert second["version"] == 1, "the cancelled run's number is free again"
+
+
+def test_stop_rejects_a_finished_run(client, monkeypatch, fake_trainer):
+    pid, _ = make_trainable_project(client)
+    monkeypatch.setattr(
+        "app.services.training_job.SessionLocal",
+        client.SessionLocal,  # type: ignore[attr-defined]
+    )
+    job = client.post(f"/api/projects/{pid}/train", json={"trainer_key": "fake", "epochs": 1}).json()
+    r = client.post(f"/api/training-jobs/{job['id']}/stop")
+    assert r.status_code == 409
+    assert "nothing to stop" in r.json()["detail"]
+
+
 # --- renaming and deleting model versions -----------------------------------
 
 
