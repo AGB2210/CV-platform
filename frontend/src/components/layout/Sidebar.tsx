@@ -96,12 +96,10 @@ export function Sidebar() {
   return (
     <aside className="flex w-56 shrink-0 flex-col border-r border-gray-200 bg-white">
       {/* Wordmark. No logo art — a text mark is honest and doesn't pretend to
-          be a product with a brand team. */}
+          be a product with a brand team. No version badge either: it was never
+          wired to anything, so it could only ever be wrong. */}
       <div className="flex h-14 items-center border-b border-gray-200 px-4">
         <span className="text-sm font-semibold tracking-tight text-gray-900">CV Platform</span>
-        <span className="ml-2 rounded border border-gray-200 px-1.5 py-0.5 font-mono text-[10px] text-gray-500">
-          v0.1
-        </span>
       </div>
 
       <nav className="flex-1 space-y-0.5 p-2">
