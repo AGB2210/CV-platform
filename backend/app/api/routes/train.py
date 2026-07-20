@@ -343,15 +343,16 @@ def train_preview(project_id: int, db: Session = Depends(get_db)) -> dict:
 
     # Training trains a SAVED version, so readiness starts with "has it been
     # saved at all?".
-    latest = db.scalar(
-        select(DatasetVersion)
-        .where(DatasetVersion.project_id == project_id)
-        .order_by(DatasetVersion.version.desc())
-    )
+    latest = versions.latest_version(db, project_id)
     # The version the live dataset actually matches — not necessarily the newest.
     # After restoring an older version they differ, and defaulting to "newest"
     # would train data the user just rolled away from.
     current = versions.current_version(db, project_id)
+    # ...and THIS is the one an unqualified Train would actually run. Readiness
+    # must describe this version, not `latest`: they differ after a restore, and
+    # judging "can I train?" by a version the click wouldn't use is how the page
+    # ended up enabling a button whose request came straight back as a 400.
+    default = versions.default_training_version(db, project_id)
 
     warnings: list[str] = []
     if latest is None:
@@ -404,10 +405,11 @@ def train_preview(project_id: int, db: Session = Depends(get_db)) -> dict:
         "current_version": current.version if current else None,
         "current_version_id": current.id if current else None,
         "has_unsaved_changes": latest is not None and current is None,
+        # Judged on the version Train would actually run — see `default` above.
         "can_train": (
-            latest is not None
-            and latest.train_boxes > 0
-            and latest.num_classes > 0
+            default is not None
+            and default.train_boxes > 0
+            and default.num_classes > 0
         ),
         "warnings": warnings,
     }
@@ -458,25 +460,14 @@ def _resolve_dataset_version(db: Session, project_id: int, version_id: int | Non
             )
         return version
 
-    # Prefer the version the live dataset MATCHES over the newest one. They
-    # diverge after restoring an older version, and "just train it" must mean
-    # "train what I'm looking at", not "train whatever was saved most recently".
-    current = versions.current_version(db, project_id)
-    if current is not None:
-        return current
-
-    latest = db.scalar(
-        select(DatasetVersion)
-        .where(DatasetVersion.project_id == project_id)
-        .order_by(DatasetVersion.version.desc())
-    )
-    if latest is None:
+    default = versions.default_training_version(db, project_id)
+    if default is None:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
             "Save the dataset before training. Training runs against a saved "
             "dataset version so a run's results stay reproducible.",
         )
-    return latest
+    return default
 
 
 def _validate_finetune_source(db: Session, project_id: int, source_id: int) -> None:

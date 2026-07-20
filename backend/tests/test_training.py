@@ -188,6 +188,39 @@ def test_preview_no_tiny_warning_on_larger_set(client):
     assert not any("too few" in w.lower() for w in p["warnings"])
 
 
+def test_can_train_describes_the_version_train_would_actually_run(
+    client, no_train_run, fake_trainer
+):
+    """Readiness must be judged on the version an unqualified Train would use.
+
+    THE BUG THIS GUARDS: the preview computed can_train from the NEWEST version
+    while the route trained the CURRENT one. Restore an older version with an
+    empty train split while a newer one has boxes, and the page enabled a button
+    whose request came straight back as a 400.
+    """
+    pid = make_project(client, "Drift", classes=("car",))
+    imgs = upload_images(client, pid, ["a.png", "b.png"])
+
+    # v1: images, no boxes — nothing to learn from.
+    v1 = save_dataset(client, pid)
+
+    # v2: a box in the train split.
+    _add_box(client, imgs[0]["id"], _class_ids(client, pid)[0])
+    save_dataset(client, pid)
+
+    # Roll back to the empty one. The live dataset IS v1 now.
+    client.post(f"/api/projects/{pid}/dataset/versions/{v1['id']}/restore")
+
+    p = client.get(f"/api/projects/{pid}/train/preview").json()
+    assert p["current_version"] == 1, "the restored version is on screen"
+    assert p["latest_version"] == 2, "the newer save point still exists"
+    assert p["can_train"] is False, "v1 has nothing to train on"
+
+    # And the two agree: a disabled button matches a rejected request.
+    r = client.post(f"/api/projects/{pid}/train", json={"trainer_key": "fake"})
+    assert r.status_code == 400
+
+
 # --- launch guards ----------------------------------------------------------
 
 
