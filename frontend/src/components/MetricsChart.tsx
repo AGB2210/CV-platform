@@ -44,15 +44,26 @@ const PAD = { l: 44, r: 14, t: 14, b: 30 }
  * renders rounded, as "1, 2, 2, 3, 3". Duplicate labels on a chart whose whole
  * job is showing one point per epoch.
  */
-function niceTicks(min: number, max: number, count: number, integer = false): number[] {
+function niceStep(min: number, max: number, count: number, integer = false): number {
   const span = max - min
-  if (span <= 0) return [min]
+  if (span <= 0) return 1
   const raw = span / count
   const mag = 10 ** Math.floor(Math.log10(raw))
   const norm = raw / mag
-  let step = (norm >= 5 ? 10 : norm >= 2 ? 5 : norm >= 1 ? 2 : 1) * mag
-  if (integer) step = Math.max(1, Math.round(step))
-  const start = integer ? Math.ceil(min) : Math.ceil(min / step) * step
+  const step = (norm >= 5 ? 10 : norm >= 2 ? 5 : norm >= 1 ? 2 : 1) * mag
+  return integer ? Math.max(1, Math.round(step)) : step
+}
+
+function niceTicks(min: number, max: number, count: number, integer = false): number[] {
+  const span = max - min
+  if (span <= 0) return [min]
+  const step = niceStep(min, max, count, integer)
+  // ALIGNED TO MULTIPLES OF THE STEP, not offset from the minimum. Starting at
+  // `min` and adding the step gives 1, 11, 21, 31… — arithmetically correct and
+  // horrible to read. Multiples give 10, 20, 30, and the same rule scales: a
+  // 500-epoch run steps by 100, a 1000-epoch run by 200, both landing on round
+  // numbers.
+  const start = Math.ceil(min / step) * step
   const ticks: number[] = []
   for (let v = start; v <= max + step * 1e-6; v += step) ticks.push(Math.round(v * 1e6) / 1e6)
   return ticks
@@ -189,33 +200,47 @@ export function MetricsChart({ points }: { points: EpochPoint[] }) {
   // an edge case. The container is always mounted; only its CONTENTS switch.
   const hasData = data.length > 0
 
-  // Epochs are whole numbers, so the epoch axis steps in whole numbers.
-  const inDomain = (t: number) => t >= dom.x0 - 1e-6 && t <= dom.x1 + 1e-6
-  const baseTicks = niceTicks(dom.x0, dom.x1, 6, true).filter(inDomain)
-
-  // ALWAYS label the latest epoch reached.
+  // --- Epoch axis ---------------------------------------------------------
   //
-  // Round ticks alone (1, 11, 21, 31…) leave the most interesting number — how
-  // far the run has actually got — unlabelled for ten epochs at a time. So the
-  // newest point gets its own tick, which advances with the run: 35 while epoch
-  // 35 is the last one in, replaced by 36 when that arrives, and sitting at 60
-  // once a 60-epoch run finishes.
+  // Three kinds of tick, and they can't all fit at every zoom level, so they're
+  // ranked and the losers are dropped rather than allowed to overlap:
   //
-  // Its neighbours are dropped when they'd collide: at ~24px apart two labels
-  // overlap into an unreadable smudge, and between "31" and the live epoch the
-  // live one is worth more.
+  //   1. THE LATEST EPOCH. The most interesting number on the chart — where the
+  //      run has actually got to. Advances with the run (…44 → 45) and rests on
+  //      the final epoch when it finishes.
+  //   2. EPOCH 1. Where the run began, so the axis has a left anchor.
+  //   3. ROUND TICKS (10, 20, 30 …), scaling with the range.
+  //
+  // Greedy by priority: a candidate is kept only if it clears every tick already
+  // accepted. That's why a 42-epoch run shows …30, 42 rather than …30, 40, 42 —
+  // 40 and 42 would be 28px apart and print as a smudge, and between a round
+  // number and the epoch you're actually on, the live one wins.
+  // Never label an epoch below 1: zooming out extends the domain past the data,
+  // and the round-number ticks then happily produce "0" and negative epochs,
+  // which don't exist. (Seen while zoom-testing: a 42-epoch chart zoomed out
+  // labelled 0, 20, 42.)
+  const inDomain = (t: number) =>
+    t >= 1 && t >= dom.x0 - 1e-6 && t <= dom.x1 + 1e-6
   const lastEpoch = hasData ? Math.max(...data.map((d) => d.epoch)) : null
   const showLast = lastEpoch !== null && inDomain(lastEpoch)
-  const MIN_LABEL_GAP_PX = 24
-  const xTicks = showLast
-    ? [
-        ...baseTicks.filter(
-          (t) => t !== lastEpoch && Math.abs(sx(t) - sx(lastEpoch)) >= MIN_LABEL_GAP_PX,
-        ),
-        lastEpoch,
-      ]
-    : baseTicks
-  const yTicks = niceTicks(dom.y0, dom.y1, 5).filter((t) => t >= dom.y0 - 1e-6 && t <= dom.y1 + 1e-6)
+  const firstEpoch = Math.max(1, Math.ceil(dom.x0))
+
+  const MIN_LABEL_GAP_PX = 30
+  const candidates = [
+    ...(showLast ? [lastEpoch] : []),
+    ...(inDomain(firstEpoch) ? [firstEpoch] : []),
+    ...niceTicks(dom.x0, dom.x1, 6, true).filter(inDomain),
+  ]
+  const xTicks: number[] = []
+  for (const t of candidates) {
+    if (xTicks.some((kept) => Math.abs(sx(kept) - sx(t)) < MIN_LABEL_GAP_PX)) continue
+    xTicks.push(t)
+  }
+  xTicks.sort((a, b) => a - b)
+  // mAP can't be negative either, so zooming out mustn't invent negative labels.
+  const yTicks = niceTicks(dom.y0, dom.y1, 5).filter(
+    (t) => t >= 0 && t >= dom.y0 - 1e-6 && t <= dom.y1 + 1e-6,
+  )
   const line = (key: 'val_map' | 'val_map50') =>
     data
       .filter((d) => d[key] !== null)
