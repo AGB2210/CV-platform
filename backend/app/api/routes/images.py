@@ -5,7 +5,7 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
@@ -101,24 +101,44 @@ def list_images(
 async def upload_images(
     project_id: int,
     files: list[UploadFile] = File(...),
+    paths: list[str] | None = Form(None),
     db: Session = Depends(get_db),
 ) -> UploadResult:
-    """Upload images, or a zip — which may be a whole annotated dataset.
+    """Upload images, a zip, or a whole folder — possibly an annotated dataset.
 
     A single endpoint handles all of it because the user's intent is identical
     ("add this to my project") and the distinction is detectable from the bytes.
     Making the UI ask "is this a COCO export?" would push our implementation
     detail into their workflow — they already know what they dragged in.
 
-    A zip is inspected rather than assumed (see services/dataset_import.py):
-    loose images, a flat COCO dataset, or Roboflow's train/valid/test layout all
-    import correctly with no format dropdown.
+    THREE SHAPES, ONE ANALYSER
+    --------------------------
+    1. Loose image files          -> stored directly, no labels.
+    2. A zip                      -> extracted, then analysed.
+    3. A folder, or a selection    -> materialised into a temp directory at
+       containing annotation files    those relative paths, then analysed.
+
+    (2) and (3) both end up calling `dataset_import.analyse()` on a directory
+    tree, which is the point: format detection, per-split scoping and the
+    COCO/YOLO readers exist once. A folder picked in the browser and the same
+    folder zipped must import identically, and the only way to guarantee that
+    is for them to run the same code.
+
+    `paths` carries each file's path relative to the chosen folder, because
+    browsers put only the BASENAME in the multipart filename — the directory
+    structure, which is exactly what tells train/ from val/, is otherwise lost.
 
     Partial success is the design: a batch of 50 with 2 corrupt files stores 48
     and reports the 2. Rejecting the whole batch would be hostile, and silently
     dropping them would be worse.
     """
     get_project_or_404(project_id, db)
+
+    # A folder upload, or a selection carrying annotation files alongside the
+    # images. Either way the structure matters, so it goes through the analyser
+    # rather than being stored as loose pictures with the labels discarded.
+    if paths or _has_annotation_files(files):
+        return await _import_as_tree(db, project_id, files, paths)
 
     saved: list[storage.SavedImage] = []
     skipped: list[str] = []
@@ -199,6 +219,94 @@ async def upload_images(
 
 
 # --- import helpers ---------------------------------------------------------
+
+#: Files that carry labels rather than pixels. Their presence in a selection is
+#: what turns "upload these pictures" into "import this dataset".
+ANNOTATION_SUFFIXES = {".json", ".txt", ".yaml", ".yml"}
+
+
+def _has_annotation_files(files: list[UploadFile]) -> bool:
+    """Did the user include labels alongside the images?
+
+    This is what makes "select images AND _annotations.coco.json" work in the
+    file picker. Without it those files are silently not images, and the upload
+    quietly drops every label in the selection.
+    """
+    return any(
+        Path(f.filename or "").suffix.lower() in ANNOTATION_SUFFIXES for f in files
+    )
+
+
+def _safe_relative(raw: str, fallback: str) -> Path | None:
+    """A user-supplied relative path, or None if it tries to escape.
+
+    `paths` comes from the browser and is therefore untrusted. It's the only
+    place in the upload flow where a client-supplied string becomes a
+    filesystem path, so it gets the same treatment as a zip member: absolute
+    paths, drive letters and any '..' component are refused outright rather
+    than normalised, because a path that needed sanitising isn't one a real
+    folder upload would have produced.
+    """
+    candidate = (raw or fallback).replace("\\", "/").strip("/")
+    if not candidate:
+        return None
+    path = Path(candidate)
+    if path.is_absolute() or path.drive or any(p == ".." for p in path.parts):
+        return None
+    return path
+
+
+async def _import_as_tree(
+    db: Session,
+    project_id: int,
+    files: list[UploadFile],
+    paths: list[str] | None,
+) -> UploadResult:
+    """Rebuild the uploaded selection as a directory tree, then import it.
+
+    The tree is scratch: images we keep are re-saved into storage/ under
+    generated names by the importer, exactly as the zip path does.
+    """
+    tmp = Path(tempfile.mkdtemp(prefix="cvfolder_"))
+    try:
+        root = tmp / "tree"
+        root.mkdir()
+        rejected: list[str] = []
+        written = 0
+
+        for i, upload in enumerate(files):
+            name = upload.filename or f"file{i}"
+            # paths[i] pairs with files[i]: the frontend sends them in step.
+            raw = paths[i] if paths and i < len(paths) else name
+            relative = _safe_relative(raw, name)
+            if relative is None:
+                rejected.append(f"{name}: unsafe path {raw!r}")
+                continue
+
+            dest = root / relative
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(await upload.read())
+            written += 1
+
+        if not written:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "Nothing could be read from that selection. " + "; ".join(rejected[:5]),
+            )
+
+        plan = dataset_import.analyse(root)
+        if not plan.groups:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "No images found in that folder. A dataset needs image files, "
+                "not only annotations.",
+            )
+
+        merged = dataset_import.execute(db, project_id, plan)
+        merged.skipped.extend(rejected)
+        return _result_to_response(db, project_id, merged)
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def _import_zip(db: Session, project_id: int, content: bytes) -> dataset_import.ImportResult:

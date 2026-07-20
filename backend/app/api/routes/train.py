@@ -107,6 +107,24 @@ def start_training(
             "Annotate some images, save the dataset, and train the new version.",
         )
 
+    # A validation split is REQUIRED, not merely recommended.
+    #
+    # Without held-out images the mAP a run reports is measured on the data it
+    # trained on. That number is not a bad estimate of generalisation, it is not
+    # an estimate of it at all — and it reads high, so it's actively misleading:
+    # a memorised model looks like an excellent one and nothing on the page says
+    # otherwise. Refusing here is the only point where that can be prevented,
+    # since by the time the chart exists the run has already cost the time.
+    if dataset_version.val_images == 0:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"Dataset v{dataset_version.version} has no validation images. "
+            "Training needs held-out data to measure against — otherwise the "
+            "reported mAP is scored on the images the model just learned. "
+            "Assign some images to 'val' on the Dataset page (or use the "
+            "percentage split), save the dataset, and train again.",
+        )
+
     # Finetuning from a previous run: validate the source is usable and its class
     # set still matches, so we fail with a clear 400 now rather than a cryptic
     # framework error 30 seconds into the run.
@@ -385,11 +403,14 @@ def train_preview(project_id: int, db: Session = Depends(get_db)) -> dict:
                 "you add more (dozens per class is a realistic floor)."
             )
     if counts[Split.VAL]["images"] == 0:
-        # Not fatal: the exporter falls back to evaluating on train, but the mAP
-        # is then meaningless as a generalisation estimate. Say so up front.
+        # BLOCKING, not advisory. Training with no held-out data produces a
+        # model whose reported mAP is measured on what it memorised — it looks
+        # excellent and generalises like a rock, and there is no way to tell
+        # from the number. Every run needs something to be scored against.
         warnings.append(
-            "No validation split — mAP will be measured on the training data. "
-            "Assign some images to 'val' on the Dataset page for a real score."
+            "No validation split — training needs held-out images to measure "
+            "against. Assign some images to 'val' on the Dataset page, or use "
+            "the percentage split to carve one out of train."
         )
 
     return {
@@ -406,10 +427,12 @@ def train_preview(project_id: int, db: Session = Depends(get_db)) -> dict:
         "current_version_id": current.id if current else None,
         "has_unsaved_changes": latest is not None and current is None,
         # Judged on the version Train would actually run — see `default` above.
+        # A val split is part of readiness, not advice: see the route guard.
         "can_train": (
             default is not None
             and default.train_boxes > 0
             and default.num_classes > 0
+            and default.val_images > 0
         ),
         "warnings": warnings,
     }

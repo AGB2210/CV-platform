@@ -566,6 +566,15 @@ export function Train() {
                     </>
                   ) : preview.num_classes === 0 ? (
                     'Add a class first'
+                  ) : preview.splits.val.images === 0 ? (
+                    <>
+                      Needs a{' '}
+                      <Link to={`/projects/${projectId}`} className="text-accent-700 underline">
+                        validation split
+                      </Link>{' '}
+                      — without held-out images the mAP would be scored on the
+                      training data.
+                    </>
                   ) : (
                     'The saved dataset has no boxes in its train split'
                   )}

@@ -93,9 +93,11 @@ class UploadResult(BaseModel):
         The UI uses this to prompt for a percentage split instead of silently
         training with no held-out data — which produces a model that looks
         perfect and generalises like a rock.
+
+        Deliberately NOT conditioned on `has_split_folders`. It used to be, so a
+        folder with no train/val/test naming — everything landing in train,
+        which is exactly the case most in need of a prompt — reported False.
+        The question this answers is "is there anything to validate against?",
+        and how the images got their splits doesn't change the answer.
         """
-        return (
-            self.has_split_folders
-            and self.splits.get("train", 0) > 0
-            and self.splits.get("val", 0) == 0
-        )
+        return self.splits.get("train", 0) > 0 and self.splits.get("val", 0) == 0

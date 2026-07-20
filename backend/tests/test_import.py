@@ -10,6 +10,7 @@ is detectable.
 """
 
 import io
+from pathlib import Path
 import json
 import zipfile
 
@@ -223,3 +224,183 @@ def test_rle_segmentation_is_skipped_not_crashed(client):
     body = _import(client, "Rle", buf.getvalue())
     assert body["uploaded_count"] == 1, "the image still imports"
     assert body["annotations_imported"] == 0
+
+
+# --- YOLO -------------------------------------------------------------------
+# The other format people actually have. Structurally unlike COCO: one .txt per
+# image, normalised centre-based coordinates, classes named only by index.
+
+
+def _yolo_zip(*, with_yaml: bool = True, seg: bool = False, splits=("train", "valid")) -> bytes:
+    """An ultralytics-style export: data.yaml + <split>/images + <split>/labels.
+
+    The box is the same rectangle in every image — 100x60 at (20, 30) on a
+    640x480 canvas — expressed the YOLO way, so the absolute box the importer
+    must reconstruct is knowable exactly.
+    """
+    cx, cy = (20 + 100 / 2) / 640, (30 + 60 / 2) / 480
+    nw, nh = 100 / 640, 60 / 480
+    if seg:
+        # Same rectangle as a polygon: (20,30) (120,30) (120,90) (20,90).
+        label = "0 {} {} {} {} {} {} {} {}".format(
+            20 / 640, 30 / 480, 120 / 640, 30 / 480,
+            120 / 640, 90 / 480, 20 / 640, 90 / 480,
+        )
+    else:
+        label = f"0 {cx} {cy} {nw} {nh}"
+
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as zf:
+        if with_yaml:
+            zf.writestr("ds/data.yaml", "names:\n  - widget\n  - gadget\nnc: 2\n")
+        for split in splits:
+            for i in (1, 2):
+                zf.writestr(f"ds/{split}/images/{split}{i}.png", png_bytes(640, 480))
+                zf.writestr(f"ds/{split}/labels/{split}{i}.txt", label)
+    return buf.getvalue()
+
+
+def test_yolo_export_imports_with_splits_and_boxes(client):
+    pid = client.post("/api/projects", json={"name": "Yolo"}).json()["id"]
+    r = client.post(
+        f"/api/projects/{pid}/images",
+        files=[("files", ("y.zip", _yolo_zip(), "application/zip"))],
+    )
+    assert r.status_code == 201, r.text
+    body = r.json()
+
+    assert body["uploaded_count"] == 4
+    assert body["annotations_imported"] == 4
+    assert body["splits"] == {"train": 2, "val": 2}, "'valid' maps to val"
+    assert body["classes_created"] == ["widget", "gadget"], "data.yaml order preserved"
+
+
+def test_yolo_coordinates_convert_to_absolute_pixels(client):
+    """YOLO is normalised and centre-based; we store absolute and corner-based.
+
+    Getting this wrong doesn't error — it stores a plausible box in the wrong
+    place, which survives review and trains a model on bad geometry.
+    """
+    pid = client.post("/api/projects", json={"name": "YoloCoords"}).json()["id"]
+    client.post(
+        f"/api/projects/{pid}/images",
+        files=[("files", ("y.zip", _yolo_zip(splits=("train",)), "application/zip"))],
+    )
+    img = client.get(f"/api/projects/{pid}/images").json()[0]
+    box = client.get(f"/api/images/{img['id']}/annotations").json()[0]
+    assert round(box["x"]) == 20 and round(box["y"]) == 30
+    assert round(box["width"]) == 100 and round(box["height"]) == 60
+
+
+def test_yolo_segmentation_labels_become_boxes(client):
+    """A YOLO-seg polygon is read as its bounding box, like the COCO path."""
+    pid = client.post("/api/projects", json={"name": "YoloSeg"}).json()["id"]
+    client.post(
+        f"/api/projects/{pid}/images",
+        files=[("files", ("y.zip", _yolo_zip(seg=True, splits=("train",)), "application/zip"))],
+    )
+    img = client.get(f"/api/projects/{pid}/images").json()[0]
+    box = client.get(f"/api/images/{img['id']}/annotations").json()[0]
+    assert round(box["x"]) == 20 and round(box["y"]) == 30
+    assert round(box["width"]) == 100 and round(box["height"]) == 60
+
+
+def test_yolo_without_class_list_names_classes_by_index(client):
+    """No data.yaml means the indices can't be named — but the boxes are still
+    real, so they import under a placeholder name that can be renamed."""
+    pid = client.post("/api/projects", json={"name": "YoloNoYaml"}).json()["id"]
+    r = client.post(
+        f"/api/projects/{pid}/images",
+        files=[("files", ("y.zip", _yolo_zip(with_yaml=False, splits=("train",)), "application/zip"))],
+    )
+    body = r.json()
+    assert body["annotations_imported"] == 2, "boxes kept, not dropped"
+    assert body["classes_created"] == ["class_0"]
+    assert any("index" in n for n in body["notes"])
+
+
+# --- folder upload ----------------------------------------------------------
+# The browser sends only BASENAMES in the multipart filename, so the directory
+# structure — which is exactly what distinguishes train/ from val/ — arrives in
+# a parallel `paths` field. A folder and the same folder zipped must import
+# identically; both run through dataset_import.analyse().
+
+
+def _folder_files(tree: dict[str, bytes]):
+    """Build the (files, paths) multipart a folder upload produces."""
+    files = [
+        ("files", (Path(rel).name, data, "application/octet-stream"))
+        for rel, data in tree.items()
+    ]
+    files += [("paths", (None, rel)) for rel in tree]
+    return files
+
+
+def test_folder_with_split_subfolders_maps_to_splits(client):
+    pid = client.post("/api/projects", json={"name": "Folder"}).json()["id"]
+    tree = {
+        "ds/train/a.png": png_bytes(64, 48),
+        "ds/train/b.png": png_bytes(64, 48),
+        "ds/valid/c.png": png_bytes(64, 48),
+        "ds/test/d.png": png_bytes(64, 48),
+    }
+    r = client.post(f"/api/projects/{pid}/images", files=_folder_files(tree))
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["uploaded_count"] == 4
+    assert body["splits"] == {"train": 2, "val": 1, "test": 1}
+    assert body["has_split_folders"] is True
+
+
+def test_folder_without_split_names_goes_entirely_to_train(client):
+    """"It is fine if no naming notation is followed. In that case, all go to
+    train" — the split tool on the Dataset page carves out val afterwards."""
+    pid = client.post("/api/projects", json={"name": "Flatish"}).json()["id"]
+    tree = {
+        "photos/one.png": png_bytes(64, 48),
+        "photos/nested/two.png": png_bytes(64, 48),
+    }
+    body = client.post(f"/api/projects/{pid}/images", files=_folder_files(tree)).json()
+    assert body["uploaded_count"] == 2
+    assert body["splits"] == {"train": 2}
+    assert body["has_split_folders"] is False
+    assert body["needs_val_split"] is True, "the UI must prompt for a val split"
+
+
+def test_folder_upload_rejects_path_traversal(client):
+    """`paths` is client-supplied, so it's the one place an upload could try to
+    write outside the scratch tree."""
+    pid = client.post("/api/projects", json={"name": "Evil"}).json()["id"]
+    tree_files = [
+        ("files", ("ok.png", png_bytes(64, 48), "image/png")),
+        ("files", ("bad.png", png_bytes(64, 48), "image/png")),
+        ("paths", (None, "ds/ok.png")),
+        ("paths", (None, "../../escaped.png")),
+    ]
+    body = client.post(f"/api/projects/{pid}/images", files=tree_files).json()
+    assert body["uploaded_count"] == 1, "only the safe one landed"
+    assert any("unsafe path" in s for s in body["skipped"])
+
+
+def test_selecting_images_and_a_coco_json_together_imports_labels(client):
+    """The file picker case: images and _annotations.coco.json chosen together.
+
+    They used to upload as plain images with every label silently discarded,
+    because a .json simply isn't an image.
+    """
+    pid = client.post("/api/projects", json={"name": "PickBoth"}).json()["id"]
+    doc = {
+        "images": [{"id": 1, "file_name": "a.png", "width": 640, "height": 480}],
+        "annotations": [
+            {"id": 1, "image_id": 1, "category_id": 1, "bbox": [10, 20, 30, 40]}
+        ],
+        "categories": [{"id": 1, "name": "widget"}],
+    }
+    files = [
+        ("files", ("a.png", png_bytes(640, 480), "image/png")),
+        ("files", ("_annotations.coco.json", json.dumps(doc).encode(), "application/json")),
+    ]
+    body = client.post(f"/api/projects/{pid}/images", files=files).json()
+    assert body["uploaded_count"] == 1
+    assert body["annotations_imported"] == 1, "the json was read, not dropped"
+    assert body["classes_created"] == ["widget"]

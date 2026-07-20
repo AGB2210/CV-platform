@@ -69,6 +69,18 @@ async function upload<T>(path: string, files: File[]): Promise<T> {
   // parameter in the FastAPI endpoint.
   for (const file of files) form.append('files', file)
 
+  // A folder upload also sends each file's path RELATIVE to the chosen folder,
+  // in the same order, because the multipart filename carries only the
+  // basename — so "train/a.png" and "val/a.png" would arrive indistinguishable
+  // and the split information the user's own layout encodes would be lost.
+  //
+  // webkitRelativePath is '' for ordinary file selections, so this appends
+  // nothing there and the server takes the plain-upload path.
+  const relative = files.map((f) => f.webkitRelativePath || '')
+  if (relative.some(Boolean)) {
+    for (const p of relative) form.append('paths', p)
+  }
+
   const res = await fetch(`${BASE_URL}${path}`, { method: 'POST', body: form })
 
   if (!res.ok) {

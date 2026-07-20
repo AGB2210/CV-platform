@@ -1,17 +1,29 @@
 """
 Dataset import — recognise what the user actually uploaded.
 
-Someone dropping a zip could reasonably be handing us any of these:
+Someone dropping a zip — or picking a folder — could reasonably be handing us
+any of these:
 
   1. Loose images                     -> just images, no labels
   2. Images + one COCO json           -> flat annotated dataset
   3. train/valid/test subfolders,     -> Roboflow's COCO export: THREE separate
      each with its own COCO json         COCO files, each scoped to its folder
-  4. Any of the above nested one      -> zips usually contain a top folder
+  4. A YOLO export                    -> data.yaml + per-image .txt labels,
+                                         usually under images/ and labels/
+  5. Any of the above nested one      -> zips usually contain a top folder
      level down inside a wrapper dir
 
 This module figures out which, without asking. The alternative — a dropdown
 where you declare your format — is the thing that makes tools annoying.
+
+COCO AND YOLO ARE STRUCTURALLY DIFFERENT, NOT JUST DIFFERENT SYNTAX
+-------------------------------------------------------------------
+COCO is one document per dataset holding absolute corner-based pixel boxes and
+carrying class names inline. YOLO is one FILE per image holding normalised
+centre-based boxes that name classes only by index, with the actual names in a
+separate data.yaml. So they need genuinely different readers, and the YOLO one
+has to convert coordinates and resolve indices before anything downstream sees
+them — everything past `execute` speaks absolute pixels and class names.
 
 THE RULE THAT MATTERS FOR ROBOFLOW EXPORTS
 ------------------------------------------
@@ -69,13 +81,37 @@ class CocoDoc:
 
 
 @dataclass
+class YoloDoc:
+    """YOLO labels for one split: a class list plus per-image .txt files.
+
+    The counterpart to CocoDoc. YOLO stores one label FILE per image rather
+    than one document per dataset, and the class list lives separately (in
+    data.yaml or classes.txt) because the label files only ever say "class 3".
+    """
+
+    #: Ordered class names. The INDEX is the identity here — YOLO label files
+    #: reference classes by position, so this order is load-bearing in a way
+    #: COCO's category ids are not.
+    class_names: list[str]
+    #: lowercase image filename -> its .txt label file
+    label_files: dict[str, Path] = field(default_factory=dict)
+    #: Boxes computed from a segmentation polygon (YOLO-seg labels).
+    derived_boxes: int = 0
+
+
+@dataclass
 class SplitGroup:
-    """One split's worth of files, plus the COCO doc that describes them."""
+    """One split's worth of files, plus the labels that describe them."""
 
     split: str
     #: relative path inside the archive -> extracted path on disk
     image_files: dict[str, Path] = field(default_factory=dict)
     coco: CocoDoc | None = None
+    yolo: YoloDoc | None = None
+
+    @property
+    def has_labels(self) -> bool:
+        return self.coco is not None or self.yolo is not None
 
 
 @dataclass
@@ -96,7 +132,7 @@ class ImportPlan:
 
     @property
     def has_annotations(self) -> bool:
-        return any(g.coco is not None for g in self.groups)
+        return any(g.has_labels for g in self.groups)
 
     @property
     def splits_present(self) -> set[str]:
@@ -221,6 +257,151 @@ def _bbox_from_segmentation(segmentation) -> list[float] | None:
     return [x, y, w, h]
 
 
+# --- YOLO -------------------------------------------------------------------
+# YOLO is the other format people actually have. It differs from COCO in every
+# structural way: one label FILE per image instead of one document per dataset,
+# coordinates NORMALISED to 0-1 instead of absolute pixels, centre-based
+# cx/cy/w/h instead of corner-based x/y/w/h, and class names held separately
+# because label files only ever say "class 3".
+
+#: Where the class list lives, in the order we should look.
+YOLO_CLASS_FILENAMES = ("data.yaml", "data.yml", "classes.txt", "obj.names")
+
+
+def parse_yolo_classes(path: Path) -> list[str]:
+    """Read the class list from data.yaml / classes.txt. [] if unreadable.
+
+    data.yaml holds `names:` as either a list (["car", "person"]) or, in newer
+    ultralytics exports, a dict keyed by index ({0: "car", 1: "person"}). The
+    dict form must be sorted BY KEY — dict order in a YAML file is not
+    guaranteed to be index order, and getting it wrong silently renames every
+    class to a different one.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return []
+
+    if path.suffix.lower() in (".yaml", ".yml"):
+        try:
+            import yaml
+
+            data = yaml.safe_load(text)
+        except Exception:  # noqa: BLE001 — a malformed yaml is not fatal
+            return []
+        if not isinstance(data, dict):
+            return []
+        names = data.get("names")
+        if isinstance(names, dict):
+            return [str(names[k]) for k in sorted(names, key=lambda k: int(k))]
+        if isinstance(names, list):
+            return [str(n) for n in names]
+        return []
+
+    # classes.txt / obj.names: one name per line, position IS the class index.
+    return [line.strip() for line in text.splitlines() if line.strip()]
+
+
+def _yolo_label_dir_for(image_dir: Path, root: Path) -> Path | None:
+    """Find the labels/ directory matching a directory of images.
+
+    YOLO exports put labels in a sibling of images/ ("train/images" ->
+    "train/labels"), which is the layout ultralytics writes and expects. Some
+    tools instead drop the .txt next to the .jpg. Both are handled — the caller
+    falls back to the image's own directory.
+    """
+    if image_dir.name.lower() == "images":
+        sibling = image_dir.parent / "labels"
+        if sibling.is_dir():
+            return sibling
+    # "labels" alongside the split folder, e.g. train/ + labels/train/
+    candidate = root / "labels" / image_dir.name
+    return candidate if candidate.is_dir() else None
+
+
+def parse_yolo(
+    image_files: dict[str, Path], root: Path, class_names: list[str]
+) -> YoloDoc | None:
+    """Pair images with their .txt label files. None if there are none."""
+    label_files: dict[str, Path] = {}
+    for name, image_path in image_files.items():
+        stem_txt = Path(name).with_suffix(".txt").name
+        label_dir = _yolo_label_dir_for(image_path.parent, root)
+        for candidate in (
+            (label_dir / stem_txt) if label_dir else None,
+            image_path.with_suffix(".txt"),
+        ):
+            if candidate and candidate.is_file():
+                label_files[name.lower()] = candidate
+                break
+
+    if not label_files:
+        return None
+    return YoloDoc(class_names=class_names, label_files=label_files)
+
+
+def parse_yolo_label_file(path: Path, width: int, height: int) -> list[tuple[int, list[float]]]:
+    """Read one .txt into [(class_index, [x, y, w, h])] in ABSOLUTE pixels.
+
+    Two label shapes share this file extension:
+      "3 0.5 0.5 0.2 0.1"                  detection — cx cy w h, normalised
+      "3 0.1 0.1 0.4 0.1 0.4 0.5 0.1 0.5"  segmentation — a normalised polygon
+
+    Both are read. The polygon becomes its bounding box, for the same reason
+    the COCO path derives one: this app is object detection, and a polygon's
+    box is exactly what a detector wants from it.
+
+    Coordinates are converted to absolute pixels here so everything downstream
+    speaks one unit. Doing it later means carrying a "is this normalised?" flag
+    through the import, which is precisely the kind of thing that gets lost.
+    """
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return []
+
+    out: list[tuple[int, list[float]]] = []
+    for line in lines:
+        parts = line.split()
+        if len(parts) < 5:
+            continue
+        try:
+            class_index = int(float(parts[0]))
+            values = [float(v) for v in parts[1:]]
+        except ValueError:
+            continue
+
+        if len(values) == 4:
+            cx, cy, w, h = values
+            # Centre-based -> corner-based, and normalised -> absolute.
+            x = (cx - w / 2) * width
+            y = (cy - h / 2) * height
+            bw, bh = w * width, h * height
+        elif len(values) >= 6 and len(values) % 2 == 0:
+            xs = [v * width for v in values[0::2]]
+            ys = [v * height for v in values[1::2]]
+            x, y = min(xs), min(ys)
+            bw, bh = max(xs) - x, max(ys) - y
+        else:
+            continue
+
+        if bw <= 0 or bh <= 0:
+            continue
+        out.append((class_index, [x, y, bw, bh]))
+    return out
+
+
+def _find_yolo_classes(root: Path) -> list[str]:
+    """The dataset's class list, from wherever it keeps it."""
+    for candidate in YOLO_CLASS_FILENAMES:
+        found = next(root.rglob(candidate), None)
+        if found:
+            names = parse_yolo_classes(found)
+            if names:
+                return names
+    return []
+
+
 def _strip_wrapper(root: Path) -> Path:
     """Descend through single-directory wrappers.
 
@@ -262,6 +443,11 @@ def analyse(root: Path) -> ImportPlan:
     root = _strip_wrapper(root)
     plan = ImportPlan()
 
+    # Resolved once for the whole dataset: YOLO keeps its class list in a single
+    # data.yaml at the root, not per split, and the INDEX in that list is what
+    # every label file refers to.
+    yolo_classes = _find_yolo_classes(root)
+
     # --- Case 3/4: split folders -------------------------------------------
     split_dirs: dict[str, Path] = {}
     for child in sorted(root.iterdir()):
@@ -299,10 +485,19 @@ def analyse(root: Path) -> ImportPlan:
                         group.coco = doc
                         break
 
+            # No COCO? Try YOLO. Checked second because a dataset carrying both
+            # is almost always a COCO export with stray .txt files, and COCO
+            # carries class NAMES with the boxes while YOLO needs a separate
+            # class list that may be missing.
+            if group.coco is None:
+                group.yolo = parse_yolo(group.image_files, root, yolo_classes)
+
             if group.image_files:
                 plan.groups.append(group)
                 n = len(group.image_files)
-                labelled = "with annotations" if group.coco else "no annotations found"
+                labelled = (
+                    "with annotations" if group.has_labels else "no annotations found"
+                )
                 plan.notes.append(f"{split}: {n} image(s), {labelled}")
     else:
         # --- Case 1/2: flat ------------------------------------------------
@@ -325,21 +520,54 @@ def analyse(root: Path) -> ImportPlan:
                     group.coco = doc
                     break
 
+        if group.coco is None:
+            group.yolo = parse_yolo(group.image_files, root, yolo_classes)
+
         if group.image_files:
             plan.groups.append(group)
             if group.coco:
                 plan.notes.append(
                     f"COCO annotations detected for {len(group.image_files)} image(s)"
                 )
+            elif group.yolo:
+                plan.notes.append(
+                    f"YOLO annotations detected for {len(group.yolo.label_files)} "
+                    f"of {len(group.image_files)} image(s)"
+                )
 
     # Union of class names across every split, order preserved. Roboflow writes
     # identical categories in all three files, but we can't rely on that — and
     # dict.fromkeys gives dedupe + stable order in one step.
+    #
+    # For YOLO the order is not cosmetic: label files reference classes by
+    # INDEX, so the list must stay in data.yaml's order or every box is
+    # relabelled to a different class.
     names: list[str] = []
     for group in plan.groups:
         if group.coco:
             names.extend(group.coco.class_names)
+        elif group.yolo:
+            names.extend(group.yolo.class_names)
     plan.class_names = list(dict.fromkeys(names))
+
+    # YOLO labels with no class list anywhere: the boxes reference indices we
+    # cannot name. Synthesise names from the indices actually used rather than
+    # dropping the annotations — "class_0" is recoverable by renaming, a
+    # discarded box is not.
+    if not plan.class_names and any(g.yolo for g in plan.groups):
+        used: set[int] = set()
+        for group in plan.groups:
+            if not group.yolo:
+                continue
+            for label_path in group.yolo.label_files.values():
+                for line in parse_yolo_label_file(label_path, 1, 1):
+                    used.add(line[0])
+        if used:
+            plan.class_names = [f"class_{i}" for i in range(max(used) + 1)]
+            plan.notes.append(
+                "No data.yaml or classes.txt found, so classes are named by their "
+                "index. Rename them on the Dataset page."
+            )
 
     # Say so when boxes came from polygons. The dataset imported fine, but the
     # user handed over a segmentation dataset and got a detection one — that's a
@@ -423,6 +651,47 @@ def execute(db, project_id: int, plan: ImportPlan) -> ImportResult:
             db.flush()
             result.images_added += 1
             result.splits[group.split] = result.splits.get(group.split, 0) + 1
+
+            if group.yolo is not None:
+                # YOLO: one .txt beside (or in a sibling labels/ of) each image.
+                # Coordinates come back already absolute — parse_yolo_label_file
+                # does the normalised->pixel conversion against the REAL
+                # dimensions read off disk, so a stale data.yaml can't skew them.
+                label_path = group.yolo.label_files.get(name.lower())
+                if label_path is None:
+                    continue
+                for class_index, (x, y, w, h) in parse_yolo_label_file(
+                    label_path, saved.width, saved.height
+                ):
+                    # The index IS the class identity in YOLO. Out of range means
+                    # the label file and the class list disagree — drop rather
+                    # than guess, the same rule the annotator now follows.
+                    if not (0 <= class_index < len(plan.class_names)):
+                        continue
+                    category = existing.get(plan.class_names[class_index])
+                    if category is None:
+                        continue
+                    x = max(0.0, min(x, saved.width))
+                    y = max(0.0, min(y, saved.height))
+                    w = min(w, saved.width - x)
+                    h = min(h, saved.height - y)
+                    if w <= 0 or h <= 0:
+                        continue
+                    db.add(
+                        Annotation(
+                            image_id=image.id,
+                            category_id=category.id,
+                            x=x,
+                            y=y,
+                            width=w,
+                            height=h,
+                            confidence=None,
+                            source="imported",
+                            reviewed=True,
+                        )
+                    )
+                    result.annotations_added += 1
+                continue
 
             if group.coco is None:
                 continue

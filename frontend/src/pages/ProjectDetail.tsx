@@ -13,6 +13,8 @@ import {
   SquarePen,
   Tags,
   Trash2,
+  FileUp,
+  FolderUp,
   Upload,
   X,
 } from 'lucide-react'
@@ -545,6 +547,7 @@ function UploadPanel({
   const [result, setResult] = useState<UploadResult | null>(null)
   const [error, setError] = useState<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  const folderRef = useRef<HTMLInputElement>(null)
 
   async function send(files: File[]) {
     if (!files.length) return
@@ -558,10 +561,11 @@ function UploadPanel({
       setError((err as Error).message)
     } finally {
       setBusy(false)
-      // Clear the input so re-picking the SAME file fires onChange again.
+      // Clear the inputs so re-picking the SAME file fires onChange again.
       // Without this, <input type=file> sees no value change and stays silent —
       // a classic "upload works once then stops" bug.
       if (inputRef.current) inputRef.current.value = ''
+      if (folderRef.current) folderRef.current.value = ''
     }
   }
 
@@ -580,33 +584,75 @@ function UploadPanel({
           setDragging(false)
           void send(Array.from(e.dataTransfer.files))
         }}
-        onClick={() => inputRef.current?.click()}
         className={[
-          'flex cursor-pointer flex-col items-center justify-center rounded-lg border border-dashed px-4 py-6 transition-colors',
+          'flex flex-col items-center justify-center rounded-lg border border-dashed px-4 py-6 transition-colors',
           dragging
             ? 'border-accent-500 bg-accent-50'
-            : 'border-gray-300 bg-white hover:border-gray-400 hover:bg-gray-50',
+            : 'border-gray-300 bg-white',
         ].join(' ')}
       >
         <Upload size={18} className="mb-1.5 text-gray-400" />
         <p className="text-sm text-gray-700">
-          {busy ? 'Uploading…' : 'Drop images here, or click to browse'}
+          {busy ? 'Uploading…' : 'Drop images, a folder, or a .zip here'}
         </p>
-        <p className="mt-0.5 text-xs text-gray-400">
-          JPG, PNG, BMP, WEBP — or a .zip
+
+        {/* Two explicit buttons rather than one click target on the whole box.
+            <input type="file"> and the same input with `webkitdirectory` are
+            different pickers — one cannot choose a folder and the other cannot
+            choose loose files — so the choice has to be made before the dialog
+            opens, and only the user can make it. */}
+        <div className="mt-2.5 flex items-center gap-2">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => inputRef.current?.click()}
+            className="flex items-center gap-1 rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+          >
+            <FileUp size={11} />
+            Select files
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => folderRef.current?.click()}
+            className="flex items-center gap-1 rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50"
+          >
+            <FolderUp size={11} />
+            Select folder
+          </button>
+        </div>
+
+        <p className="mt-2 text-xs text-gray-400">
+          JPG, PNG, BMP, WEBP — plus COCO .json, YOLO .txt or data.yaml
         </p>
         {/* Say that dataset import exists. It's the kind of feature nobody
-            discovers by guessing, and "just drop the whole export" is a much
-            better first experience than manually recreating classes. */}
-        <p className="mt-1 text-xs text-gray-400">
-          A COCO export or Roboflow zip (train/valid/test) imports its annotations
-          and splits automatically.
+            discovers by guessing, and "just point at the whole export" is a
+            much better first experience than manually recreating classes. */}
+        <p className="mt-1 max-w-md text-center text-xs text-gray-400">
+          COCO or YOLO is detected automatically. A folder with train/val/test
+          subfolders keeps those splits; anything else goes to train, and you can
+          split it below.
         </p>
+
         <input
           ref={inputRef}
           type="file"
           multiple
-          accept=".jpg,.jpeg,.png,.bmp,.webp,.zip"
+          // Annotation files are accepted alongside images: picking your
+          // pictures AND _annotations.coco.json in one go used to upload the
+          // images and silently discard every label.
+          accept=".jpg,.jpeg,.png,.bmp,.webp,.zip,.json,.txt,.yaml,.yml"
+          className="hidden"
+          onChange={(e) => void send(Array.from(e.target.files ?? []))}
+        />
+        <input
+          ref={folderRef}
+          type="file"
+          multiple
+          // Non-standard but supported everywhere that matters. React doesn't
+          // know these attributes, hence the cast — they must reach the DOM
+          // verbatim or the picker stays a file picker.
+          {...({ webkitdirectory: '', directory: '' } as Record<string, string>)}
           className="hidden"
           onChange={(e) => void send(Array.from(e.target.files ?? []))}
         />

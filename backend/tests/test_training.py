@@ -156,14 +156,42 @@ def test_preview_reports_split_readiness(client):
     assert p["can_train"] is True
 
 
-def test_preview_warns_when_no_val_split(client):
+def test_no_val_split_blocks_training(client, no_train_run, fake_trainer):
+    """A validation split is REQUIRED, not advisory.
+
+    Without held-out images the reported mAP is scored on the data the model
+    just trained on. That isn't a poor estimate of generalisation, it's not one
+    at all — and it reads HIGH, so a memorised model looks like an excellent
+    one. This used to be a warning beside an enabled button.
+    """
     pid = make_project(client, "NoVal", classes=("car",))
     imgs = upload_images(client, pid, ["a.png", "b.png"])
     _add_box(client, imgs[0]["id"], _class_ids(client, pid)[0])
     save_dataset(client, pid)
+
     p = client.get(f"/api/projects/{pid}/train/preview").json()
-    assert p["can_train"] is True  # trainable, just not measurable
+    assert p["can_train"] is False
     assert any("validation" in w.lower() for w in p["warnings"])
+
+    # The button is disabled AND the endpoint refuses — a disabled control is a
+    # courtesy, not a guarantee.
+    r = client.post(f"/api/projects/{pid}/train", json={"trainer_key": "fake"})
+    assert r.status_code == 400
+    assert "validation" in r.json()["detail"].lower()
+    assert client.get(f"/api/projects/{pid}/training-jobs").json() == []
+
+
+def test_val_split_makes_it_trainable(client):
+    """The same project becomes trainable once val images exist."""
+    pid = make_project(client, "GetsVal", classes=("car",))
+    imgs = upload_images(client, pid, ["a.png", "b.png"])
+    _add_box(client, imgs[0]["id"], _class_ids(client, pid)[0])
+    _assign_split(client, pid, [imgs[1]["id"]], "val")
+    save_dataset(client, pid)
+
+    p = client.get(f"/api/projects/{pid}/train/preview").json()
+    assert p["can_train"] is True
+    assert not any("validation" in w.lower() for w in p["warnings"])
 
 
 def test_preview_warns_on_tiny_train_set(client):
