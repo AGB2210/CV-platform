@@ -153,3 +153,45 @@ def test_bulk_delete_removes_files_before_any_version_exists(client):
     ).json()
     assert r["recoverable"] is False
     assert not (storage.project_dir(pid) / imgs[0]["filename"]).exists()
+
+
+# --- pagination -------------------------------------------------------------
+
+
+def test_list_images_reports_the_total_beyond_the_page(client):
+    """THE bug this guards: the grid asked for the default page, got 200 rows,
+    and rendered them as the whole dataset. A 638-image project showed 200 with
+    nothing indicating the rest existed.
+
+    The body stays a plain list — callers that just want "some images" are
+    unaffected — and the total rides in a header.
+    """
+    from tests.conftest import make_project, upload_images
+
+    pid = make_project(client, "Paged", classes=("car",))
+    upload_images(client, pid, [f"i{i}.png" for i in range(25)])
+
+    r = client.get(f"/api/projects/{pid}/images?limit=10&offset=0")
+    assert r.status_code == 200
+    assert len(r.json()) == 10, "one page"
+    assert r.headers["X-Total-Count"] == "25", "but the total is knowable"
+
+    last = client.get(f"/api/projects/{pid}/images?limit=10&offset=20")
+    assert len(last.json()) == 5
+    assert last.headers["X-Total-Count"] == "25"
+
+
+def test_pages_do_not_overlap_or_skip(client):
+    """Stable id ordering means paging covers the set exactly once."""
+    from tests.conftest import make_project, upload_images
+
+    pid = make_project(client, "PageWalk", classes=("car",))
+    upload_images(client, pid, [f"i{i}.png" for i in range(23)])
+
+    seen: list[int] = []
+    for offset in (0, 10, 20):
+        page = client.get(f"/api/projects/{pid}/images?limit=10&offset={offset}").json()
+        seen.extend(i["id"] for i in page)
+
+    assert len(seen) == 23
+    assert len(set(seen)) == 23, "no image appeared on two pages"

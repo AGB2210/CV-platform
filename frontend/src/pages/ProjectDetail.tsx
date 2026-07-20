@@ -12,7 +12,10 @@ import {
   Shuffle,
   SquarePen,
   Tags,
+  ChevronLeft,
+  ChevronRight,
   Trash2,
+  TriangleAlert,
   FileUp,
   FolderUp,
   Upload,
@@ -37,13 +40,14 @@ import {
   getProject,
   listClasses,
   listDatasetVersions,
-  listImages,
+  listImagePage,
   renameDatasetVersion,
   restoreDatasetVersion,
   resplitDataset,
   saveDatasetVersion,
   setSplitForImages,
   uploadImages,
+  type UploadProgress,
   versionLabel,
   type DatasetImage,
   type DatasetVersion,
@@ -53,6 +57,10 @@ import {
   type UploadResult,
 } from '@/lib/api'
 
+/** Images per page in the grid. Large enough that most projects are one page,
+ *  small enough that a page of thumbnails stays quick to render and scroll. */
+const PAGE_SIZE = 200
+
 export function ProjectDetail() {
   // Route params always arrive as strings — the router can't know the type.
   // Convert once here rather than scattering Number(id) through the file.
@@ -61,6 +69,11 @@ export function ProjectDetail() {
 
   const [project, setProject] = useState<Project | null>(null)
   const [images, setImages] = useState<DatasetImage[]>([])
+  // Server-side paging. A dataset reaches thousands of images, and the grid
+  // used to render whatever the default page happened to be — 200 rows — as if
+  // that were the whole project.
+  const [page, setPage] = useState(0)
+  const [totalImages, setTotalImages] = useState(0)
   const [classes, setClasses] = useState<ProjectClass[]>([])
   const [versions, setVersions] = useState<DatasetVersion[]>([])
   const [loading, setLoading] = useState(true)
@@ -80,6 +93,9 @@ export function ProjectDetail() {
     })
   }
 
+  // Scoped to the page on screen. "Select all" cannot honestly mean 5,000
+  // images the browser has never loaded — and a delete built on that would act
+  // on rows the user never saw.
   function selectAll() {
     setSelected((prev) =>
       prev.size === images.length ? new Set() : new Set(images.map((i) => i.id)),
@@ -93,12 +109,13 @@ export function ProjectDetail() {
       // for no reason.
       const [p, imgs, cls, vers] = await Promise.all([
         getProject(projectId),
-        listImages(projectId),
+        listImagePage(projectId, PAGE_SIZE, page * PAGE_SIZE),
         listClasses(projectId),
         listDatasetVersions(projectId),
       ])
       setProject(p)
-      setImages(imgs)
+      setImages(imgs.images)
+      setTotalImages(imgs.total)
       setClasses(cls)
       setVersions(vers)
       setError(null)
@@ -107,7 +124,7 @@ export function ProjectDetail() {
     } finally {
       setLoading(false)
     }
-  }, [projectId])
+  }, [projectId, page])
 
   useEffect(() => {
     void refresh()
@@ -211,6 +228,15 @@ export function ProjectDetail() {
               // saved version, so a restore can bring the row back. The
               // confirm dialogs must say which of the two is happening.
               hasVersions={versions.length > 0}
+              page={page}
+              pageSize={PAGE_SIZE}
+              total={totalImages}
+              onPageChange={(p) => {
+                setPage(p)
+                // Selection is per-page, so carrying it across would leave
+                // "12 selected" pointing at rows no longer on screen.
+                setSelected(new Set())
+              }}
             />
             {/* Split lives here, under the images, because it's a property OF
                 the images you're looking at — and because with the commit step
@@ -551,6 +577,9 @@ function UploadPanel({
   // reporting it as a plain upload hides the interesting half.
   const [result, setResult] = useState<UploadResult | null>(null)
   const [error, setError] = useState<string | null>(null)
+  // A folder upload is sent in batches, so it takes long enough that silence
+  // reads as a hang. See planUploadBatches for why it's batched at all.
+  const [progress, setProgress] = useState<UploadProgress | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const folderRef = useRef<HTMLInputElement>(null)
 
@@ -559,12 +588,17 @@ function UploadPanel({
     setBusy(true)
     setError(null)
     setResult(null)
+    setProgress(null)
     try {
-      setResult(await uploadImages(projectId, files))
+      setResult(await uploadImages(projectId, files, setProgress))
       onUploaded()
     } catch (err) {
+      // The whole message, newlines and all. A big upload fails for specific
+      // reasons — a rejected file, an unreachable backend — and truncating that
+      // to one line is what made "Failed to fetch" the only thing anyone saw.
       setError((err as Error).message)
     } finally {
+      setProgress(null)
       setBusy(false)
       // Clear the inputs so re-picking the SAME file fires onChange again.
       // Without this, <input type=file> sees no value change and stays silent —
@@ -598,8 +632,24 @@ function UploadPanel({
       >
         <Upload size={18} className="mb-1.5 text-gray-400" />
         <p className="text-sm text-gray-700">
-          {busy ? 'Uploading…' : 'Drop images, a folder, or a .zip here'}
+          {progress
+            ? `Uploading ${progress.filesSent.toLocaleString()} of ` +
+              `${progress.filesTotal.toLocaleString()}…` +
+              (progress.batches > 1 ? ` (batch ${progress.batch}/${progress.batches})` : '')
+            : busy
+              ? 'Uploading…'
+              : 'Drop images, a folder, or a .zip here'}
         </p>
+        {progress && progress.filesTotal > 0 && (
+          <div className="mt-1.5 h-1 w-56 overflow-hidden rounded-full bg-gray-200">
+            <div
+              className="h-full bg-accent-600 transition-[width]"
+              style={{
+                width: `${Math.round((progress.filesSent / progress.filesTotal) * 100)}%`,
+              }}
+            />
+          </div>
+        )}
 
         {/* Two explicit buttons rather than one click target on the whole box.
             <input type="file"> and the same input with `webkitdirectory` are
@@ -663,10 +713,20 @@ function UploadPanel({
         />
       </div>
 
+      {/* whitespace-pre-line: upload failures are multi-line on purpose — a
+          rejected batch lists every reason, and a connection failure lists the
+          causes worth checking. Collapsing that to one line is what left
+          "Failed to fetch" as the entire diagnosis. */}
       {error && (
-        <p className="mt-2 rounded-md border border-red-200 bg-red-50 px-2.5 py-1.5 text-xs text-red-800">
-          {error}
-        </p>
+        <div className="mt-2 rounded-md border border-red-200 bg-red-50 px-2.5 py-2 text-xs text-red-800">
+          <p className="mb-1 flex items-center gap-1 font-medium">
+            <TriangleAlert size={11} />
+            Upload failed
+          </p>
+          <p className="max-h-48 overflow-auto whitespace-pre-line font-mono text-[11px] leading-relaxed">
+            {error}
+          </p>
+        </div>
       )}
 
       {/* Report skipped files explicitly. The backend allows partial success,
@@ -694,6 +754,18 @@ function UploadPanel({
               {result.classes_created.length > 4 ? '…' : ''})
             </span>
           )}
+          {/* Re-uploading a folder used to double the dataset silently. Now it
+              adds nothing and says so, which is the only way to tell a
+              successful no-op from a broken one. */}
+          {result.duplicates_skipped > 0 && (
+            <span className="text-gray-600">
+              {' · '}
+              <span className="font-medium text-gray-800">
+                {result.duplicates_skipped} already in this project
+              </span>
+              {' (skipped)'}
+            </span>
+          )}
           {result.has_split_folders && Object.keys(result.splits).length > 0 && (
             <span className="text-gray-600">
               {' · splits '}
@@ -715,18 +787,23 @@ function UploadPanel({
             </p>
           )}
 
+          {/* EVERY rejection, in a scroll box — not the first five.
+              With a folder partly rejected, the one line explaining why is
+              rarely among the first few, and "…and 812 more" is precisely the
+              information you needed. Scrolling keeps it from taking the page
+              over, and not truncating keeps it useful. */}
           {result.skipped.length > 0 && (
-            <>
-              <span className="text-gray-500"> · {result.skipped.length} skipped</span>
-              <ul className="mt-1 space-y-0.5 text-gray-500">
-                {result.skipped.slice(0, 5).map((s) => (
-                  <li key={s} className="truncate">
-                    {s}
-                  </li>
+            <details className="mt-1.5">
+              <summary className="cursor-pointer text-gray-600">
+                <span className="font-medium">{result.skipped.length} skipped</span> — show
+                reasons
+              </summary>
+              <ul className="mt-1 max-h-48 space-y-0.5 overflow-auto rounded border border-gray-200 bg-white p-1.5 font-mono text-[11px] text-gray-600">
+                {result.skipped.map((s, i) => (
+                  <li key={`${s}-${i}`}>{s}</li>
                 ))}
-                {result.skipped.length > 5 && <li>…and {result.skipped.length - 5} more</li>}
               </ul>
-            </>
+            </details>
           )}
         </div>
       )}
@@ -933,6 +1010,10 @@ function ImageGrid({
   onSelectAll,
   onClearSelection,
   hasVersions,
+  page,
+  pageSize,
+  total,
+  onPageChange,
 }: {
   images: DatasetImage[]
   projectId: number
@@ -942,6 +1023,10 @@ function ImageGrid({
   onSelectAll: () => void
   onClearSelection: () => void
   hasVersions: boolean
+  page: number
+  pageSize: number
+  total: number
+  onPageChange: (page: number) => void
 }) {
   const [pending, setPending] = useState<DatasetImage | null>(null)
   const [bulkOpen, setBulkOpen] = useState(false)
@@ -1007,7 +1092,14 @@ function ImageGrid({
           <button className="text-gray-500 underline" onClick={onSelectAll}>
             {selected.size === images.length ? 'Deselect all' : 'Select all'}
           </button>
-          <span className="tabular-nums text-gray-500">{images.length} total</span>
+          {/* Say WHICH images these are, not just how many are on screen. The
+              old "N total" counted the rendered page, so a 638-image project
+              read "200 total" and gave no hint the rest existed. */}
+          <span className="tabular-nums text-gray-500">
+            {total > images.length
+              ? `${page * pageSize + 1}–${page * pageSize + images.length} of ${total}`
+              : `${total} total`}
+          </span>
         </div>
       </div>
 
@@ -1121,6 +1213,32 @@ function ImageGrid({
           </div>
         ))}
       </div>
+
+      {/* Pager. Hidden entirely on a single-page project — controls that can
+          never do anything are furniture. */}
+      {total > pageSize && (
+        <div className="mt-3 flex items-center justify-center gap-2 text-xs">
+          <button
+            onClick={() => onPageChange(page - 1)}
+            disabled={page === 0}
+            className="flex items-center gap-1 rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <ChevronLeft size={11} />
+            Previous
+          </button>
+          <span className="tabular-nums text-gray-500">
+            Page {page + 1} of {Math.ceil(total / pageSize)}
+          </span>
+          <button
+            onClick={() => onPageChange(page + 1)}
+            disabled={(page + 1) * pageSize >= total}
+            className="flex items-center gap-1 rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            Next
+            <ChevronRight size={11} />
+          </button>
+        </div>
+      )}
 
       <ConfirmDialog
         open={pending !== null}
