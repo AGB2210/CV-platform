@@ -8,6 +8,9 @@ session is closed even if the handler raises.
 
 from collections.abc import Generator
 
+import logging
+from datetime import datetime
+
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
@@ -19,6 +22,8 @@ from app.config import settings
 # FastAPI runs sync endpoints in a threadpool, so connections legitimately move
 # between threads. SQLAlchemy's connection pool already serialises access, so
 # relaxing this check is the documented, safe thing to do here.
+logger = logging.getLogger(__name__)
+
 engine = create_engine(
     settings.DATABASE_URL,
     connect_args={"check_same_thread": False},
@@ -48,6 +53,30 @@ def _set_sqlite_pragmas(dbapi_connection, connection_record):
     if isinstance(dbapi_connection, sqlite3.Connection):
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
+
+        # WAL: readers and one writer can work at the SAME TIME.
+        #
+        # SQLite's default (journal_mode=delete) takes a lock over the whole
+        # database for every write, so a reader arriving mid-write gets
+        # "database is locked". This app writes from a background thread on a
+        # cadence — the training runner commits after EVERY epoch, and the
+        # annotation runner after every image — while the UI polls those same
+        # tables every 1-2 seconds. That is the exact shape of contention WAL
+        # exists for, and without it the failure surfaces as a random 500
+        # partway through a long run.
+        cursor.execute("PRAGMA journal_mode=WAL")
+
+        # And when a write genuinely does have to wait, wait rather than fail
+        # instantly. 15s comfortably covers the brief exclusive lock a commit
+        # takes; the alternative is an error thrown while the answer was
+        # milliseconds away.
+        cursor.execute("PRAGMA busy_timeout=15000")
+
+        # NORMAL is the standard companion to WAL: durable against application
+        # crashes, and only at risk of losing the last transactions in an OS
+        # crash or power cut. Worth it — FULL fsyncs on every commit, and this
+        # commits once per training epoch.
+        cursor.execute("PRAGMA synchronous=NORMAL")
         cursor.close()
 
 
@@ -157,3 +186,47 @@ def init_db() -> None:
 
     Base.metadata.create_all(bind=engine)
     _add_missing_columns()
+    _fail_interrupted_jobs()
+
+
+def _fail_interrupted_jobs() -> None:
+    """Close out jobs that were running when the process died.
+
+    Jobs run in a background thread of THIS process. If it's killed — Ctrl+C,
+    a crash, a reboot, or the launcher's own reaper — the thread dies with it,
+    but the row is left saying `running` forever. Nothing else ever reconciles
+    that: the runner is gone, so the code that would set a terminal status is
+    gone too.
+
+    The visible symptom is a UI that polls a job which will never move again,
+    and a project that refuses new training because it believes one is already
+    in flight (the one-GPU-job-at-a-time guard reads exactly this status).
+
+    Startup is the one moment we can be certain: no job can legitimately be
+    running yet, because nothing has had a chance to start one. So anything
+    found in a live state is by definition a leftover.
+    """
+    from sqlalchemy import select
+
+    from app.models import AnnotationJob, JobStatus, TrainingJob
+
+    with SessionLocal() as db:
+        reclaimed = 0
+        for model in (TrainingJob, AnnotationJob):
+            for job in db.scalars(
+                select(model).where(
+                    model.status.in_([JobStatus.QUEUED, JobStatus.RUNNING])
+                )
+            ).all():
+                job.status = JobStatus.FAILED
+                job.error = (
+                    "The server stopped while this job was running, so it was "
+                    "interrupted. Nothing was corrupted — start it again."
+                )
+                job.finished_at = datetime.now()
+                reclaimed += 1
+        if reclaimed:
+            db.commit()
+            logger.warning(
+                "Marked %d interrupted job(s) as failed at startup", reclaimed
+            )
