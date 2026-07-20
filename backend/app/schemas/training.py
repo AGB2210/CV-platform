@@ -57,6 +57,25 @@ class TrainingJobCreate(BaseModel):
     dataset_version_id: int | None = None
 
 
+class TrainingJobRename(BaseModel):
+    """Rename a model version. Blank clears it, reverting to "v{n}"."""
+
+    name: str | None = Field(default=None, max_length=120)
+
+
+class BulkDeleteJobs(BaseModel):
+    """Delete several model versions — also how "delete all" is sent."""
+
+    job_ids: list[int]
+
+
+class DeleteJobsResult(BaseModel):
+    deleted: int
+    not_found: list[int]
+    #: job id -> why it was refused (a run still in flight can't be deleted).
+    skipped: dict[int, str] = {}
+
+
 class EpochPoint(BaseModel):
     """One epoch on the loss/mAP curve."""
 
@@ -76,6 +95,8 @@ class TrainingJobRead(BaseModel):
     trainer_key: str
     #: 1-based version number within this project + trainer (what the UI shows).
     version: int
+    #: User-given name; None means it displays as "v{version}".
+    name: str | None
     status: str
 
     epochs: int

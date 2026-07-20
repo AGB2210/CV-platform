@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import shutil
+
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.routes.projects import get_project_or_404
+from app.config import settings
 from app.database import get_db
 from app.ml.trainers import registry as trainer_registry
 from app.models import (
@@ -19,8 +22,16 @@ from app.models import (
     TrainingJob,
 )
 from app.models.image import Split
-from app.schemas.training import TrainerInfo, TrainingJobCreate, TrainingJobRead
+from app.schemas.training import (
+    BulkDeleteJobs,
+    DeleteJobsResult,
+    TrainerInfo,
+    TrainingJobCreate,
+    TrainingJobRead,
+    TrainingJobRename,
+)
 from app.services.training_job import run_training_job
+from app.services.version_naming import DuplicateNameError, clean_name, ensure_unique
 
 router = APIRouter(tags=["train"])
 
@@ -165,6 +176,106 @@ def list_training_jobs(
             .limit(20)
         ).all()
     )
+
+
+@router.patch("/training-jobs/{job_id}", response_model=TrainingJobRead)
+def rename_training_job(
+    job_id: int, payload: TrainingJobRename, db: Session = Depends(get_db)
+) -> TrainingJob:
+    """Rename a model version. Blank clears the name, reverting to "v{n}".
+
+    Uniqueness is per project AND trainer, matching how the version list is
+    scoped — "baseline" for YOLO and "baseline" for a future RF-DETR are
+    different models and may coexist.
+    """
+    job = db.get(TrainingJob, job_id)
+    if job is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Training job {job_id} not found")
+
+    name = clean_name(payload.name)
+    others = [
+        (o.name, o.version)
+        for o in db.scalars(
+            select(TrainingJob).where(
+                TrainingJob.project_id == job.project_id,
+                TrainingJob.trainer_key == job.trainer_key,
+                TrainingJob.id != job_id,
+            )
+        ).all()
+    ]
+    try:
+        ensure_unique(name, job.version, others)
+    except DuplicateNameError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from None
+
+    job.name = name
+    db.commit()
+    db.refresh(job)
+    return job
+
+
+@router.delete("/training-jobs/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_training_job(job_id: int, db: Session = Depends(get_db)) -> None:
+    """Delete a model version, its checkpoints and its exported dataset."""
+    job = db.get(TrainingJob, job_id)
+    if job is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Training job {job_id} not found")
+    if job.status in (JobStatus.QUEUED, JobStatus.RUNNING):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "That version is still training. Wait for it to finish before deleting it.",
+        )
+    _delete_job_and_files(db, job)
+
+
+@router.post(
+    "/projects/{project_id}/training-jobs/bulk-delete", response_model=DeleteJobsResult
+)
+def bulk_delete_training_jobs(
+    project_id: int, payload: BulkDeleteJobs, db: Session = Depends(get_db)
+) -> DeleteJobsResult:
+    """Delete several model versions — the same path "delete all" uses.
+
+    A run in flight is SKIPPED rather than failing the whole request: deleting
+    nine finished versions shouldn't be blocked by the tenth still training.
+    """
+    get_project_or_404(project_id, db)
+    found = list(
+        db.scalars(
+            select(TrainingJob).where(
+                TrainingJob.project_id == project_id,
+                TrainingJob.id.in_(payload.job_ids),
+            )
+        ).all()
+    )
+    skipped: dict[int, str] = {}
+    deleted = 0
+    for job in found:
+        if job.status in (JobStatus.QUEUED, JobStatus.RUNNING):
+            skipped[job.id] = "still training"
+            continue
+        _delete_job_and_files(db, job)
+        deleted += 1
+
+    found_ids = {j.id for j in found}
+    return DeleteJobsResult(
+        deleted=deleted,
+        not_found=sorted(set(payload.job_ids) - found_ids),
+        skipped=skipped,
+    )
+
+
+def _delete_job_and_files(db: Session, job: TrainingJob) -> None:
+    """Remove the row, then its run directory (checkpoints + exported dataset).
+
+    Row first: a crash in between leaves an orphaned directory, which is wasted
+    disk. The reverse would leave a version whose checkpoint has vanished —
+    the same ordering rule used for images and projects.
+    """
+    run_dir = settings.runs_dir / str(job.id)
+    db.delete(job)
+    db.commit()
+    shutil.rmtree(run_dir, ignore_errors=True)
 
 
 @router.get("/projects/{project_id}/train/preview")

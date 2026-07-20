@@ -15,6 +15,26 @@ class DatasetVersionCreate(BaseModel):
     note: str | None = Field(default=None, max_length=255)
 
 
+class VersionRename(BaseModel):
+    """Rename a version. An empty/blank name clears it, reverting to "v{n}"."""
+
+    name: str | None = Field(default=None, max_length=120)
+
+
+class BulkDeleteVersions(BaseModel):
+    """Delete several versions at once — also how "delete all" is expressed, so
+    there's one code path rather than a second endpoint that can drift."""
+
+    version_ids: list[int]
+
+
+class DeleteResult(BaseModel):
+    deleted: int
+    not_found: list[int]
+    #: Ids that were refused, with why (e.g. a run still training).
+    skipped: dict[str, str] = {}
+
+
 class DatasetVersionRead(BaseModel):
     """One saved dataset version, as the version list renders it."""
 
@@ -24,6 +44,8 @@ class DatasetVersionRead(BaseModel):
     project_id: int
     #: 1-based per project — what the UI shows, not the row id.
     version: int
+    #: User-given name; None means it displays as "v{version}".
+    name: str | None
     note: str | None
     total_images: int
     train_images: int

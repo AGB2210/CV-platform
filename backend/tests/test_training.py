@@ -359,6 +359,82 @@ def test_train_defaults_to_the_latest_saved_version(client, no_train_run, fake_t
     assert job["dataset_version_id"] == v2["id"], "no version given => newest save"
 
 
+# --- renaming and deleting model versions -----------------------------------
+
+
+def _make_two_versions(client, monkeypatch, pid):
+    """Two completed runs, so rename/delete have something to act on."""
+    monkeypatch.setattr(
+        "app.services.training_job.SessionLocal",
+        client.SessionLocal,  # type: ignore[attr-defined]
+    )
+    a = client.post(f"/api/projects/{pid}/train", json={"trainer_key": "fake", "epochs": 1}).json()
+    b = client.post(f"/api/projects/{pid}/train", json={"trainer_key": "fake", "epochs": 1}).json()
+    return a, b
+
+
+def test_rename_model_version_and_clear(client, monkeypatch, fake_trainer):
+    pid, _ = make_trainable_project(client)
+    a, _ = _make_two_versions(client, monkeypatch, pid)
+
+    r = client.patch(f"/api/training-jobs/{a['id']}", json={"name": "  baseline "})
+    assert r.status_code == 200 and r.json()["name"] == "baseline"
+    assert client.patch(f"/api/training-jobs/{a['id']}", json={"name": ""}).json()["name"] is None
+
+
+def test_rename_model_version_rejects_duplicates(client, monkeypatch, fake_trainer):
+    pid, _ = make_trainable_project(client)
+    a, b = _make_two_versions(client, monkeypatch, pid)
+    client.patch(f"/api/training-jobs/{a['id']}", json={"name": "baseline"})
+
+    assert client.patch(f"/api/training-jobs/{b['id']}", json={"name": "baseline"}).status_code == 409
+    assert client.patch(f"/api/training-jobs/{b['id']}", json={"name": "BaseLine"}).status_code == 409
+    # Clashing with the other version's numeric label is a duplicate too.
+    assert client.patch(f"/api/training-jobs/{b['id']}", json={"name": "v1"}).status_code == 409
+
+
+def test_delete_model_version_removes_its_run_directory(client, monkeypatch, fake_trainer):
+    from pathlib import Path
+
+    pid, _ = make_trainable_project(client)
+    a, b = _make_two_versions(client, monkeypatch, pid)
+    ckpt = Path(client.get(f"/api/training-jobs/{a['id']}").json()["checkpoint_path"])
+    assert ckpt.exists()
+
+    assert client.delete(f"/api/training-jobs/{a['id']}").status_code == 204
+    assert not ckpt.exists(), "checkpoints and the exported dataset go with the version"
+    remaining = [j["id"] for j in client.get(f"/api/projects/{pid}/training-jobs").json()]
+    assert remaining == [b["id"]]
+
+
+def test_cannot_delete_a_version_still_training(client, no_train_run, fake_trainer):
+    """The runner is stubbed, so this job stays queued — deleting it out from
+    under a live run would leave the runner writing to a deleted row."""
+    pid, _ = make_trainable_project(client)
+    job = client.post(f"/api/projects/{pid}/train", json={"trainer_key": "fake"}).json()
+    r = client.delete(f"/api/training-jobs/{job['id']}")
+    assert r.status_code == 409
+    assert "still training" in r.json()["detail"]
+
+
+def test_bulk_delete_model_versions_skips_in_flight(client, monkeypatch, fake_trainer):
+    """Deleting nine finished versions shouldn't be blocked by a tenth that's
+    still running — it's skipped and reported, not fatal."""
+    pid, _ = make_trainable_project(client)
+    a, b = _make_two_versions(client, monkeypatch, pid)
+    # A third that never completes: point the runner back at a no-op.
+    monkeypatch.setattr("app.api.routes.train.run_training_job", lambda job_id: None)
+    live = client.post(f"/api/projects/{pid}/train", json={"trainer_key": "fake"}).json()
+
+    r = client.post(
+        f"/api/projects/{pid}/training-jobs/bulk-delete",
+        json={"job_ids": [a["id"], b["id"], live["id"], 9999]},
+    ).json()
+    assert r["deleted"] == 2
+    assert r["not_found"] == [9999]
+    assert r["skipped"] == {str(live["id"]): "still training"}
+
+
 def test_finetune_rejects_unusable_source(client, no_train_run, fake_trainer):
     """Can't continue from a run that doesn't exist or never produced weights."""
     pid, _ = make_trainable_project(client)

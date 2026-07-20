@@ -47,6 +47,11 @@ class TrainingJob(Base):
     # versions rather than exposing internal row ids.
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
+    #: Optional user-given name. NULL means the run shows as "v{version}".
+    #: Uniqueness is enforced against every other run's LABEL for the same
+    #: project AND trainer, so no two versions of a model read the same.
+    name: Mapped[str | None] = mapped_column(String(120), default=None)
+
     # Reuses AnnotationJob's JobStatus vocabulary (queued/running/done/failed).
     # Not imported as a type here — it's a bag of string constants, and the
     # column just stores the string — but the values are deliberately identical

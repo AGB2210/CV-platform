@@ -26,15 +26,19 @@ from app.database import get_db
 from app.models import Annotation, DatasetVersion, Image
 from app.models.image import Split
 from app.schemas.dataset import (
+    BulkDeleteVersions,
     BulkSplitRequest,
     DatasetStats,
     DatasetVersionCreate,
     DatasetVersionRead,
+    DeleteResult,
     RestoreResult,
     SplitCounts,
     SplitRequest,
+    VersionRename,
 )
 from app.services import dataset_version as versions
+from app.services.version_naming import DuplicateNameError, clean_name, ensure_unique
 
 router = APIRouter(tags=["dataset"])
 
@@ -81,6 +85,82 @@ def list_dataset_versions(
     )
 
 
+@router.patch(
+    "/projects/{project_id}/dataset/versions/{version_id}",
+    response_model=DatasetVersionRead,
+)
+def rename_dataset_version(
+    project_id: int,
+    version_id: int,
+    payload: VersionRename,
+    db: Session = Depends(get_db),
+) -> DatasetVersion:
+    """Rename a version. Blank clears the name, reverting to "v{n}"."""
+    get_project_or_404(project_id, db)
+    version = _get_version_or_404(db, project_id, version_id)
+
+    name = clean_name(payload.name)
+    others = [
+        (v.name, v.version)
+        for v in db.scalars(
+            select(DatasetVersion).where(
+                DatasetVersion.project_id == project_id,
+                DatasetVersion.id != version_id,
+            )
+        ).all()
+    ]
+    try:
+        ensure_unique(name, version.version, others)
+    except DuplicateNameError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from None
+
+    version.name = name
+    db.commit()
+    db.refresh(version)
+    return version
+
+
+@router.delete(
+    "/projects/{project_id}/dataset/versions/{version_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+def delete_dataset_version(
+    project_id: int, version_id: int, db: Session = Depends(get_db)
+) -> None:
+    """Delete one version. Its snapshot file goes too — so that version can no
+    longer be restored or trained. The UI states that before the click."""
+    get_project_or_404(project_id, db)
+    version = _get_version_or_404(db, project_id, version_id)
+    versions.delete_version(db, version)
+
+
+@router.post(
+    "/projects/{project_id}/dataset/versions/bulk-delete",
+    response_model=DeleteResult,
+)
+def bulk_delete_dataset_versions(
+    project_id: int, payload: BulkDeleteVersions, db: Session = Depends(get_db)
+) -> DeleteResult:
+    """Delete several versions — also how "delete all" is sent, so selecting
+    everything and deleting is the same path as deleting one."""
+    get_project_or_404(project_id, db)
+    found = list(
+        db.scalars(
+            select(DatasetVersion).where(
+                DatasetVersion.project_id == project_id,
+                DatasetVersion.id.in_(payload.version_ids),
+            )
+        ).all()
+    )
+    for version in found:
+        versions.delete_version(db, version)
+    found_ids = {v.id for v in found}
+    return DeleteResult(
+        deleted=len(found),
+        not_found=sorted(set(payload.version_ids) - found_ids),
+    )
+
+
 @router.post(
     "/projects/{project_id}/dataset/versions/{version_id}/restore",
     response_model=RestoreResult,
@@ -94,12 +174,7 @@ def restore_dataset_version(
     an unwanted restore is undone by restoring that one.
     """
     get_project_or_404(project_id, db)
-    version = db.get(DatasetVersion, version_id)
-    if version is None or version.project_id != project_id:
-        raise HTTPException(
-            status.HTTP_404_NOT_FOUND,
-            f"Dataset version {version_id} not found in this project.",
-        )
+    version = _get_version_or_404(db, project_id, version_id)
     try:
         result = versions.restore_version(db, project_id, version)
     except versions.DatasetVersionError as exc:
@@ -113,6 +188,16 @@ def restore_dataset_version(
         missing_files=result.missing_files,
         backup_version=result.backup_version,
     )
+
+
+def _get_version_or_404(db: Session, project_id: int, version_id: int) -> DatasetVersion:
+    version = db.get(DatasetVersion, version_id)
+    if version is None or version.project_id != project_id:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            f"Dataset version {version_id} not found in this project.",
+        )
+    return version
 
 
 @router.get("/projects/{project_id}/dataset/stats", response_model=DatasetStats)

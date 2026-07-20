@@ -44,6 +44,12 @@ class DatasetVersion(Base):
     # speak versions, not internal row ids.
     version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
 
+    #: Optional user-given name. NULL means the version is shown by its number
+    #: ("v3"). Renaming sets this; uniqueness is enforced against every other
+    #: version's LABEL in the project — its name, or its "v{n}" default — so two
+    #: versions can never present the same way in a list.
+    name: Mapped[str | None] = mapped_column(String(120), default=None)
+
     #: Optional user note ("before removing blurry shots"). Auto-filled for
     #: safety snapshots taken before a restore.
     note: Mapped[str | None] = mapped_column(String(255), default=None)

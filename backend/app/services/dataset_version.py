@@ -252,6 +252,29 @@ def restore_version(db: Session, project_id: int, version) -> RestoreResult:
     )
 
 
+def delete_version(db: Session, version) -> None:
+    """Delete a version and its snapshot file.
+
+    Genuinely permanent: once the snapshot is gone that dataset state can no
+    longer be restored or trained, and any training run that used it loses the
+    link. The UI states both before the click — this function just does it.
+
+    The image FILES are left alone. They're shared with the live dataset and
+    other versions, so removing them here would delete pictures that are still
+    in use. (That does mean files belonging to images deleted long ago can
+    become unreferenced once every version mentioning them is gone — a cleanup
+    pass is the right home for that, not this.)
+    """
+    path = Path(version.snapshot_path)
+    db.delete(version)
+    db.commit()
+    # After the commit: a crash between the two leaves an orphaned file, which
+    # is wasted disk. The reverse order would leave a row pointing at a snapshot
+    # that no longer exists, which breaks restore. Same trade the project makes
+    # everywhere else.
+    path.unlink(missing_ok=True)
+
+
 def has_any_version(db: Session, project_id: int) -> bool:
     """Whether the project has ever been saved — the gate on training."""
     from app.models import DatasetVersion

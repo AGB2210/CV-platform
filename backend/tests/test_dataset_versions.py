@@ -178,6 +178,126 @@ def test_restore_is_itself_undoable(client):
     assert "later.png" in names, "restoring the backup undid the restore"
 
 
+# --- renaming ---------------------------------------------------------------
+
+
+def _rename(client, pid, version_id, name):
+    return client.patch(
+        f"/api/projects/{pid}/dataset/versions/{version_id}", json={"name": name}
+    )
+
+
+def test_rename_and_clear(client):
+    pid, _ = _setup(client)
+    v1 = _save(client, pid)
+    assert v1["name"] is None, "unnamed versions display as v{n}"
+
+    r = _rename(client, pid, v1["id"], "  baseline  ")
+    assert r.status_code == 200
+    assert r.json()["name"] == "baseline", "whitespace trimmed"
+
+    # Blank clears it, reverting to the numeric label — how a rename is undone.
+    assert _rename(client, pid, v1["id"], "   ").json()["name"] is None
+
+
+def test_rename_rejects_duplicate_name(client):
+    pid, _ = _setup(client)
+    v1 = _save(client, pid)
+    v2 = _save(client, pid)
+    _rename(client, pid, v1["id"], "baseline")
+
+    r = _rename(client, pid, v2["id"], "baseline")
+    assert r.status_code == 409
+    assert "already used" in r.json()["detail"]
+
+    # Case-insensitive: "BASELINE" would read as the same row in a list.
+    assert _rename(client, pid, v2["id"], "BASELINE").status_code == 409
+    # Renaming a version to its OWN name is fine (no-op, not a clash).
+    assert _rename(client, pid, v1["id"], "baseline").status_code == 200
+
+
+def test_rename_rejects_clash_with_a_numeric_label(client):
+    """An unnamed version still occupies a label. Naming another one "v1" would
+    put two rows reading "v1" in the same list."""
+    pid, _ = _setup(client)
+    _save(client, pid)  # v1, unnamed -> displays as "v1"
+    v2 = _save(client, pid)
+    r = _rename(client, pid, v2["id"], "v1")
+    assert r.status_code == 409
+
+
+# --- deleting ---------------------------------------------------------------
+
+
+def test_delete_version_removes_its_snapshot(client):
+    from pathlib import Path
+
+    pid, _ = _setup(client)
+    v1 = _save(client, pid)
+    v2 = _save(client, pid)
+
+    db = client.SessionLocal()  # type: ignore[attr-defined]
+    try:
+        from app.models import DatasetVersion
+
+        snapshot = Path(db.get(DatasetVersion, v1["id"]).snapshot_path)
+    finally:
+        db.close()
+    assert snapshot.exists()
+
+    assert client.delete(f"/api/projects/{pid}/dataset/versions/{v1['id']}").status_code == 204
+    assert not snapshot.exists(), "the snapshot file goes with the row"
+    assert [v["version"] for v in _versions(client, pid)] == [v2["version"]]
+
+
+def test_delete_does_not_touch_image_files(client):
+    """Version snapshots are metadata. Deleting one must not remove pictures the
+    live dataset (and other versions) still use."""
+    pid, imgs = _setup(client)
+    v1 = _save(client, pid)
+    client.delete(f"/api/projects/{pid}/dataset/versions/{v1['id']}")
+    assert _image_file(pid, imgs[0]["filename"]).exists()
+    assert len(client.get(f"/api/projects/{pid}/images").json()) == 4
+
+
+def test_bulk_delete_including_all(client):
+    pid, _ = _setup(client)
+    ids = [_save(client, pid)["id"] for _ in range(3)]
+
+    r = client.post(
+        f"/api/projects/{pid}/dataset/versions/bulk-delete",
+        json={"version_ids": ids[:2]},
+    )
+    assert r.status_code == 200 and r.json()["deleted"] == 2
+    assert len(_versions(client, pid)) == 1
+
+    # "Delete all" is the same path with every id selected.
+    r = client.post(
+        f"/api/projects/{pid}/dataset/versions/bulk-delete",
+        json={"version_ids": [ids[2]]},
+    )
+    assert r.json()["deleted"] == 1
+    assert _versions(client, pid) == []
+
+
+def test_bulk_delete_reports_unknown_ids(client):
+    pid, _ = _setup(client)
+    v1 = _save(client, pid)
+    r = client.post(
+        f"/api/projects/{pid}/dataset/versions/bulk-delete",
+        json={"version_ids": [v1["id"], 9999]},
+    ).json()
+    assert r["deleted"] == 1 and r["not_found"] == [9999]
+
+
+def test_versions_of_another_project_are_untouchable(client):
+    a, _ = _setup(client, "A")
+    b, _ = _setup(client, "B")
+    v = _save(client, b)
+    assert client.delete(f"/api/projects/{a}/dataset/versions/{v['id']}").status_code == 404
+    assert _rename(client, a, v["id"], "x").status_code == 404
+
+
 def test_restore_reinstates_split_and_boxes(client):
     """Splits and box edits made after the version are rolled back too."""
     pid, imgs = _setup(client)
