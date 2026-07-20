@@ -116,6 +116,10 @@ export interface Project {
   updated_at: string
   image_count: number
   class_count: number
+  /** When anything in the project last changed — an upload, a saved dataset
+   *  version, a training run, or an edit to the project itself. NOT
+   *  `updated_at`, which only moves when the project ROW is edited. */
+  last_activity_at: string | null
 }
 
 export interface ProjectClass {

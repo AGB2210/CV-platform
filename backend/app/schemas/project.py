@@ -87,3 +87,13 @@ class ProjectRead(BaseModel):
     # database can compute exactly.
     image_count: int = 0
     class_count: int = 0
+
+    #: When anything in this project last changed — an upload, a saved dataset
+    #: version, a training run, or an edit to the project itself.
+    #:
+    #: NOT the same as `updated_at`, which SQLAlchemy only touches when the
+    #: projects ROW is updated. Uploading 500 images or training a model leaves
+    #: `updated_at` untouched, so sorting by it would order projects by when
+    #: somebody last renamed one — almost never what "last modified" means to
+    #: the person reading the list.
+    last_activity_at: datetime | None = None

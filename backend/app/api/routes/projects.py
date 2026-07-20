@@ -1,12 +1,14 @@
 """Project CRUD endpoints."""
 
+from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import Category, Image, Project
+from app.models import Category, DatasetVersion, Image, Project, TrainingJob
 from app.schemas import ProjectCreate, ProjectRead, ProjectUpdate
 from app.services import storage
 
@@ -29,6 +31,24 @@ def get_project_or_404(project_id: int, db: Session) -> Project:
     return project
 
 
+def _last_activity(db: Session, project: Project) -> datetime:
+    """When anything in this project last changed.
+
+    `Project.updated_at` only moves when the projects ROW is updated, so
+    uploading images or training a model doesn't touch it. Sorting a list by it
+    would order projects by when someone last renamed one. So the real answer is
+    the latest timestamp across the things that actually constitute activity.
+    """
+    stamps = [project.updated_at, project.created_at]
+    for model in (Image, DatasetVersion, TrainingJob):
+        latest = db.scalar(
+            select(func.max(model.created_at)).where(model.project_id == project.id)
+        )
+        if latest is not None:
+            stamps.append(latest)
+    return max(s for s in stamps if s is not None)
+
+
 def _with_counts(db: Session, project: Project) -> ProjectRead:
     """Attach image/class counts to a project for the response."""
     image_count = db.scalar(
@@ -40,12 +60,20 @@ def _with_counts(db: Session, project: Project) -> ProjectRead:
     data = ProjectRead.model_validate(project)
     data.image_count = image_count or 0
     data.class_count = class_count or 0
+    data.last_activity_at = _last_activity(db, project)
     return data
 
 
 @router.get("", response_model=list[ProjectRead])
 def list_projects(db: Session = Depends(get_db)) -> list[ProjectRead]:
-    """List all projects, newest first, each with its image and class counts.
+    """List all projects, newest first, with counts and last-activity time.
+
+    Returns EVERY project in a stable order and leaves sorting and filtering to
+    the client. That's the right split here: a local tool has tens of projects,
+    not thousands, so re-sorting is instant in the browser and a search box that
+    round-trips per keystroke would feel worse for no benefit. The server's job
+    is to make the order deterministic and to supply `last_activity_at`, which
+    only SQL can answer.
 
     The counts come from two GROUP BY subqueries joined onto the main select,
     rather than looping over projects and counting each one. That loop is the
@@ -67,22 +95,53 @@ def list_projects(db: Session = Depends(get_db)) -> list[ProjectRead]:
         .subquery()
     )
 
+    # Latest activity per project, by the same one-query-not-N+1 rule as the
+    # counts above. Three separate subqueries rather than a UNION because each
+    # is a trivial indexed MAX on a foreign key.
+    def _latest(model):
+        return (
+            select(model.project_id, func.max(model.created_at).label("t"))
+            .group_by(model.project_id)
+            .subquery()
+        )
+
+    last_image = _latest(Image)
+    last_version = _latest(DatasetVersion)
+    last_run = _latest(TrainingJob)
+
     rows = db.execute(
         select(
             Project,
             func.coalesce(image_counts.c.n, 0),
             func.coalesce(class_counts.c.n, 0),
+            last_image.c.t,
+            last_version.c.t,
+            last_run.c.t,
         )
         .outerjoin(image_counts, image_counts.c.project_id == Project.id)
         .outerjoin(class_counts, class_counts.c.project_id == Project.id)
+        .outerjoin(last_image, last_image.c.project_id == Project.id)
+        .outerjoin(last_version, last_version.c.project_id == Project.id)
+        .outerjoin(last_run, last_run.c.project_id == Project.id)
+        # Deterministic by construction. created_at alone would tie for projects
+        # made in the same second (SQLite stamps to the second), and a tie means
+        # SQLite may return them in any order it likes — which is how a list
+        # appears to reshuffle on its own between visits. The id tiebreaker
+        # makes the order total, so it cannot.
         .order_by(Project.created_at.desc(), Project.id.desc())
     ).all()
 
     results = []
-    for project, n_images, n_classes in rows:
+    for project, n_images, n_classes, t_img, t_ver, t_run in rows:
         data = ProjectRead.model_validate(project)
         data.image_count = n_images
         data.class_count = n_classes
+        stamps = [
+            s
+            for s in (project.updated_at, project.created_at, t_img, t_ver, t_run)
+            if s is not None
+        ]
+        data.last_activity_at = max(stamps) if stamps else None
         results.append(data)
     return results
 

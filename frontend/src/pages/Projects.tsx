@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Plus, Trash2 } from 'lucide-react'
+import { ArrowDownUp, Plus, Search, Trash2, X } from 'lucide-react'
 import { PageBody, PageHeader } from '@/components/layout/AppShell'
 import { ConfirmDialog, Modal } from '@/components/ui/Modal'
 import {
@@ -11,9 +11,74 @@ import {
   type Project,
 } from '@/lib/api'
 
+/** How the list can be ordered. The value is the storage key too. */
+const SORTS = {
+  activity: 'Last modified',
+  created: 'Date created',
+  name: 'Name',
+} as const
+
+type SortKey = keyof typeof SORTS
+
+/** Sort choice persists across visits.
+ *
+ *  The list is the app's home, so it's re-entered constantly — dropping back to
+ *  the default every time would make a chosen order feel like it hadn't stuck.
+ *  localStorage rather than a URL param because it's a preference, not a view
+ *  worth linking to. Reads are guarded: a value from an older build (or a user
+ *  poking at devtools) must not throw on load. */
+const SORT_STORE = 'projects.sort'
+const REVERSE_STORE = 'projects.reverse'
+
+function storedSort(): SortKey {
+  const v = localStorage.getItem(SORT_STORE)
+  return v && v in SORTS ? (v as SortKey) : 'activity'
+}
+
+/** "3 days ago" — the useful precision for a last-touched column.
+ *
+ *  An absolute date is available on hover; at a glance what matters is which
+ *  projects are warm, and a column of identical-looking dates doesn't show
+ *  that. Thresholds are coarse on purpose — minute-level precision would imply
+ *  a resolution the underlying timestamps (second-granularity) don't warrant. */
+function relativeTime(iso: string | null): string {
+  if (!iso) return '—'
+  const seconds = Math.round((Date.now() - new Date(iso).getTime()) / 1000)
+  if (seconds < 60) return 'just now'
+
+  // Each entry is "divide the CURRENT value by this to reach that unit" —
+  // seconds/60 = minutes, minutes/60 = hours, hours/24 = days, and so on. The
+  // divisor belongs to the step INTO the unit beside it, which is easy to get
+  // off by one: a table reading [60,'minute'], [24,'hour'] divides minutes by
+  // 24 instead of 60 and reports six hours ago as "2 days ago".
+  const steps: [number, Intl.RelativeTimeFormatUnit][] = [
+    [60, 'minute'],
+    [60, 'hour'],
+    [24, 'day'],
+    [7, 'week'],
+    [4.35, 'month'],
+    [12, 'year'],
+  ]
+  let value = seconds
+  let unit: Intl.RelativeTimeFormatUnit = 'second'
+  for (const [divisor, next] of steps) {
+    // Too small to be worth the coarser unit — stay where we are.
+    if (Math.abs(value) < divisor) break
+    value = Math.round(value / divisor)
+    unit = next
+  }
+  return new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' }).format(-value, unit)
+}
+
 /** Projects list — the app's home. */
 export function Projects() {
   const [projects, setProjects] = useState<Project[]>([])
+  const [query, setQuery] = useState('')
+  const [sort, setSort] = useState<SortKey>(storedSort)
+  const [reverse, setReverse] = useState(() => localStorage.getItem(REVERSE_STORE) === '1')
+
+  useEffect(() => localStorage.setItem(SORT_STORE, sort), [sort])
+  useEffect(() => localStorage.setItem(REVERSE_STORE, reverse ? '1' : '0'), [reverse])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
   const [showCreate, setShowCreate] = useState(false)
@@ -30,6 +95,44 @@ export function Projects() {
     [projects, selected],
   )
 
+  /** The rows actually on screen: searched, then ordered.
+   *
+   *  Both are done here rather than server-side — a local tool has tens of
+   *  projects, so this is instant and a search that round-trips per keystroke
+   *  would only add latency. */
+  const visible = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    const matched = q
+      ? projects.filter(
+          (p) =>
+            p.name.toLowerCase().includes(q) ||
+            (p.description?.toLowerCase().includes(q) ?? false),
+        )
+      : projects
+
+    const time = (s: string | null) => (s ? new Date(s).getTime() : 0)
+    const compare: Record<SortKey, (a: Project, b: Project) => number> = {
+      // Dates default to newest-first, which is what "sort by date" means to
+      // most people; the reverse toggle covers the other direction.
+      activity: (a, b) => time(b.last_activity_at) - time(a.last_activity_at),
+      created: (a, b) => time(b.created_at) - time(a.created_at),
+      // localeCompare so "Ångström" and "apple" sort sensibly, and numeric so
+      // "run 2" precedes "run 10" instead of following it.
+      name: (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }),
+    }
+
+    // Sort a COPY: Array.sort mutates, and mutating state in a useMemo makes
+    // React's rendering depend on how many times the memo happened to run.
+    const rows = [...matched].sort((a, b) => {
+      const r = compare[sort](a, b)
+      // Ties broken by id, always. Without a total order, equal-comparing rows
+      // can swap places between renders and the list looks like it reshuffles
+      // on its own — the same reason the server orders by (created_at, id).
+      return r !== 0 ? r : b.id - a.id
+    })
+    return reverse ? rows.reverse() : rows
+  }, [projects, query, sort, reverse])
+
   function toggle(id: number) {
     setSelected((prev) => {
       const next = new Set(prev)
@@ -39,7 +142,9 @@ export function Projects() {
     })
   }
 
-  const allSelected = projects.length > 0 && selected.size === projects.length
+  // Scoped to what's on screen: with a filter active, "select all" must mean
+  // the rows you can see, not the ones the search is hiding.
+  const allSelected = visible.length > 0 && visible.every((p) => selected.has(p.id))
 
   async function handleBulkDelete() {
     setBusy(true)
@@ -117,8 +222,87 @@ export function Projects() {
           </div>
         )}
 
+        {/* Search + ordering. Hidden entirely with nothing to search — controls
+            for an empty list are noise, and the empty state below says more. */}
+        {!loading && projects.length > 0 && (
+          <div className="mb-3 flex flex-wrap items-center gap-2">
+            <div className="relative min-w-56 flex-1 sm:max-w-xs">
+              <Search
+                size={13}
+                className="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400"
+              />
+              <input
+                type="search"
+                value={query}
+                onChange={(e) => setQuery(e.target.value)}
+                placeholder="Search projects…"
+                aria-label="Search projects by name or description"
+                className="w-full rounded-md border border-gray-300 bg-white py-1.5 pl-8 pr-8 text-sm placeholder:text-gray-400 focus:border-accent-500 focus:outline-none"
+              />
+              {query && (
+                <button
+                  onClick={() => setQuery('')}
+                  aria-label="Clear search"
+                  className="absolute right-2 top-1/2 -translate-y-1/2 rounded p-0.5 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+                >
+                  <X size={12} />
+                </button>
+              )}
+            </div>
+
+            <label htmlFor="sort" className="ml-auto text-xs text-gray-500">
+              Sort by
+            </label>
+            <select
+              id="sort"
+              value={sort}
+              onChange={(e) => setSort(e.target.value as SortKey)}
+              className="rounded-md border border-gray-300 bg-white px-2 py-1.5 text-sm focus:border-accent-500 focus:outline-none"
+            >
+              {Object.entries(SORTS).map(([key, label]) => (
+                <option key={key} value={key}>
+                  {label}
+                </option>
+              ))}
+            </select>
+            <button
+              onClick={() => setReverse((r) => !r)}
+              aria-pressed={reverse}
+              title={reverse ? 'Reversed order' : 'Reverse order'}
+              className={`flex items-center gap-1 rounded-md border px-2 py-1.5 text-xs transition-colors ${
+                reverse
+                  ? 'border-accent-300 bg-accent-50 text-accent-700'
+                  : 'border-gray-300 bg-white text-gray-600 hover:bg-gray-50'
+              }`}
+            >
+              {/* 11px glyph beside 11px text, centred on the same baseline. */}
+              <ArrowDownUp size={11} />
+              Reverse
+            </button>
+          </div>
+        )}
+
         {loading ? (
           <p className="text-sm text-gray-500">Loading…</p>
+        ) : projects.length > 0 && visible.length === 0 ? (
+          // A search that matches nothing is a different situation from having
+          // no projects, and offering "New project" here would answer a
+          // question the user didn't ask.
+          <div className="card max-w-2xl border-dashed">
+            <div className="px-4 py-8">
+              <h3 className="text-sm font-medium text-gray-900">No matching projects</h3>
+              <p className="mt-1 text-xs text-gray-500">
+                Nothing matches “{query}”.{' '}
+                <button
+                  onClick={() => setQuery('')}
+                  className="text-accent-700 underline hover:text-accent-800"
+                >
+                  Clear the search
+                </button>{' '}
+                to see all {projects.length}.
+              </p>
+            </div>
+          </div>
         ) : projects.length === 0 ? (
           <div className="card max-w-2xl border-dashed">
             <div className="px-4 py-8">
@@ -155,7 +339,7 @@ export function Projects() {
                       }}
                       onChange={() =>
                         setSelected(
-                          allSelected ? new Set() : new Set(projects.map((p) => p.id)),
+                          allSelected ? new Set() : new Set(visible.map((p) => p.id)),
                         )
                       }
                       className="accent-accent-600"
@@ -167,11 +351,12 @@ export function Projects() {
                   <th className="px-4 py-2 text-right font-medium text-gray-600">Images</th>
                   <th className="px-4 py-2 text-right font-medium text-gray-600">Classes</th>
                   <th className="px-4 py-2 font-medium text-gray-600">Created</th>
+                  <th className="px-4 py-2 font-medium text-gray-600">Last modified</th>
                   <th className="w-10 px-4 py-2" />
                 </tr>
               </thead>
               <tbody className="divide-y divide-gray-100">
-                {projects.map((p) => (
+                {visible.map((p) => (
                   <tr
                     key={p.id}
                     className={`group ${
@@ -211,6 +396,19 @@ export function Projects() {
                     </td>
                     <td className="px-4 py-2 text-gray-500">
                       {new Date(p.created_at).toLocaleDateString()}
+                    </td>
+                    <td
+                      className="px-4 py-2 text-gray-500"
+                      // The exact time on hover: the relative form is easier to
+                      // scan, but "3 days ago" is the wrong thing to squint at
+                      // when you actually need to know which run came first.
+                      title={
+                        p.last_activity_at
+                          ? new Date(p.last_activity_at).toLocaleString()
+                          : undefined
+                      }
+                    >
+                      {relativeTime(p.last_activity_at)}
                     </td>
                     <td className="px-4 py-2">
                       <button
