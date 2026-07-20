@@ -82,3 +82,74 @@ def test_delete_and_404s(client):
     assert client.delete(f"/api/annotations/{made['id']}").status_code == 204
     assert client.delete("/api/annotations/999999").status_code == 404
     assert client.patch("/api/annotations/999999", json={"x": 1}).status_code == 404
+
+
+# --- bulk image delete ------------------------------------------------------
+
+
+def test_bulk_delete_images(client):
+    from tests.conftest import make_project, upload_images
+
+    pid = make_project(client, "BulkDel", classes=("car",))
+    imgs = upload_images(client, pid, [f"i{i}.png" for i in range(5)])
+    ids = [i["id"] for i in imgs]
+
+    r = client.post(
+        f"/api/projects/{pid}/images/bulk-delete", json={"image_ids": ids[:3]}
+    )
+    assert r.status_code == 200, r.text
+    assert r.json()["deleted"] == 3
+    assert len(client.get(f"/api/projects/{pid}/images").json()) == 2
+
+
+def test_bulk_delete_is_scoped_to_the_project(client):
+    """An id from another project must not be deleted just because it was in
+    the request body — the same rule the split endpoints follow."""
+    from tests.conftest import make_project, upload_images
+
+    a = make_project(client, "Mine", classes=("car",))
+    b = make_project(client, "Theirs", classes=("car",))
+    mine = upload_images(client, a, ["a.png"])[0]["id"]
+    theirs = upload_images(client, b, ["b.png"])[0]["id"]
+
+    r = client.post(
+        f"/api/projects/{a}/images/bulk-delete", json={"image_ids": [mine, theirs]}
+    ).json()
+    assert r["deleted"] == 1
+    assert r["not_found"] == [theirs]
+    assert len(client.get(f"/api/projects/{b}/images").json()) == 1, "untouched"
+
+
+def test_bulk_delete_keeps_files_once_a_version_exists(client):
+    """The same retention rule as the single delete: bytes stay so a restore can
+    bring the rows back. Decided once for the batch, not per image."""
+    from tests.conftest import make_project, upload_images
+    from app.services import storage
+
+    pid = make_project(client, "Recover", classes=("car",))
+    imgs = upload_images(client, pid, ["a.png", "b.png"])
+    client.post(f"/api/projects/{pid}/dataset/versions", json={"note": None})
+
+    r = client.post(
+        f"/api/projects/{pid}/images/bulk-delete",
+        json={"image_ids": [i["id"] for i in imgs]},
+    ).json()
+    assert r["deleted"] == 2
+    assert r["recoverable"] is True
+    for i in imgs:
+        assert (storage.project_dir(pid) / i["filename"]).exists(), "bytes kept"
+
+
+def test_bulk_delete_removes_files_before_any_version_exists(client):
+    """Nothing could restore them, so keeping the bytes would just be litter."""
+    from tests.conftest import make_project, upload_images
+    from app.services import storage
+
+    pid = make_project(client, "NoVersions", classes=("car",))
+    imgs = upload_images(client, pid, ["a.png"])
+    r = client.post(
+        f"/api/projects/{pid}/images/bulk-delete",
+        json={"image_ids": [imgs[0]["id"]]},
+    ).json()
+    assert r["recoverable"] is False
+    assert not (storage.project_dir(pid) / imgs[0]["filename"]).exists()

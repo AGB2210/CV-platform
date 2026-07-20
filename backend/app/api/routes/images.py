@@ -6,6 +6,7 @@ import zipfile
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from pydantic import BaseModel
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
 
@@ -370,6 +371,62 @@ def _result_to_response(
         has_split_folders=merged.has_split_folders,
         notes=merged.notes,
     )
+
+
+class BulkDeleteImages(BaseModel):
+    image_ids: list[int]
+
+
+@router.post("/projects/{project_id}/images/bulk-delete")
+def bulk_delete_images(
+    project_id: int, payload: BulkDeleteImages, db: Session = Depends(get_db)
+) -> dict:
+    """Delete several images at once — also how "delete all" is sent.
+
+    Selecting everything takes the same path as selecting one, so there is no
+    separate "delete all" code path that could behave differently from the one
+    that gets exercised daily.
+
+    POST, not DELETE, for the same reason as the project bulk delete: a body on
+    DELETE is legal but poorly supported, and a comma-joined query string breaks
+    at a few hundred ids — which a dataset reaches immediately.
+
+    Scoped to the project, so an id from another project can't be deleted just
+    because it appeared in the request body. Ids that don't exist are reported,
+    not fatal: deleting something already gone is not a failure.
+    """
+    get_project_or_404(project_id, db)
+
+    images = list(
+        db.scalars(
+            select(Image).where(
+                Image.project_id == project_id, Image.id.in_(payload.image_ids)
+            )
+        ).all()
+    )
+    # The file-retention rule is decided ONCE for the batch, not per image: it
+    # depends on whether the project has any version, which cannot change
+    # mid-loop. See delete_image for why the bytes are kept.
+    recoverable = has_any_version(db, project_id)
+    filenames = [img.filename for img in images]
+
+    for img in images:
+        db.delete(img)
+    db.commit()
+
+    if not recoverable:
+        for filename in filenames:
+            storage.delete_image_file(project_id, filename)
+
+    found = {img.id for img in images}
+    return {
+        "deleted": len(images),
+        "not_found": sorted(set(payload.image_ids) - found),
+        #: True when the bytes were kept on disk so a restore can bring these
+        #: back. The UI says so — "deleted 200 images" reads as permanent
+        #: otherwise, and it isn't.
+        "recoverable": recoverable,
+    }
 
 
 @router.delete("/images/{image_id}", status_code=status.HTTP_204_NO_CONTENT)

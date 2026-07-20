@@ -204,6 +204,14 @@ export const listImages = (projectId: number) =>
 export const uploadImages = (projectId: number, files: File[]) =>
   api.upload<UploadResult>(`/projects/${projectId}/images`, files)
 export const deleteImage = (imageId: number) => api.delete<void>(`/images/${imageId}`)
+/** Delete several images — also how "delete all" is sent, so selecting
+ *  everything takes the same path as selecting one. `recoverable` is true when
+ *  the project has a saved version, meaning the files were kept on disk. */
+export const bulkDeleteImages = (projectId: number, imageIds: number[]) =>
+  api.post<{ deleted: number; not_found: number[]; recoverable: boolean }>(
+    `/projects/${projectId}/images/bulk-delete`,
+    { image_ids: imageIds },
+  )
 
 // --- Auto-annotation (Phase 2) --------------------------------------------
 

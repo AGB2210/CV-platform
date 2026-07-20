@@ -32,6 +32,7 @@ import {
   createClass,
   deleteClass,
   deleteDatasetVersion,
+  bulkDeleteImages,
   deleteImage,
   getProject,
   listClasses,
@@ -206,6 +207,10 @@ export function ProjectDetail() {
               onToggle={toggleImage}
               onSelectAll={selectAll}
               onClearSelection={() => setSelected(new Set())}
+              // Deleting an image keeps its bytes once the project has any
+              // saved version, so a restore can bring the row back. The
+              // confirm dialogs must say which of the two is happening.
+              hasVersions={versions.length > 0}
             />
             {/* Split lives here, under the images, because it's a property OF
                 the images you're looking at — and because with the commit step
@@ -927,6 +932,7 @@ function ImageGrid({
   onToggle,
   onSelectAll,
   onClearSelection,
+  hasVersions,
 }: {
   images: DatasetImage[]
   projectId: number
@@ -935,8 +941,10 @@ function ImageGrid({
   onToggle: (id: number) => void
   onSelectAll: () => void
   onClearSelection: () => void
+  hasVersions: boolean
 }) {
   const [pending, setPending] = useState<DatasetImage | null>(null)
+  const [bulkOpen, setBulkOpen] = useState(false)
   const [busy, setBusy] = useState(false)
 
   async function handleDelete() {
@@ -945,6 +953,18 @@ function ImageGrid({
     try {
       await deleteImage(pending.id)
       setPending(null)
+      onDeleted()
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function handleBulkDelete() {
+    setBusy(true)
+    try {
+      await bulkDeleteImages(projectId, [...selected])
+      setBulkOpen(false)
+      onClearSelection()
       onDeleted()
     } finally {
       setBusy(false)
@@ -969,6 +989,16 @@ function ImageGrid({
               <span className="font-medium tabular-nums text-accent-800">
                 {selected.size} selected
               </span>
+              {/* Red: this is the irreversible-action colour, and deleting
+                  images is exactly what it's reserved for. 11px glyph beside
+                  11px text. */}
+              <button
+                className="flex items-center gap-1 text-red-700 underline"
+                onClick={() => setBulkOpen(true)}
+              >
+                <Trash2 size={11} />
+                Delete {selected.size}
+              </button>
               <button className="text-gray-500 underline" onClick={onClearSelection}>
                 Clear
               </button>
@@ -1098,7 +1128,35 @@ function ImageGrid({
         onConfirm={handleDelete}
         busy={busy}
         title="Delete image"
-        message={`Delete "${pending?.original_filename}"? This removes the file from disk and cannot be undone.`}
+        // Which of the two things is actually about to happen. Saying "cannot
+        // be undone" when a saved version can restore it teaches people to
+        // distrust the versions feature; saying the opposite would be worse.
+        message={
+          `Delete "${pending?.original_filename}"?\n\n` +
+          (hasVersions
+            ? 'It leaves the dataset now, but its file is kept — restoring a ' +
+              'saved version that contains it will bring it back.'
+            : 'This removes the file from disk and cannot be undone. Save a ' +
+              'dataset version first if you might want it back.')
+        }
+      />
+
+      <ConfirmDialog
+        open={bulkOpen}
+        onClose={() => setBulkOpen(false)}
+        onConfirm={handleBulkDelete}
+        busy={busy}
+        title={`Delete ${selected.size} image${selected.size === 1 ? '' : 's'}?`}
+        message={
+          `${selected.size} image${selected.size === 1 ? '' : 's'} will be removed ` +
+          `from the dataset, along with their boxes.\n\n` +
+          (hasVersions
+            ? 'Their files are kept, so restoring a saved version that contains ' +
+              'them will bring them back.'
+            : 'This removes the files from disk and cannot be undone. Save a ' +
+              'dataset version first if you might want them back.')
+        }
+        confirmLabel={`Delete ${selected.size}`}
       />
     </>
   )
