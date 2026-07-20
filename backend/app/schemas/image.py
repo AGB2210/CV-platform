@@ -77,6 +77,9 @@ class UploadResult(BaseModel):
     #: Images already in this project byte-for-byte, so not added again.
     #: Re-importing a folder used to silently double the dataset.
     duplicates_skipped: int = 0
+    #: Groups every image added by ONE upload, across all the requests a large
+    #: folder is split into, so the whole import can be undone as a unit.
+    import_id: str | None = None
 
     @computed_field  # type: ignore[prop-decorator]
     @property

@@ -607,7 +607,9 @@ class ImportResult:
     duplicates_skipped: int = 0
 
 
-def execute(db, project_id: int, plan: ImportPlan) -> ImportResult:
+def execute(
+    db, project_id: int, plan: ImportPlan, import_id: str | None = None
+) -> ImportResult:
     """Turn an ImportPlan into images, classes and annotations.
 
     Takes `db` as a parameter rather than importing a session: this is a service,
@@ -678,6 +680,7 @@ def execute(db, project_id: int, plan: ImportPlan) -> ImportResult:
                 height=saved.height,
                 size_bytes=saved.size_bytes,
                 content_hash=saved.content_hash,
+                import_id=import_id,
                 split=group.split,
             )
             db.add(image)

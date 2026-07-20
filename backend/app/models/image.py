@@ -89,6 +89,16 @@ class Image(Base):
         String(64), default=None, index=True
     )
 
+    # Which upload added this image. Shared by every image from ONE user action,
+    # including the many HTTP requests a large folder is split into.
+    #
+    # It exists so an import can be undone as a unit. A 27-batch upload that
+    # fails at batch 12 leaves 11 batches committed, and without this the only
+    # way back is to identify and delete those images by hand — the counts say
+    # what happened but nothing lets you act on it. NULL for rows predating the
+    # column, which simply means they belong to no undoable import.
+    import_id: Mapped[str | None] = mapped_column(String(32), default=None, index=True)
+
     # --- Split --------------------------------------------------------------
     #
     # train | val | test. Defaults to train so an upload is never blocked on a

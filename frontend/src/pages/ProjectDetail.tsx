@@ -14,7 +14,9 @@ import {
   Tags,
   ChevronLeft,
   ChevronRight,
+  HardDrive,
   Trash2,
+  Undo2,
   TriangleAlert,
   FileUp,
   FolderUp,
@@ -46,6 +48,10 @@ import {
   resplitDataset,
   saveDatasetVersion,
   setSplitForImages,
+  discardUnsavedImages,
+  getStorageReport,
+  reclaimStorage,
+  undoImport,
   uploadImages,
   type UploadProgress,
   versionLabel,
@@ -54,6 +60,7 @@ import {
   type Project,
   type ProjectClass,
   type Split,
+  type StorageReport,
   type UploadResult,
 } from '@/lib/api'
 
@@ -74,6 +81,9 @@ export function ProjectDetail() {
   // that were the whole project.
   const [page, setPage] = useState(0)
   const [totalImages, setTotalImages] = useState(0)
+  // Bumped on every refresh so the storage figures re-read after an upload,
+  // a delete or a save rather than showing what was true on page load.
+  const [storageKey, setStorageKey] = useState(0)
   const [classes, setClasses] = useState<ProjectClass[]>([])
   const [versions, setVersions] = useState<DatasetVersion[]>([])
   const [loading, setLoading] = useState(true)
@@ -118,6 +128,7 @@ export function ProjectDetail() {
       setTotalImages(imgs.total)
       setClasses(cls)
       setVersions(vers)
+      setStorageKey((k) => k + 1)
       setError(null)
     } catch (err) {
       setError((err as Error).message)
@@ -259,6 +270,13 @@ export function ProjectDetail() {
               hasImages={images.length > 0}
               onChanged={refresh}
               onError={setError}
+            />
+            {/* Last: housekeeping is something you check occasionally, not a
+                thing to put above the work. */}
+            <StoragePanel
+              projectId={projectId}
+              refreshKey={storageKey}
+              onChanged={refresh}
             />
           </div>
         </div>
@@ -580,8 +598,31 @@ function UploadPanel({
   // A folder upload is sent in batches, so it takes long enough that silence
   // reads as a hang. See planUploadBatches for why it's batched at all.
   const [progress, setProgress] = useState<UploadProgress | null>(null)
+  const [notice, setNotice] = useState<string | null>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const folderRef = useRef<HTMLInputElement>(null)
+
+  async function undo(importId: string) {
+    setBusy(true)
+    setError(null)
+    try {
+      const r = await undoImport(projectId, importId)
+      setResult(null)
+      // Images a version has since captured are kept, and staying quiet about
+      // that would leave the count looking wrong.
+      setNotice(
+        `Removed ${r.deleted} image(s), freeing ${(r.bytes_freed / 1048576).toFixed(1)} MB.` +
+          (r.kept_in_versions
+            ? ` ${r.kept_in_versions} kept — a saved version depends on them.`
+            : ''),
+      )
+      onUploaded()
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
 
   async function send(files: File[]) {
     if (!files.length) return
@@ -729,6 +770,12 @@ function UploadPanel({
         </div>
       )}
 
+      {notice && (
+        <p className="mt-2 rounded-md border border-gray-200 bg-gray-50 px-2.5 py-1.5 text-xs text-gray-700">
+          {notice}
+        </p>
+      )}
+
       {/* Report skipped files explicitly. The backend allows partial success,
           so silently showing "12 uploaded" when 3 were rejected would hide a
           real problem with the user's data. */}
@@ -792,6 +839,22 @@ function UploadPanel({
               rarely among the first few, and "…and 812 more" is precisely the
               information you needed. Scrolling keeps it from taking the page
               over, and not truncating keeps it useful. */}
+          {/* Undo. Offered on EVERY import, not just a failed one — a 27-batch
+              folder that succeeded is just as likely to be the wrong folder,
+              and picking 5,000 images out of the grid by hand is not a
+              recovery path. */}
+          {result.import_id && result.uploaded_count > 0 && (
+            <button
+              onClick={() => void undo(result.import_id!)}
+              disabled={busy}
+              className="mt-1.5 flex items-center gap-1 text-gray-600 underline hover:text-red-700 disabled:opacity-50"
+            >
+              <Undo2 size={11} />
+              Undo this import ({result.uploaded_count} image
+              {result.uploaded_count === 1 ? '' : 's'})
+            </button>
+          )}
+
           {result.skipped.length > 0 && (
             <details className="mt-1.5">
               <summary className="cursor-pointer text-gray-600">
@@ -807,6 +870,178 @@ function UploadPanel({
           )}
         </div>
       )}
+    </div>
+  )
+}
+
+const mb = (bytes: number) => `${(bytes / 1048576).toFixed(1)} MB`
+
+/**
+ * Disk usage, and the two things that can be freed.
+ *
+ * The two are NOT the same and the panel keeps them apart, because conflating
+ * them is how a cleanup feature deletes something a restore needed:
+ *
+ *   Unsaved images  real dataset content, just not captured in a save point.
+ *                   Deleting is the USER's call — the whole upload -> annotate
+ *                   -> save workflow lives in this state, so "unsaved" does not
+ *                   mean "unwanted".
+ *   Orphaned files  bytes nothing in the app can reach. Pure waste.
+ *
+ * Retained files are shown but have no action: they have no live row and look
+ * like waste, but a version depends on them and removing them would break the
+ * restore they exist for.
+ */
+function StoragePanel({
+  projectId,
+  refreshKey,
+  onChanged,
+}: {
+  projectId: number
+  refreshKey: number
+  onChanged: () => void
+}) {
+  const [report, setReport] = useState<StorageReport | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [confirmDiscard, setConfirmDiscard] = useState(false)
+  const [outcome, setOutcome] = useState<string | null>(null)
+  const [error, setError] = useState<string | null>(null)
+
+  const load = useCallback(async () => {
+    try {
+      setReport(await getStorageReport(projectId))
+    } catch {
+      // Housekeeping figures are not worth breaking the page over; the panel
+      // simply doesn't render.
+      setReport(null)
+    }
+  }, [projectId])
+
+  // refreshKey changes whenever the dataset does, so the figures can't go stale
+  // behind an upload or a delete.
+  useEffect(() => {
+    void load()
+  }, [load, refreshKey])
+
+  async function run(action: () => Promise<string>) {
+    setBusy(true)
+    setError(null)
+    setOutcome(null)
+    try {
+      setOutcome(await action())
+      await load()
+      onChanged()
+    } catch (err) {
+      setError((err as Error).message)
+    } finally {
+      setBusy(false)
+      setConfirmDiscard(false)
+    }
+  }
+
+  if (!report) return null
+
+  const nothingToDo = report.unsaved_images === 0 && report.orphan_files === 0
+
+  return (
+    <div className="card">
+      <div className="border-b border-gray-200 px-3 py-2.5">
+        <h2 className="flex items-center gap-1.5 text-sm font-medium text-gray-900">
+          <HardDrive size={13} />
+          Storage
+        </h2>
+        <p className="text-xs text-gray-500">What this project keeps on disk</p>
+      </div>
+
+      <div className="space-y-2 px-3 py-2.5 text-xs">
+        {report.unsaved_images > 0 && (
+          <div>
+            <p className="text-gray-700">
+              <span className="font-medium tabular-nums">{report.unsaved_images}</span>{' '}
+              image{report.unsaved_images === 1 ? '' : 's'} not in any saved version.
+            </p>
+            <p className="mt-0.5 text-gray-500">
+              Still part of the dataset — save a version to keep them.
+            </p>
+            <button
+              onClick={() => setConfirmDiscard(true)}
+              disabled={busy}
+              className="mt-1 flex items-center gap-1 text-red-700 underline hover:text-red-800 disabled:opacity-50"
+            >
+              <Trash2 size={11} />
+              Discard them
+            </button>
+          </div>
+        )}
+
+        {report.orphan_files > 0 && (
+          <div className={report.unsaved_images > 0 ? 'border-t border-gray-100 pt-2' : ''}>
+            <p className="text-gray-700">
+              <span className="font-medium tabular-nums">{report.orphan_files}</span>{' '}
+              unreachable file{report.orphan_files === 1 ? '' : 's'} ·{' '}
+              {mb(report.orphan_bytes)}
+            </p>
+            <p className="mt-0.5 text-gray-500">
+              Left by images deleted after every version holding them was removed.
+              Nothing can reach these.
+            </p>
+            <button
+              onClick={() =>
+                void run(async () => {
+                  const r = await reclaimStorage(projectId)
+                  return `Reclaimed ${r.files_removed} file(s), ${mb(r.bytes_freed)}.`
+                })
+              }
+              disabled={busy}
+              // Not destructive-red: nothing recoverable is at stake, and
+              // colouring it like a delete would make routine cleanup feel
+              // dangerous.
+              className="mt-1 text-accent-700 underline hover:text-accent-800 disabled:opacity-50"
+            >
+              Reclaim {mb(report.orphan_bytes)}
+            </button>
+          </div>
+        )}
+
+        {report.retained_files > 0 && (
+          <p className="border-t border-gray-100 pt-2 text-gray-500">
+            <span className="tabular-nums">{report.retained_files}</span> file
+            {report.retained_files === 1 ? '' : 's'} ({mb(report.retained_bytes)}) kept for
+            saved versions — deleted from the dataset, but a version can restore them.
+          </p>
+        )}
+
+        {report.unreadable_versions.length > 0 && (
+          <p className="rounded border border-amber-200 bg-amber-50 px-2 py-1 text-amber-900">
+            {report.unreadable_versions.join(', ')} could not be read, so nothing will be
+            reclaimed until that is resolved — the files those versions need are unknown.
+          </p>
+        )}
+
+        {nothingToDo && <p className="text-gray-500">Nothing to clean up.</p>}
+        {outcome && <p className="text-gray-600">{outcome}</p>}
+        {error && <p className="whitespace-pre-line text-red-700">{error}</p>}
+      </div>
+
+      <ConfirmDialog
+        open={confirmDiscard}
+        onClose={() => setConfirmDiscard(false)}
+        onConfirm={() =>
+          void run(async () => {
+            const r = await discardUnsavedImages(projectId)
+            return `Discarded ${r.deleted} image(s), freeing ${mb(r.bytes_freed)}.`
+          })
+        }
+        title={`Discard ${report.unsaved_images} unsaved image(s)?`}
+        message={
+          `These images are in no saved version, so nothing can bring them back — ` +
+          `their annotations go with them.\n\n` +
+          `If you want to keep them, close this and click "Save dataset" first.`
+        }
+        confirmLabel={`Discard ${report.unsaved_images}`}
+        busy={busy}
+        destructive
+      />
     </div>
   )
 }
