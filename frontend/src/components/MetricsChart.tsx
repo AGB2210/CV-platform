@@ -35,15 +35,24 @@ interface Domain {
 const H = 220
 const PAD = { l: 44, r: 14, t: 14, b: 30 }
 
-/** "Nice" round tick values across [min, max]. Standard 1/2/5×10ⁿ stepping. */
-function niceTicks(min: number, max: number, count: number): number[] {
+/**
+ * "Nice" round tick values across [min, max]. Standard 1/2/5×10ⁿ stepping.
+ *
+ * `integer` forces a whole-number step, for an axis whose values can only BE
+ * whole numbers. Epochs are the case in point: over a 1–3 range the normal
+ * algorithm picks a step of 0.5, giving 1, 1.5, 2, 2.5, 3 — which the axis then
+ * renders rounded, as "1, 2, 2, 3, 3". Duplicate labels on a chart whose whole
+ * job is showing one point per epoch.
+ */
+function niceTicks(min: number, max: number, count: number, integer = false): number[] {
   const span = max - min
   if (span <= 0) return [min]
   const raw = span / count
   const mag = 10 ** Math.floor(Math.log10(raw))
   const norm = raw / mag
-  const step = (norm >= 5 ? 10 : norm >= 2 ? 5 : norm >= 1 ? 2 : 1) * mag
-  const start = Math.ceil(min / step) * step
+  let step = (norm >= 5 ? 10 : norm >= 2 ? 5 : norm >= 1 ? 2 : 1) * mag
+  if (integer) step = Math.max(1, Math.round(step))
+  const start = integer ? Math.ceil(min) : Math.ceil(min / step) * step
   const ticks: number[] = []
   for (let v = start; v <= max + step * 1e-6; v += step) ticks.push(Math.round(v * 1e6) / 1e6)
   return ticks
@@ -165,7 +174,10 @@ export function MetricsChart({ points }: { points: EpochPoint[] }) {
     )
   }
 
-  const xTicks = niceTicks(dom.x0, dom.x1, 6).filter((t) => t >= dom.x0 - 1e-6 && t <= dom.x1 + 1e-6)
+  // Epochs are whole numbers, so the epoch axis steps in whole numbers.
+  const xTicks = niceTicks(dom.x0, dom.x1, 6, true).filter(
+    (t) => t >= dom.x0 - 1e-6 && t <= dom.x1 + 1e-6,
+  )
   const yTicks = niceTicks(dom.y0, dom.y1, 5).filter((t) => t >= dom.y0 - 1e-6 && t <= dom.y1 + 1e-6)
   const line = (key: 'val_map' | 'val_map50') =>
     data

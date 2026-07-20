@@ -278,7 +278,11 @@ export function Annotate() {
                   >
                     {annotators.map((a) => (
                       <option key={a.key} value={a.key}>
-                        {a.display_name} (~{a.approx_vram_gb} GB VRAM)
+                        {/* Name only. A VRAM figure in the name reads as part of
+                            the model's identity and means nothing without the
+                            machine's own capacity to compare it against — which
+                            the Compute card reports from the actual device. */}
+                        {a.display_name}
                       </option>
                     ))}
                   </select>

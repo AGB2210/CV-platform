@@ -354,7 +354,11 @@ export function Train() {
                     >
                       {trainers.map((t) => (
                         <option key={t.key} value={t.key}>
-                          {t.display_name} (~{t.approx_vram_gb} GB VRAM)
+                          {/* Just the name. A "~3 GB VRAM" suffix reads as a
+                              property of the model, but what matters is whether
+                              it fits THIS machine — which the memory hint below
+                              works out from the detected device instead. */}
+                          {t.display_name}
                         </option>
                       ))}
                     </select>
@@ -429,35 +433,41 @@ export function Train() {
                       expertise. So the defaults are stated in one line and the
                       controls only appear when asked for. */}
                   <div className="rounded-md border border-gray-200">
+                    {/* The WHOLE collapsed box is the control, not just its top
+                        row: the summary line underneath is part of the same
+                        affordance, so clicking it should open the section too.
+                        Spans rather than <p>/<div> because a <button> may only
+                        contain phrasing content. */}
                     <button
                       type="button"
                       onClick={() => setShowAdvanced((v) => !v)}
-                      className="flex w-full items-center justify-between px-2.5 py-2 text-left hover:bg-gray-50"
+                      className="block w-full rounded-md text-left hover:bg-gray-50"
                     >
-                      <span className="flex items-center gap-1.5 text-xs font-medium text-gray-700">
-                        <SlidersHorizontal size={12} className="text-gray-400" />
-                        Custom parameters
+                      <span className="flex items-center justify-between px-2.5 py-2">
+                        <span className="flex items-center gap-1.5 text-xs font-medium text-gray-700">
+                          <SlidersHorizontal size={12} className="text-gray-400" />
+                          Custom parameters
+                        </span>
+                        <span className="flex items-center gap-1.5">
+                          {!showAdvanced && (
+                            <span className="font-mono text-[11px] tabular-nums text-gray-400">
+                              {epochs} epochs · batch {batchSize} · {imageSize}px
+                            </span>
+                          )}
+                          {showAdvanced ? (
+                            <ChevronUp size={13} className="text-gray-400" />
+                          ) : (
+                            <ChevronDown size={13} className="text-gray-400" />
+                          )}
+                        </span>
                       </span>
-                      <span className="flex items-center gap-1.5">
-                        {!showAdvanced && (
-                          <span className="font-mono text-[11px] tabular-nums text-gray-400">
-                            {epochs} epochs · batch {batchSize} · {imageSize}px
-                          </span>
-                        )}
-                        {showAdvanced ? (
-                          <ChevronUp size={13} className="text-gray-400" />
-                        ) : (
-                          <ChevronDown size={13} className="text-gray-400" />
-                        )}
-                      </span>
+                      {!showAdvanced && (
+                        <span className="block px-2.5 pb-2 text-xs text-gray-400">
+                          Using {selected?.display_name ?? 'the backend'}'s recommended
+                          settings. Open to override.
+                        </span>
+                      )}
                     </button>
-
-                    {!showAdvanced && (
-                      <p className="px-2.5 pb-2 text-xs text-gray-400">
-                        Using {selected?.display_name ?? 'the backend'}'s recommended
-                        settings. Open to override.
-                      </p>
-                    )}
 
                     {showAdvanced && (
                       <div className="space-y-3 border-t border-gray-200 p-2.5">

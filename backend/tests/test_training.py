@@ -359,6 +359,54 @@ def test_train_defaults_to_the_latest_saved_version(client, no_train_run, fake_t
     assert job["dataset_version_id"] == v2["id"], "no version given => newest save"
 
 
+def test_metrics_never_record_an_epoch_twice(client, monkeypatch):
+    """A framework that re-fires its per-epoch hook must not corrupt the curve.
+
+    Ultralytics does exactly this: one extra call after the loop, by which point
+    its epoch counter has advanced — producing a phantom point with the previous
+    epoch's loss, so the chart repeated a value and its axis ran past the epochs
+    actually trained. The adapter filters those, and the runner keys history by
+    epoch so it can't happen regardless of which trainer misbehaves.
+    """
+    from app.ml.trainers import registry
+    from app.ml.trainers.base import EpochMetrics, TrainConfig, TrainResult, Trainer
+
+    class RepeatingTrainer(Trainer):
+        key = "repeat"
+        display_name = "Repeats epochs"
+        description = "Test double that re-reports epochs, as ultralytics does."
+        approx_vram_gb = 0.0
+        export_format = "yolo"
+        default_epochs = 3
+
+        def train(self, config: TrainConfig, on_epoch) -> TrainResult:
+            for e in (1, 2, 3):
+                on_epoch(EpochMetrics(epoch=e, total_epochs=3, train_loss=1.0 / e, val_map=0.1 * e))
+            # The phantom: same epoch again, and one past the schedule.
+            on_epoch(EpochMetrics(epoch=3, total_epochs=3, train_loss=99.0, val_map=0.9))
+            ckpt = config.output_dir / "best.pt"
+            ckpt.write_text("w")
+            return TrainResult(best_checkpoint_path=ckpt, best_map=0.3, epochs_completed=3)
+
+    registry.register(RepeatingTrainer)
+    try:
+        monkeypatch.setattr(
+            "app.services.training_job.SessionLocal",
+            client.SessionLocal,  # type: ignore[attr-defined]
+        )
+        pid, _ = make_trainable_project(client)
+        r = client.post(f"/api/projects/{pid}/train", json={"trainer_key": "repeat", "epochs": 3})
+        job = client.get(f"/api/training-jobs/{r.json()['id']}").json()
+
+        epochs = [m["epoch"] for m in job["metrics"]]
+        assert epochs == [1, 2, 3], "one point per epoch, no phantom and no duplicate"
+        assert len(set(epochs)) == len(epochs)
+        # The repeat REPLACED epoch 3 rather than appending beside it.
+        assert job["metrics"][-1]["train_loss"] == 99.0
+    finally:
+        registry._REGISTRY.pop("repeat", None)
+
+
 # --- stopping and cancelling a run ------------------------------------------
 
 

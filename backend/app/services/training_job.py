@@ -227,14 +227,25 @@ def _run(db: Session, job: TrainingJob) -> None:
             # Best is tracked live because mAP is noisy — the last epoch is
             # rarely the best, and it's the best we keep and report.
             job.best_map = m.val_map if job.best_map is None else max(job.best_map, m.val_map)
-        history.append(
-            {
-                "epoch": m.epoch,
-                "train_loss": m.train_loss,
-                "val_map": m.val_map,
-                "val_map50": m.val_map50,
-            }
-        )
+        # Keyed by epoch, not appended blindly. Frameworks re-fire their
+        # per-epoch hook (ultralytics does it once more after the loop, for a
+        # final validation), and a duplicated epoch shows up as a repeated point
+        # and an axis that runs past the epochs actually trained. The adapter
+        # filters those, but the curve is user-visible data — worth making it
+        # structurally impossible to record the same epoch twice, whatever a
+        # future trainer does.
+        point = {
+            "epoch": m.epoch,
+            "train_loss": m.train_loss,
+            "val_map": m.val_map,
+            "val_map50": m.val_map50,
+        }
+        for i, existing in enumerate(history):
+            if existing["epoch"] == m.epoch:
+                history[i] = point
+                break
+        else:
+            history.append(point)
         job.metrics_json = json.dumps(history)
         db.commit()
 

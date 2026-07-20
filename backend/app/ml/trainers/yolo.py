@@ -93,11 +93,32 @@ class YoloTrainer(Trainer):
         start_weights = str(config.init_weights) if config.init_weights else self.base_weights
         model = YOLO(start_weights)
 
+        # Ultralytics fires on_fit_epoch_end ONE EXTRA TIME after the training
+        # loop ends — its final validation pass — and by then `trainer.epoch`
+        # has already advanced. Recorded naively that produces a phantom epoch
+        # N+1 carrying the SAME train loss as the real last epoch: a duplicated
+        # point on the curve and an axis running to 4 on a 3-epoch run. Both
+        # were visible in real runs (2 planned epochs -> 3 points).
+        #
+        # So the adapter tracks what it has already reported and refuses to
+        # report an epoch twice, one beyond the requested schedule, or anything
+        # at all once a stop has been signalled (that final validation is
+        # exactly when the phantom arrives).
+        reported: set[int] = set()
+        finished = False
+
         # Bridge ultralytics' per-epoch signal to our callback. The framework
         # hands us ITS trainer object; we defensively dig the numbers out of it,
         # because the exact metric-dict keys and loss attributes have moved
         # between versions and a KeyError here would abort an otherwise-fine run.
         def _on_fit_epoch_end(yolo_trainer) -> None:  # noqa: ANN001
+            nonlocal finished
+            if finished:
+                return
+            epoch = int(getattr(yolo_trainer, "epoch", 0)) + 1  # ultralytics is 0-based
+            if epoch in reported or epoch > config.epochs:
+                return
+            reported.add(epoch)
             metrics = getattr(yolo_trainer, "metrics", None) or {}
 
             def metric(*keys: str) -> float | None:
@@ -129,7 +150,7 @@ class YoloTrainer(Trainer):
             try:
                 should_stop = on_epoch(
                     EpochMetrics(
-                        epoch=int(yolo_trainer.epoch) + 1,  # ultralytics is 0-based
+                        epoch=epoch,
                         total_epochs=int(yolo_trainer.epochs),
                         train_loss=train_loss,
                         val_map=val_map,
@@ -147,7 +168,11 @@ class YoloTrainer(Trainer):
                 # finish and checkpoint before the loop exits. Requesting a stop
                 # therefore keeps a usable best.pt rather than truncating mid-
                 # epoch, which is exactly the behaviour the user asked for.
-                logger.info("Stop requested — finishing after epoch %s", yolo_trainer.epoch + 1)
+                #
+                # `finished` also closes the door on the post-loop validation
+                # callback, which would otherwise land as a phantom epoch.
+                logger.info("Stop requested — finishing after epoch %s", epoch)
+                finished = True
                 yolo_trainer.stop = True
 
         model.add_callback("on_fit_epoch_end", _on_fit_epoch_end)
