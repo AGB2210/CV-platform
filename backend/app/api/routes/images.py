@@ -23,7 +23,7 @@ from app.api.routes.projects import get_project_or_404
 from app.database import get_db
 from app.models import Annotation, Image
 from app.schemas import ImageRead, UploadResult
-from app.services import dataset_import, storage
+from app.services import dataset_import, storage, storage_audit
 from app.services.dataset_version import has_any_version
 
 router = APIRouter(tags=["images"])
@@ -125,6 +125,7 @@ async def upload_images(
     project_id: int,
     files: list[UploadFile] = File(...),
     paths: list[str] | None = Form(None),
+    import_id: str | None = Form(None),
     db: Session = Depends(get_db),
 ) -> UploadResult:
     """Upload images, a zip, or a whole folder — possibly an annotated dataset.
@@ -161,7 +162,7 @@ async def upload_images(
     # images. Either way the structure matters, so it goes through the analyser
     # rather than being stored as loose pictures with the labels discarded.
     if paths or _has_annotation_files(files):
-        return await _import_as_tree(db, project_id, files, paths)
+        return await _import_as_tree(db, project_id, files, paths, import_id)
 
     saved: list[storage.SavedImage] = []
     skipped: list[str] = []
@@ -230,6 +231,7 @@ async def upload_images(
             height=s.height,
             size_bytes=s.size_bytes,
             content_hash=s.content_hash,
+            import_id=import_id,
         )
         for s in saved
     ]
@@ -242,6 +244,7 @@ async def upload_images(
         uploaded=[ImageRead.model_validate(r) for r in rows],
         skipped=skipped,
         duplicates_skipped=duplicates,
+        import_id=import_id,
     )
     # Merge in anything a zip contributed alongside loose files in the same
     # request (rare, but the UI allows dropping both at once).
@@ -317,6 +320,7 @@ async def _import_as_tree(
     project_id: int,
     files: list[UploadFile],
     paths: list[str] | None,
+    import_id: str | None = None,
 ) -> UploadResult:
     """Rebuild the uploaded selection as a directory tree, then import it.
 
@@ -358,9 +362,9 @@ async def _import_as_tree(
                 "not only annotations.",
             )
 
-        merged = dataset_import.execute(db, project_id, plan)
+        merged = dataset_import.execute(db, project_id, plan, import_id)
         merged.skipped.extend(rejected)
-        return _result_to_response(db, project_id, merged)
+        return _result_to_response(db, project_id, merged, import_id)
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
 
@@ -407,7 +411,10 @@ def _merge_results(
 
 
 def _result_to_response(
-    db: Session, project_id: int, merged: dataset_import.ImportResult
+    db: Session,
+    project_id: int,
+    merged: dataset_import.ImportResult,
+    import_id: str | None = None,
 ) -> UploadResult:
     """Shape an ImportResult into the upload response the frontend expects."""
     recent = list(
@@ -427,6 +434,7 @@ def _result_to_response(
         has_split_folders=merged.has_split_folders,
         notes=merged.notes,
         duplicates_skipped=merged.duplicates_skipped,
+        import_id=import_id,
     )
 
 
@@ -484,6 +492,142 @@ def bulk_delete_images(
         #: otherwise, and it isn't.
         "recoverable": recoverable,
     }
+
+
+# --- storage housekeeping ---------------------------------------------------
+
+
+@router.get("/projects/{project_id}/storage")
+def storage_report(project_id: int, db: Session = Depends(get_db)) -> dict:
+    """What this project is holding on disk, and what could be freed.
+
+    Read-only. Three different "not needed" states get counted separately
+    because they mean genuinely different things — see services/storage_audit.
+    """
+    get_project_or_404(project_id, db)
+    report = storage_audit.audit(db, project_id)
+    return {
+        "total_images": report.total_images,
+        "unsaved_images": report.unsaved_images,
+        "orphan_files": report.orphan_files,
+        "orphan_bytes": report.orphan_bytes,
+        "retained_files": report.retained_files,
+        "retained_bytes": report.retained_bytes,
+        "unreadable_versions": report.unreadable_versions,
+    }
+
+
+@router.post("/projects/{project_id}/storage/reclaim")
+def reclaim_storage(project_id: int, db: Session = Depends(get_db)) -> dict:
+    """Delete image files that nothing can reach.
+
+    Only files referenced by neither a live row nor any version snapshot. Files
+    kept solely because a version needs them are NOT touched — that retention is
+    what makes restore work.
+    """
+    get_project_or_404(project_id, db)
+    try:
+        removed, freed = storage_audit.reclaim_orphans(db, project_id)
+    except ValueError as exc:
+        # An unreadable snapshot means we can't tell orphans from retained
+        # files, and guessing deletes irreplaceable data.
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from None
+    return {"files_removed": removed, "bytes_freed": freed}
+
+
+@router.post("/projects/{project_id}/storage/discard-unsaved")
+def discard_unsaved(project_id: int, db: Session = Depends(get_db)) -> dict:
+    """Delete live images that no saved version contains.
+
+    THE USER'S DECISION, NEVER AUTOMATIC. The whole upload -> annotate -> save
+    workflow lives in the unsaved state, so "not in a version" does not mean
+    "unwanted" — it usually means "still being worked on". This exists so an
+    unwanted 700 MB upload can be undone in one action, not so the app can tidy
+    up behind someone's back.
+
+    Their annotations go too, by cascade. Nothing here is in a version, so
+    nothing here is recoverable — which is why the UI states the count and
+    colours the action destructive.
+    """
+    get_project_or_404(project_id, db)
+
+    ids = storage_audit.unsaved_image_ids(db, project_id)
+    if not ids:
+        return {"deleted": 0, "bytes_freed": 0}
+
+    images = list(db.scalars(select(Image).where(Image.id.in_(ids))).all())
+    filenames = [img.filename for img in images]
+    for img in images:
+        db.delete(img)
+    db.commit()
+
+    # Files go too. These are in no version by definition, so unlike the normal
+    # delete path there is nothing that could ever restore them and keeping the
+    # bytes would just be litter.
+    freed = 0
+    project_dir = storage.project_dir(project_id)
+    for filename in filenames:
+        path = project_dir / filename
+        try:
+            freed += path.stat().st_size
+            path.unlink()
+        except OSError:
+            continue
+
+    return {"deleted": len(images), "bytes_freed": freed}
+
+
+@router.post("/projects/{project_id}/imports/{import_id}/undo")
+def undo_import(project_id: int, import_id: str, db: Session = Depends(get_db)) -> dict:
+    """Remove every image added by one upload.
+
+    A large folder is sent as many requests, and one failing at batch 12 of 27
+    leaves eleven batches committed. The counts said so but nothing could act on
+    it, so recovery meant picking those images out of the grid by hand.
+
+    Every image from one upload carries the same `import_id`, so the whole thing
+    comes out as a unit regardless of how many requests it took.
+
+    Images from this import that a version has SINCE captured are kept and
+    reported: once a save point depends on an image, silently removing it would
+    break that version, and by saving the user has said they want it.
+    """
+    get_project_or_404(project_id, db)
+
+    images = list(
+        db.scalars(
+            select(Image).where(
+                Image.project_id == project_id, Image.import_id == import_id
+            )
+        ).all()
+    )
+    if not images:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            "That import has nothing left to undo — it may already have been "
+            "undone, or its images deleted.",
+        )
+
+    referenced, _ = storage_audit._referenced_by_versions(db, project_id)
+    removable = [img for img in images if img.filename not in referenced]
+    kept = len(images) - len(removable)
+
+    filenames = [img.filename for img in removable]
+    for img in removable:
+        db.delete(img)
+    db.commit()
+
+    freed = 0
+    project_dir = storage.project_dir(project_id)
+    for filename in filenames:
+        path = project_dir / filename
+        try:
+            freed += path.stat().st_size
+            path.unlink()
+        except OSError:
+            continue
+
+    return {"deleted": len(removable), "kept_in_versions": kept, "bytes_freed": freed}
 
 
 @router.delete("/images/{image_id}", status_code=status.HTTP_204_NO_CONTENT)

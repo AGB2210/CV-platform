@@ -116,11 +116,15 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
  * Setting 'multipart/form-data' by hand omits the boundary, and the server
  * fails to parse the body with a confusing 422.
  */
-async function upload<T>(path: string, files: File[]): Promise<T> {
+async function upload<T>(path: string, files: File[], importId?: string): Promise<T> {
   const form = new FormData()
   // Field name must be 'files' — it matches the `files: list[UploadFile]`
   // parameter in the FastAPI endpoint.
   for (const file of files) form.append('files', file)
+
+  // Shared by every batch of ONE upload, so the whole import can be undone as a
+  // unit even though a large folder arrives as dozens of separate requests.
+  if (importId) form.append('import_id', importId)
 
   // A folder upload also sends each file's path RELATIVE to the chosen folder,
   // in the same order, because the multipart filename carries only the
@@ -331,6 +335,9 @@ export interface UploadResult {
   /** Images already in the project byte-for-byte, so not added again.
    *  Re-uploading a folder used to silently double the dataset. */
   duplicates_skipped: number
+  /** Groups every image from ONE upload across all its batches, so a partly
+   *  failed import can be undone as a unit. */
+  import_id: string | null
 }
 
 // --- Endpoints ------------------------------------------------------------
@@ -409,6 +416,10 @@ export async function uploadImages(
 ): Promise<UploadResult> {
   const batches = planUploadBatches(files)
   const imagesTotal = files.filter((f) => !SIDECAR_RE.test(f.name)).length
+  // One id for the whole upload, generated up front so every batch shares it.
+  // This is what makes a 27-batch folder undoable as a single action after one
+  // of those batches fails.
+  const importId = crypto.randomUUID().replace(/-/g, '').slice(0, 32)
 
   let merged: UploadResult | null = null
   let sent = 0
@@ -423,6 +434,7 @@ export async function uploadImages(
     const result = await api.upload<UploadResult>(
       `/projects/${projectId}/images`,
       batches[i],
+      importId,
     )
     sent += batches[i].filter((f) => !SIDECAR_RE.test(f.name)).length
     merged = merged ? mergeUploadResults(merged, result) : result
@@ -448,6 +460,7 @@ export async function uploadImages(
       notes: [],
       needs_val_split: false,
       duplicates_skipped: 0,
+      import_id: importId,
     }
   )
 }
@@ -475,9 +488,45 @@ function mergeUploadResults(a: UploadResult, b: UploadResult): UploadResult {
     // "needs val" even when a later batch supplies one.
     needs_val_split: (splits.train ?? 0) > 0 && (splits.val ?? 0) === 0,
     duplicates_skipped: a.duplicates_skipped + b.duplicates_skipped,
+    // Same across every batch by construction — see uploadImages.
+    import_id: a.import_id ?? b.import_id,
   }
 }
 export const deleteImage = (imageId: number) => api.delete<void>(`/images/${imageId}`)
+
+/** What a project is holding on disk. Three "not needed" states, deliberately
+ *  counted apart — see backend services/storage_audit.py. */
+export interface StorageReport {
+  total_images: number
+  /** Live images in no saved version. NOT waste — this is where the whole
+   *  upload → annotate → save workflow lives. The user decides. */
+  unsaved_images: number
+  /** Files nothing can reach. Safe to delete. */
+  orphan_files: number
+  orphan_bytes: number
+  /** Files with no live row, kept because a version needs them. Deleting these
+   *  would break restore. Shown so the disk usage is explicable. */
+  retained_files: number
+  retained_bytes: number
+  /** Non-empty means the orphan figure is incomplete on purpose. */
+  unreadable_versions: string[]
+}
+
+export const getStorageReport = (projectId: number) =>
+  api.get<StorageReport>(`/projects/${projectId}/storage`)
+export const reclaimStorage = (projectId: number) =>
+  api.post<{ files_removed: number; bytes_freed: number }>(
+    `/projects/${projectId}/storage/reclaim`,
+  )
+export const discardUnsavedImages = (projectId: number) =>
+  api.post<{ deleted: number; bytes_freed: number }>(
+    `/projects/${projectId}/storage/discard-unsaved`,
+  )
+/** Remove every image one upload added, however many batches it took. */
+export const undoImport = (projectId: number, importId: string) =>
+  api.post<{ deleted: number; kept_in_versions: number; bytes_freed: number }>(
+    `/projects/${projectId}/imports/${importId}/undo`,
+  )
 /** Delete several images — also how "delete all" is sent, so selecting
  *  everything takes the same path as selecting one. `recoverable` is true when
  *  the project has a saved version, meaning the files were kept on disk. */
