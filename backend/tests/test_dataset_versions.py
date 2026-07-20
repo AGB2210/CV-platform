@@ -178,6 +178,83 @@ def test_restore_is_itself_undoable(client):
     assert "later.png" in names, "restoring the backup undid the restore"
 
 
+# --- which version am I looking at? -----------------------------------------
+
+
+def test_restore_does_not_mint_a_redundant_version(client):
+    """Restoring when nothing would be lost must not create a save point.
+
+    Backing up unconditionally meant every restore added a version holding
+    content already saved elsewhere — restore v1 twice and the list grew two
+    identical copies of v1.
+    """
+    pid, _ = _setup(client)
+    v1 = _save(client, pid)
+    assert len(_versions(client, pid)) == 1
+
+    # Nothing has changed since v1, so there is nothing to preserve.
+    r = client.post(f"/api/projects/{pid}/dataset/versions/{v1['id']}/restore").json()
+    assert len(_versions(client, pid)) == 1, "no redundant auto-save"
+    assert r["backup_version"] == 1, "undo points at the version already holding that state"
+
+
+def test_restore_backs_up_only_genuinely_unsaved_work(client):
+    pid, imgs = _setup(client)
+    v1 = _save(client, pid)
+    # Real, unsaved divergence.
+    client.delete(f"/api/images/{imgs[0]['id']}")
+
+    client.post(f"/api/projects/{pid}/dataset/versions/{v1['id']}/restore")
+    versions = _versions(client, pid)
+    assert len(versions) == 2, "the unsaved 3-image state was worth keeping"
+    assert versions[0]["total_images"] == 3
+
+
+def test_current_marks_the_version_on_screen_not_the_newest(client):
+    """After restoring an older version, THAT one is current — the newest save
+    point still exists but is not what you're looking at."""
+    pid, imgs = _setup(client)
+    v1 = _save(client, pid)
+    client.delete(f"/api/images/{imgs[0]['id']}")
+    v2 = _save(client, pid)  # newest, 3 images
+
+    assert [v["is_current"] for v in _versions(client, pid)] == [True, False], "v2 is live"
+
+    client.post(f"/api/projects/{pid}/dataset/versions/{v1['id']}/restore")
+    by_version = {v["version"]: v for v in _versions(client, pid)}
+    assert by_version[1]["is_current"] is True, "the restored version is what's on screen"
+    assert by_version[2]["is_current"] is False, "newest is no longer current"
+    assert v2["version"] == 2
+
+
+def test_training_defaults_to_the_current_version_not_the_newest(client):
+    """The bug this guards: after restoring v1, 'just train it' must train v1 —
+    not the newer save point holding data the user rolled away from."""
+    pid, imgs = _setup(client)
+    car = _class_id(client, pid)
+    for img in imgs[1:]:
+        _add_box(client, img["id"], car)
+    v1 = _save(client, pid)
+    client.delete(f"/api/images/{imgs[0]['id']}")
+    _save(client, pid)  # v2, newest
+
+    client.post(f"/api/projects/{pid}/dataset/versions/{v1['id']}/restore")
+    p = client.get(f"/api/projects/{pid}/train/preview").json()
+    assert p["current_version"] == 1
+    assert p["latest_version"] == 2, "the newer save point still exists"
+    assert p["has_unsaved_changes"] is False
+
+
+def test_unsaved_changes_are_reported(client):
+    pid, imgs = _setup(client)
+    _save(client, pid)
+    client.delete(f"/api/images/{imgs[0]['id']}")
+    p = client.get(f"/api/projects/{pid}/train/preview").json()
+    assert p["current_version"] is None
+    assert p["has_unsaved_changes"] is True
+    assert any("changed since it was last saved" in w for w in p["warnings"])
+
+
 # --- renaming ---------------------------------------------------------------
 
 

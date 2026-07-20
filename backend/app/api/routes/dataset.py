@@ -74,15 +74,27 @@ def save_dataset_version(
 def list_dataset_versions(
     project_id: int, db: Session = Depends(get_db)
 ) -> list[DatasetVersion]:
-    """Newest first — the version history for this project."""
+    """Newest first — the version history for this project.
+
+    Each row is tagged with whether it's the one the LIVE dataset currently
+    matches. That is not always the newest: restore an older version and the
+    dataset on screen IS that older one, while a newer save point still exists.
+    Without saying so, the list gives no way to tell which state you're in.
+    """
     get_project_or_404(project_id, db)
-    return list(
+    rows = list(
         db.scalars(
             select(DatasetVersion)
             .where(DatasetVersion.project_id == project_id)
             .order_by(DatasetVersion.version.desc())
         ).all()
     )
+    current = versions.current_version(db, project_id)
+    for row in rows:
+        # Transient attribute, not a column — computed per request from the live
+        # data, so it can never go stale in the way a stored flag would.
+        row.is_current = current is not None and row.id == current.id
+    return rows
 
 
 @router.patch(

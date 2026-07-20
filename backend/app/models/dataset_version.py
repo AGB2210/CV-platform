@@ -58,6 +58,12 @@ class DatasetVersion(Base):
     #: rule images follow; a snapshot can reach megabytes on a big project.
     snapshot_path: Mapped[str] = mapped_column(Text, nullable=False)
 
+    #: Fingerprint of the dataset content (see DatasetSnapshot.content_hash).
+    #: Identifies which version the LIVE dataset currently matches — the newest
+    #: version is not necessarily the one you're looking at, and after a restore
+    #: it usually isn't. NULL on versions saved before this existed.
+    content_hash: Mapped[str | None] = mapped_column(String(64), default=None, index=True)
+
     # Counts denormalised at save time so the version list renders without
     # opening (and parsing) every snapshot file.
     total_images: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

@@ -407,8 +407,17 @@ function VersionPanel({
                   <div className="flex items-center justify-between gap-1">
                     <span className="flex min-w-0 items-center gap-1.5 font-medium text-gray-800">
                       <span className="truncate">{versionLabel(v)}</span>
-                      {v.id === latest?.id && (
+                      {/* "current" = what the dataset on screen actually is;
+                          "latest" = merely the most recent save. They're the
+                          same until you restore an older version, and after
+                          that the difference is the whole point. */}
+                      {v.is_current && (
                         <span className="shrink-0 rounded bg-accent-100 px-1 py-px text-[9px] font-medium uppercase tracking-wide text-accent-700">
+                          current
+                        </span>
+                      )}
+                      {v.id === latest?.id && !v.is_current && (
+                        <span className="shrink-0 rounded bg-gray-100 px-1 py-px text-[9px] font-medium uppercase tracking-wide text-gray-500">
                           latest
                         </span>
                       )}

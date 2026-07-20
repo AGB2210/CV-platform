@@ -31,6 +31,7 @@ from app.schemas.training import (
     TrainingJobRead,
     TrainingJobRename,
 )
+from app.services import dataset_version as versions
 from app.services.training_job import run_training_job
 from app.services.version_naming import DuplicateNameError, clean_name, ensure_unique
 
@@ -347,12 +348,23 @@ def train_preview(project_id: int, db: Session = Depends(get_db)) -> dict:
         .where(DatasetVersion.project_id == project_id)
         .order_by(DatasetVersion.version.desc())
     )
+    # The version the live dataset actually matches — not necessarily the newest.
+    # After restoring an older version they differ, and defaulting to "newest"
+    # would train data the user just rolled away from.
+    current = versions.current_version(db, project_id)
 
     warnings: list[str] = []
     if latest is None:
         warnings.append(
             "The dataset has never been saved. Click “Save dataset” to create v1 — "
             "training runs against a saved version."
+        )
+    elif current is None:
+        # Not fatal — you can still train an older version deliberately — but
+        # silently training something other than what's on screen would be worse.
+        warnings.append(
+            "The dataset has changed since it was last saved. Save it to train "
+            "these changes, or pick the version you want below."
         )
     if num_classes == 0:
         warnings.append("No classes defined — add at least one on the Dataset page.")
@@ -387,6 +399,11 @@ def train_preview(project_id: int, db: Session = Depends(get_db)) -> dict:
         "has_saved_version": latest is not None,
         "latest_version": latest.version if latest else None,
         "latest_version_id": latest.id if latest else None,
+        # Which saved version the dataset on screen actually IS. None means it
+        # has unsaved changes — it matches no save point.
+        "current_version": current.version if current else None,
+        "current_version_id": current.id if current else None,
+        "has_unsaved_changes": latest is not None and current is None,
         "can_train": (
             latest is not None
             and latest.train_boxes > 0
@@ -440,6 +457,13 @@ def _resolve_dataset_version(db: Session, project_id: int, version_id: int | Non
                 f"Dataset version {version_id} was not found in this project.",
             )
         return version
+
+    # Prefer the version the live dataset MATCHES over the newest one. They
+    # diverge after restoring an older version, and "just train it" must mean
+    # "train what I'm looking at", not "train whatever was saved most recently".
+    current = versions.current_version(db, project_id)
+    if current is not None:
+        return current
 
     latest = db.scalar(
         select(DatasetVersion)

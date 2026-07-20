@@ -55,6 +55,10 @@ class DatasetVersionRead(BaseModel):
     train_boxes: int
     num_classes: int
     created_at: datetime
+    #: True for the version the LIVE dataset currently matches. Computed per
+    #: request, and not necessarily the newest — after a restore it's the one
+    #: that was restored.
+    is_current: bool = False
 
 
 class RestoreResult(BaseModel):

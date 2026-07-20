@@ -465,7 +465,11 @@ export function Review() {
           </div>
         )}
 
-        <div className="min-h-0 flex-1 overflow-auto p-6">
+        {/* Tighter at the top than the sides: the accept/reject pair sits
+            directly above, and a full 24px gap pushed the image away from the
+            controls that act on it, reading as an unexplained hole rather than
+            breathing room. */}
+        <div className="min-h-0 flex-1 overflow-auto px-6 pb-6 pt-3">
           {current && (
             <div className="mx-auto w-fit shadow-sm ring-1 ring-gray-300">
               <AnnotationCanvas

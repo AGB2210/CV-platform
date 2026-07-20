@@ -36,10 +36,14 @@ logger = logging.getLogger(__name__)
 @register
 class YoloTrainer(Trainer):
     key = "yolo"
-    display_name = "YOLO11 (Ultralytics)"
+    # Name the ACTUAL variant, not the family. "YOLO11" could be any of n/s/m/l/x
+    # — sizes that differ by an order of magnitude in memory and speed — so a
+    # user picking from a list deserves to know which one they're getting.
+    display_name = "YOLO11n (nano) · Ultralytics"
     description = (
-        "Fine-tunes a pretrained YOLO11-nano detector. The lightest variant, so "
-        "it trains on modest GPUs. Consumes the YOLO export format."
+        "Fine-tunes the pretrained YOLO11 nano checkpoint (yolo11n.pt) — the "
+        "smallest of the YOLO11 family, so it trains on modest GPUs. Consumes "
+        "the YOLO export format."
     )
     # Rough peak VRAM for nano at 640px / batch 8; batch and image size move it.
     # Surfaced as a NUMBER rather than baked into prose, so the UI can compare it

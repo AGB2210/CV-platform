@@ -72,9 +72,22 @@ export function MetricsChart({ points }: { points: EpochPoint[] }) {
   useLayoutEffect(() => {
     const el = containerRef.current
     if (!el) return
-    const ro = new ResizeObserver((entries) => setWidth(entries[0].contentRect.width))
+    // IGNORE ZERO MEASUREMENTS. A ResizeObserver reports width 0 whenever the
+    // element has no layout yet — first paint, a hidden ancestor, a card that
+    // mounts mid-render. Accepting that sets the SVG to 0 wide, which draws
+    // nothing: the legend above it still shows, so the chart looks broken
+    // rather than absent, and it only "appears" later when some unrelated
+    // re-layout happens to feed a real width. That is exactly the "graph is
+    // blank while training, then shows up at the end" report.
+    //
+    // Keeping the last good width (or the default) instead means the worst case
+    // is a chart drawn at a slightly wrong size for one frame.
+    const apply = (w: number) => {
+      if (w > 0) setWidth(w)
+    }
+    const ro = new ResizeObserver((entries) => apply(entries[0].contentRect.width))
     ro.observe(el)
-    setWidth(el.clientWidth)
+    apply(el.clientWidth)
     return () => ro.disconnect()
   }, [])
 
@@ -95,7 +108,9 @@ export function MetricsChart({ points }: { points: EpochPoint[] }) {
   }, [data])
 
   const dom = view ?? fullDomain
-  const W = width
+  // Floor as a second belt: a chart narrower than this can't be read anyway, and
+  // it guarantees the plot maths never degenerates.
+  const W = Math.max(240, width)
   const plotW = Math.max(1, W - PAD.l - PAD.r)
   const plotH = H - PAD.t - PAD.b
 
@@ -166,13 +181,13 @@ export function MetricsChart({ points }: { points: EpochPoint[] }) {
     ;(e.target as Element).releasePointerCapture?.(e.pointerId)
   }
 
-  if (!data.length) {
-    return (
-      <p className="py-6 text-center text-xs text-gray-400">
-        No mAP measured yet — the curve appears after the first validated epoch.
-      </p>
-    )
-  }
+  // NOTE: no early return for the empty case. Bailing out before the container
+  // div is rendered means its ref never attaches, so the ResizeObserver is never
+  // set up — and with `[]` deps the effect never retries once data arrives. The
+  // chart then stays stuck at its default width forever, drawn narrower than the
+  // space it has. A live run starts with zero points, so this was the norm, not
+  // an edge case. The container is always mounted; only its CONTENTS switch.
+  const hasData = data.length > 0
 
   // Epochs are whole numbers, so the epoch axis steps in whole numbers.
   const xTicks = niceTicks(dom.x0, dom.x1, 6, true).filter(
@@ -215,13 +230,25 @@ export function MetricsChart({ points }: { points: EpochPoint[] }) {
           </button>
         </span>
       </div>
+      {/* Always mounted so the width observer is always attached — see the
+          note above `hasData`. */}
       <div ref={containerRef} className="w-full select-none">
+        {!hasData && (
+          <p className="py-6 text-center text-xs text-gray-400">
+            No mAP measured yet — the curve appears after the first validated epoch.
+          </p>
+        )}
         <svg
           ref={svgRef}
           width={W}
           height={H}
           className="touch-none"
-          style={{ cursor: drag.current ? 'grabbing' : 'crosshair' }}
+          style={{
+            cursor: drag.current ? 'grabbing' : 'crosshair',
+            // Hidden rather than unmounted while there's nothing to plot: the
+            // container must stay measurable either way.
+            display: hasData ? undefined : 'none',
+          }}
           onPointerDown={onPointerDown}
           onPointerMove={onPointerMove}
           onPointerUp={onPointerUp}

@@ -464,6 +464,10 @@ export interface TrainPreview {
   has_saved_version: boolean
   latest_version: number | null
   latest_version_id: number | null
+  /** The version the live dataset matches; null = unsaved changes. */
+  current_version: number | null
+  current_version_id: number | null
+  has_unsaved_changes: boolean
   can_train: boolean
   warnings: string[]
 }
@@ -513,6 +517,9 @@ export interface DatasetVersion {
   train_boxes: number
   num_classes: number
   created_at: string
+  /** True for the version the LIVE dataset matches — not always the newest.
+   *  After restoring an older version, that older one is current. */
+  is_current: boolean
 }
 
 /** What a restore actually did. `missing_files` non-empty = partial restore. */

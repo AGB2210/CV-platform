@@ -1,4 +1,6 @@
+import { useEffect, useState } from 'react'
 import { NavLink, useMatch } from 'react-router-dom'
+import { getProject } from '@/lib/api'
 import { LayoutGrid, Boxes, Tags, Cpu, PlayCircle, SquarePen, Eye } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 
@@ -71,6 +73,26 @@ export function Sidebar() {
   const id = match?.params.id
   const inProject = Boolean(id)
 
+  // Fetched here rather than passed down: the Sidebar renders outside every
+  // page (it's in the layout route), so there's no parent holding the project
+  // to hand it one. One small request per project you open.
+  const [projectName, setProjectName] = useState<string | null>(null)
+  useEffect(() => {
+    if (!id) {
+      setProjectName(null)
+      return
+    }
+    let cancelled = false
+    getProject(Number(id))
+      .then((p) => !cancelled && setProjectName(p.name))
+      // A failed lookup shouldn't break navigation — the nav still works
+      // without a name, so fall back to the placeholder rather than an error.
+      .catch(() => !cancelled && setProjectName(null))
+    return () => {
+      cancelled = true
+    }
+  }, [id])
+
   return (
     <aside className="flex w-56 shrink-0 flex-col border-r border-gray-200 bg-white">
       {/* Wordmark. No logo art — a text mark is honest and doesn't pretend to
@@ -90,7 +112,19 @@ export function Sidebar() {
 
         {inProject && (
           <>
+            {/* The project's NAME, not just the word "Project".
+                Every page inside a project except the Dataset page had a
+                generic title ("Train", "Auto-annotate"), so with several
+                projects open there was nothing on screen saying which one you
+                were working in. The sidebar is the one piece of chrome present
+                on all of them, so the answer belongs here. */}
             <p className="label-eyebrow px-2.5 pb-1 pt-4">Project</p>
+            <p
+              className="truncate px-2.5 pb-1.5 text-sm font-medium text-gray-900"
+              title={projectName ?? undefined}
+            >
+              {projectName ?? '…'}
+            </p>
             {PROJECT_NAV.map(({ suffix, label, icon: Icon, ready, nested }) =>
               ready ? (
                 <NavLink

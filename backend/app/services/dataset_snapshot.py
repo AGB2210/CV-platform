@@ -28,6 +28,7 @@ dataset until accepted, so it cannot be part of a version of it.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -101,6 +102,46 @@ class DatasetSnapshot:
 
     def box_count_for_split(self, split: str) -> int:
         return sum(len(i.annotations) for i in self.images if i.split == split)
+
+    def content_hash(self) -> str:
+        """Stable fingerprint of what this dataset CONTAINS.
+
+        Lets two dataset states be compared without diffing them by eye, which
+        answers two questions the app kept getting wrong:
+
+          - "is the live dataset already saved?" — if some version's hash
+            matches, nothing would be lost, so there is nothing to back up.
+          - "which version am I actually looking at?" — the one whose hash
+            matches the live data, which is NOT necessarily the newest.
+
+        Hashes the meaning, not the bookkeeping: classes and boxes are keyed by
+        class NAME (row ids change when a class is deleted and recreated, and a
+        restore does exactly that), images by their stored filename, and
+        coordinates rounded so float noise can't make identical datasets look
+        different. Order is normalised so it depends on content alone.
+        """
+        by_id = {c.id: c.name for c in self.categories}
+        images = sorted(
+            (
+                img.filename,
+                img.split,
+                sorted(
+                    (
+                        by_id.get(a.category_id, "?"),
+                        round(a.x, 3),
+                        round(a.y, 3),
+                        round(a.width, 3),
+                        round(a.height, 3),
+                    )
+                    for a in img.annotations
+                ),
+            )
+            for img in self.images
+        )
+        payload = {"classes": sorted(by_id.values()), "images": images}
+        return hashlib.sha256(
+            json.dumps(payload, sort_keys=True, default=str).encode("utf-8")
+        ).hexdigest()
 
     # --- serialisation ------------------------------------------------------
 

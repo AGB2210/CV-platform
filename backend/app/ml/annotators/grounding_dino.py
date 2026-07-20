@@ -41,10 +41,15 @@ MODEL_ID = "IDEA-Research/grounding-dino-tiny"
 @register
 class GroundingDinoAnnotator(AutoAnnotator):
     key = "grounding_dino"
-    display_name = "Grounding DINO"
+    # The variant is named, not just the family: Grounding DINO ships tiny
+    # (Swin-T) and base (Swin-B) checkpoints that differ several-fold in size and
+    # accuracy, and which one is running is exactly what a user picking from a
+    # list needs to know.
+    display_name = "Grounding DINO tiny (Swin-T)"
     description = (
-        "Zero-shot detection from text prompts. Best default for open-vocabulary "
-        "bounding boxes — no training needed."
+        "Zero-shot detection from text prompts, using the grounding-dino-tiny "
+        "checkpoint. Best default for open-vocabulary bounding boxes — no "
+        "training needed."
     )
     approx_vram_gb = 2.5
 

@@ -381,15 +381,22 @@ export function Train() {
                       disabled={isRunning || datasetVersions.length === 0}
                       className="w-full rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-sm focus:border-accent-500 focus:outline-none disabled:bg-gray-50"
                     >
+                      {/* The default is the version the dataset ON SCREEN
+                          matches, which after a restore is NOT the newest save
+                          point. Saying "latest" there would promise to train
+                          something other than what the user is looking at. */}
                       <option value="">
-                        {datasetVersions.length
-                          ? `Latest saved (v${datasetVersions[0].version})`
-                          : 'No saved dataset yet'}
+                        {!datasetVersions.length
+                          ? 'No saved dataset yet'
+                          : preview?.current_version
+                            ? `Current dataset (v${preview.current_version})`
+                            : `Latest saved (v${datasetVersions[0].version})`}
                       </option>
                       {datasetVersions.map((v) => (
                         <option key={v.id} value={v.id}>
-                          v{v.version} · {v.total_images} imgs · {v.total_boxes} boxes
-                          {v.note ? ` · ${v.note}` : ''}
+                          v{v.version}
+                          {v.is_current ? ' (current)' : ''} · {v.total_images} imgs ·{' '}
+                          {v.total_boxes} boxes{v.note ? ` · ${v.note}` : ''}
                         </option>
                       ))}
                     </select>
@@ -397,6 +404,12 @@ export function Train() {
                       <Database size={11} />
                       Trains that saved snapshot — later dataset edits don't change it.
                     </p>
+                    {preview?.has_unsaved_changes && (
+                      <p className="mt-1 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-amber-900">
+                        The dataset has changed since it was last saved. Save it to train
+                        those changes, or pick a version above.
+                      </p>
+                    )}
                   </div>
 
                   {/* --- Start from: pretrained vs continue a previous run --- */}
@@ -656,20 +669,25 @@ function RunDetail({
               <>
                 {/* Stop keeps the model; Cancel throws it away. Different words,
                     different colours: cancel is the destructive one. */}
+                {/* flex + gap rather than an inline icon with a margin: at
+                    11px text a 9px glyph reads as undersized and sits off the
+                    baseline. Matching the icon to the text size and centring
+                    them on the same axis is what makes the pair look
+                    deliberate. */}
                 <button
                   onClick={onStop}
-                  className="rounded border border-gray-300 px-1.5 py-0.5 text-[11px] text-gray-700 hover:bg-gray-50"
+                  className="flex items-center gap-1 rounded border border-gray-300 px-1.5 py-0.5 text-[11px] leading-none text-gray-700 hover:bg-gray-50"
                   title="Finish the current epoch, then stop and keep this model"
                 >
-                  <Square size={9} className="mr-1 inline" />
+                  <Square size={11} />
                   Stop early
                 </button>
                 <button
                   onClick={onCancel}
-                  className="rounded border border-red-300 px-1.5 py-0.5 text-[11px] text-red-700 hover:bg-red-50"
+                  className="flex items-center gap-1 rounded border border-red-300 px-1.5 py-0.5 text-[11px] leading-none text-red-700 hover:bg-red-50"
                   title="Stop and discard this run entirely — no version is kept"
                 >
-                  <X size={9} className="mr-1 inline" />
+                  <X size={11} />
                   Cancel
                 </button>
               </>

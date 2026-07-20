@@ -91,6 +91,7 @@ def save_version(db: Session, project_id: int, note: str | None = None):
         total_boxes=snapshot.total_boxes,
         train_boxes=snapshot.box_count_for_split(Split.TRAIN),
         num_classes=len(snapshot.categories),
+        content_hash=snapshot.content_hash(),
     )
     db.add(row)
     db.commit()
@@ -118,7 +119,9 @@ class RestoreResult:
     #: Images the version references whose FILE is gone from disk — reported so a
     #: partial restore is never silently presented as a complete one.
     missing_files: list[str]
-    #: The safety version taken of the pre-restore state.
+    #: The version holding the pre-restore state. A NEW auto-saved version when
+    #: that state wasn't saved anywhere; otherwise the existing version that
+    #: already captured it — either way, the number to restore to undo this.
     backup_version: int
 
 
@@ -130,11 +133,26 @@ def restore_version(db: Session, project_id: int, version) -> RestoreResult:
 
     snapshot = load_snapshot(version)
 
-    # 1. Back up what's about to be replaced. Do this FIRST — if anything below
-    #    fails, the user still has a save point for the state they were in.
-    backup = save_version(
-        db, project_id, note=f"Auto-saved before restoring v{version.version}"
+    # 1. Back up what's about to be replaced — but ONLY if it would otherwise be
+    #    lost. Backing up unconditionally meant every restore minted a version,
+    #    and most were byte-identical copies of one already in the list: restore
+    #    v1 twice and you get two "auto-saved" versions holding exactly v1's
+    #    content. Comparing fingerprints means a backup appears only when the
+    #    live dataset genuinely isn't saved anywhere.
+    from app.models import DatasetVersion as DatasetVersionModel
+
+    backup_version = current_version_number(db, project_id)
+    live_hash = build_snapshot(db, project_id).content_hash()
+    already_saved = db.scalar(
+        select(func.count(DatasetVersionModel.id)).where(
+            DatasetVersionModel.project_id == project_id,
+            DatasetVersionModel.content_hash == live_hash,
+        )
     )
+    if not already_saved:
+        backup_version = save_version(
+            db, project_id, note=f"Auto-saved before restoring v{version.version}"
+        ).version
 
     # 2. Classes, matched BY NAME. Ids drift (a class deleted and re-added gets a
     #    new one), but the name is what the boxes mean. Missing classes are
@@ -248,7 +266,7 @@ def restore_version(db: Session, project_id: int, version) -> RestoreResult:
         boxes_restored=boxes_restored,
         images_removed=images_removed,
         missing_files=missing_files,
-        backup_version=backup.version,
+        backup_version=backup_version,
     )
 
 
@@ -273,6 +291,37 @@ def delete_version(db: Session, version) -> None:
     # that no longer exists, which breaks restore. Same trade the project makes
     # everywhere else.
     path.unlink(missing_ok=True)
+
+
+def current_version_number(db: Session, project_id: int) -> int:
+    """Version number matching the LIVE dataset, or 0 if it matches none.
+
+    Deliberately not "the newest version": after restoring an older one the two
+    are different, and treating newest as current is how training ends up
+    running against data the user has just rolled away from.
+    """
+    version = current_version(db, project_id)
+    return version.version if version else 0
+
+
+def current_version(db: Session, project_id: int):
+    """The saved version whose content matches the live dataset, if any.
+
+    None means the dataset has unsaved changes — it isn't any saved version.
+    """
+    from app.models import DatasetVersion
+
+    live_hash = build_snapshot(db, project_id).content_hash()
+    return db.scalar(
+        select(DatasetVersion)
+        .where(
+            DatasetVersion.project_id == project_id,
+            DatasetVersion.content_hash == live_hash,
+        )
+        # Oldest match wins: if the same content was saved twice, the FIRST one
+        # is the version that state is really "known as".
+        .order_by(DatasetVersion.version.asc())
+    )
 
 
 def has_any_version(db: Session, project_id: int) -> bool:
