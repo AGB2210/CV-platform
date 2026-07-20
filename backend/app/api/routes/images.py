@@ -14,6 +14,7 @@ from app.database import get_db
 from app.models import Annotation, Image
 from app.schemas import ImageRead, UploadResult
 from app.services import dataset_import, storage
+from app.services.dataset_version import has_any_version
 
 router = APIRouter(tags=["images"])
 
@@ -265,13 +266,28 @@ def _result_to_response(
 
 @router.delete("/images/{image_id}", status_code=status.HTTP_204_NO_CONTENT)
 def delete_image(image_id: int, db: Session = Depends(get_db)) -> None:
-    """Delete one image, row then file — same ordering rationale as projects."""
+    """Remove one image from the dataset.
+
+    THE FILE IS KEPT ONCE THE PROJECT HAS SAVED VERSIONS.
+
+    A dataset version stores metadata only — which images are in it, not their
+    bytes — so restoring one can only work if the pictures are still on disk.
+    Unlinking here would turn every version that references this image into a
+    promise we can't keep, which is precisely the accident versions exist to
+    prevent. The row goes (it leaves the live dataset immediately); the bytes
+    stay, and a restore recreates the row pointing at them.
+
+    Before the first save there is nothing that could restore it, so the file is
+    removed as before rather than accumulating orphans for no benefit.
+    """
     image = db.get(Image, image_id)
     if image is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"Image {image_id} not found")
 
     project_id, filename = image.project_id, image.filename
+    recoverable = has_any_version(db, project_id)
     db.delete(image)
     db.commit()
 
-    storage.delete_image_file(project_id, filename)
+    if not recoverable:
+        storage.delete_image_file(project_id, filename)

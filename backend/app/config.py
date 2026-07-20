@@ -66,9 +66,20 @@ class Settings(BaseSettings):
     def runs_dir(self) -> Path:
         return self.STORAGE_DIR / "runs"
 
+    @property
+    def versions_dir(self) -> Path:
+        """Saved dataset-version snapshots (JSON, one per version)."""
+        return self.STORAGE_DIR / "versions"
+
     def ensure_dirs(self) -> None:
         """Create storage directories if missing. Called once on startup."""
-        for path in (self.STORAGE_DIR, self.images_dir, self.weights_dir, self.runs_dir):
+        for path in (
+            self.STORAGE_DIR,
+            self.images_dir,
+            self.weights_dir,
+            self.runs_dir,
+            self.versions_dir,
+        ):
             path.mkdir(parents=True, exist_ok=True)
 
 

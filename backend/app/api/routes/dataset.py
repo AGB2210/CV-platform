@@ -23,16 +23,96 @@ from sqlalchemy.orm import Session
 
 from app.api.routes.projects import get_project_or_404
 from app.database import get_db
-from app.models import Annotation, Image
+from app.models import Annotation, DatasetVersion, Image
 from app.models.image import Split
 from app.schemas.dataset import (
     BulkSplitRequest,
     DatasetStats,
+    DatasetVersionCreate,
+    DatasetVersionRead,
+    RestoreResult,
     SplitCounts,
     SplitRequest,
 )
+from app.services import dataset_version as versions
 
 router = APIRouter(tags=["dataset"])
+
+
+# --- Versions ---------------------------------------------------------------
+# "Save dataset" is the only thing that creates a version, and it's the gate into
+# training: you train a SAVED dataset, so every run points at something
+# reproducible rather than at whatever the rows happened to be that afternoon.
+
+
+@router.post(
+    "/projects/{project_id}/dataset/versions",
+    response_model=DatasetVersionRead,
+    status_code=status.HTTP_201_CREATED,
+)
+def save_dataset_version(
+    project_id: int,
+    payload: DatasetVersionCreate,
+    db: Session = Depends(get_db),
+) -> DatasetVersion:
+    """Save the current dataset as a new, restorable version."""
+    get_project_or_404(project_id, db)
+    try:
+        return versions.save_version(db, project_id, note=payload.note)
+    except versions.DatasetVersionError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from None
+
+
+@router.get(
+    "/projects/{project_id}/dataset/versions",
+    response_model=list[DatasetVersionRead],
+)
+def list_dataset_versions(
+    project_id: int, db: Session = Depends(get_db)
+) -> list[DatasetVersion]:
+    """Newest first — the version history for this project."""
+    get_project_or_404(project_id, db)
+    return list(
+        db.scalars(
+            select(DatasetVersion)
+            .where(DatasetVersion.project_id == project_id)
+            .order_by(DatasetVersion.version.desc())
+        ).all()
+    )
+
+
+@router.post(
+    "/projects/{project_id}/dataset/versions/{version_id}/restore",
+    response_model=RestoreResult,
+)
+def restore_dataset_version(
+    project_id: int, version_id: int, db: Session = Depends(get_db)
+) -> RestoreResult:
+    """Rewind the live dataset to a saved version.
+
+    Safe by construction: the current state is saved as a new version first, so
+    an unwanted restore is undone by restoring that one.
+    """
+    get_project_or_404(project_id, db)
+    version = db.get(DatasetVersion, version_id)
+    if version is None or version.project_id != project_id:
+        raise HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            f"Dataset version {version_id} not found in this project.",
+        )
+    try:
+        result = versions.restore_version(db, project_id, version)
+    except versions.DatasetVersionError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from None
+
+    return RestoreResult(
+        restored_version=version.version,
+        images_restored=result.images_restored,
+        boxes_restored=result.boxes_restored,
+        images_removed=result.images_removed,
+        missing_files=result.missing_files,
+        backup_version=result.backup_version,
+    )
 
 
 @router.get("/projects/{project_id}/dataset/stats", response_model=DatasetStats)

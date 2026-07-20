@@ -4,7 +4,48 @@ The staging -> dataset commit schemas (CommitMode, DatasetCommit, CommitPreview)
 are gone along with the two-stage model. See routes/dataset.py.
 """
 
-from pydantic import BaseModel, Field
+from datetime import datetime
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class DatasetVersionCreate(BaseModel):
+    """Body for "Save dataset" — an optional human note for the version."""
+
+    note: str | None = Field(default=None, max_length=255)
+
+
+class DatasetVersionRead(BaseModel):
+    """One saved dataset version, as the version list renders it."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    project_id: int
+    #: 1-based per project — what the UI shows, not the row id.
+    version: int
+    note: str | None
+    total_images: int
+    train_images: int
+    val_images: int
+    test_images: int
+    total_boxes: int
+    num_classes: int
+    created_at: datetime
+
+
+class RestoreResult(BaseModel):
+    """What a restore actually did — reported rather than assumed."""
+
+    restored_version: int
+    images_restored: int
+    boxes_restored: int
+    images_removed: int
+    #: Images the version referenced whose file is gone from disk. Non-empty
+    #: means the restore was partial, and the UI says so.
+    missing_files: list[str]
+    #: The safety version taken of the pre-restore state, so this is undoable.
+    backup_version: int
 
 
 class SplitRequest(BaseModel):
