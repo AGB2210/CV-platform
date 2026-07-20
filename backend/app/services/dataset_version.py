@@ -89,6 +89,7 @@ def save_version(db: Session, project_id: int, note: str | None = None):
         val_images=counts.get(Split.VAL, 0),
         test_images=counts.get(Split.TEST, 0),
         total_boxes=snapshot.total_boxes,
+        train_boxes=snapshot.box_count_for_split(Split.TRAIN),
         num_classes=len(snapshot.categories),
     )
     db.add(row)

@@ -75,6 +75,12 @@ class TrainingJob(Base):
     # checkpoint whose class set no longer matches the project's current classes.
     num_classes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
+    # Which SAVED dataset version this run trained on. The run exports that
+    # version's snapshot, not the live rows — so "trained on dataset v3" is a
+    # fact that stays true even after the dataset changes underneath it. Nullable
+    # only for runs recorded before dataset versions existed.
+    dataset_version_id: Mapped[int | None] = mapped_column(Integer, default=None)
+
     # When set, this run was initialised from ANOTHER run's checkpoint (continue
     # / finetune) rather than the pretrained base — provenance: "run 7 continued
     # run 4". A plain nullable int, not a FK: the _add_missing_columns stopgap

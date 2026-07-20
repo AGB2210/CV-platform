@@ -13,6 +13,7 @@ from app.models import (
     Annotation,
     AnnotationJob,
     Category,
+    DatasetVersion,
     Image,
     JobStatus,
     TrainingJob,
@@ -77,14 +78,20 @@ def start_training(
     # project — two at once would evict each other's weights or simply OOM.
     _reject_if_gpu_busy(db, project_id)
 
+    # Training runs against a SAVED dataset version, never the live rows — that's
+    # what makes a run reproducible and its provenance truthful. Resolve which
+    # one (explicit, or the latest save) and refuse if the dataset was never
+    # saved.
+    dataset_version = _resolve_dataset_version(db, project_id, payload.dataset_version_id)
+
     # Fail fast on an empty train split. The runner checks this too, but a job
     # that flashes up and immediately fails is worse UX than a plain 400 that
     # never creates a row.
-    if _accepted_box_count(db, project_id, Split.TRAIN) == 0:
+    if dataset_version.train_boxes == 0:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
-            "No accepted boxes in the train split. Accept proposals or draw boxes "
-            "and assign images to 'train' on the Dataset page, then train.",
+            f"Dataset v{dataset_version.version} has no boxes in its train split. "
+            "Annotate some images, save the dataset, and train the new version.",
         )
 
     # Finetuning from a previous run: validate the source is usable and its class
@@ -117,6 +124,7 @@ def start_training(
         learning_rate=payload.learning_rate,
         total_epochs=payload.epochs,
         init_from_job_id=payload.init_from_job_id,
+        dataset_version_id=dataset_version.id,
     )
     db.add(job)
     db.commit()
@@ -181,7 +189,20 @@ def train_preview(project_id: int, db: Session = Depends(get_db)) -> dict:
         for split in Split.ALL
     }
 
+    # Training trains a SAVED version, so readiness starts with "has it been
+    # saved at all?".
+    latest = db.scalar(
+        select(DatasetVersion)
+        .where(DatasetVersion.project_id == project_id)
+        .order_by(DatasetVersion.version.desc())
+    )
+
     warnings: list[str] = []
+    if latest is None:
+        warnings.append(
+            "The dataset has never been saved. Click “Save dataset” to create v1 — "
+            "training runs against a saved version."
+        )
     if num_classes == 0:
         warnings.append("No classes defined — add at least one on the Dataset page.")
     if counts[Split.TRAIN]["boxes"] == 0:
@@ -210,7 +231,16 @@ def train_preview(project_id: int, db: Session = Depends(get_db)) -> dict:
     return {
         "num_classes": num_classes,
         "splits": counts,
-        "can_train": num_classes > 0 and counts[Split.TRAIN]["boxes"] > 0,
+        # A saved version is now part of readiness — without one there is
+        # nothing reproducible to train.
+        "has_saved_version": latest is not None,
+        "latest_version": latest.version if latest else None,
+        "latest_version_id": latest.id if latest else None,
+        "can_train": (
+            latest is not None
+            and latest.train_boxes > 0
+            and latest.num_classes > 0
+        ),
         "warnings": warnings,
     }
 
@@ -243,6 +273,35 @@ def _reject_if_gpu_busy(db: Session, project_id: int) -> None:
             f"An auto-annotation job ({active_annotate.id}) is still "
             f"{active_annotate.status}; it holds the GPU. Wait for it to finish.",
         )
+
+
+def _resolve_dataset_version(db: Session, project_id: int, version_id: int | None):
+    """The saved dataset version this run will train, or 400 with what to do.
+
+    Defaults to the latest save, which is what "just train it" means once you've
+    clicked Save dataset. An explicit id lets you train an older version.
+    """
+    if version_id is not None:
+        version = db.get(DatasetVersion, version_id)
+        if version is None or version.project_id != project_id:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"Dataset version {version_id} was not found in this project.",
+            )
+        return version
+
+    latest = db.scalar(
+        select(DatasetVersion)
+        .where(DatasetVersion.project_id == project_id)
+        .order_by(DatasetVersion.version.desc())
+    )
+    if latest is None:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Save the dataset before training. Training runs against a saved "
+            "dataset version so a run's results stay reproducible.",
+        )
+    return latest
 
 
 def _validate_finetune_source(db: Session, project_id: int, source_id: int) -> None:

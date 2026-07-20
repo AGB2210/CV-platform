@@ -42,8 +42,17 @@ def _assign_split(client, pid, image_ids, split) -> None:
     assert r.status_code == 200, r.text
 
 
+def save_dataset(client, pid, note=None) -> dict:
+    """Click "Save dataset" — training runs against a saved version, so tests
+    that train must save first, exactly as the UI requires."""
+    r = client.post(f"/api/projects/{pid}/dataset/versions", json={"note": note})
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
 def make_trainable_project(client, name="Trainable"):
-    """A project with classes, 4 train + 2 val images, and boxes on the train set.
+    """A project with classes, 4 train + 2 val images, boxes on the train set,
+    and the dataset saved as v1.
 
     Returns (project_id, images). Images default to the 'train' split, so only
     the val ones need reassigning.
@@ -56,6 +65,7 @@ def make_trainable_project(client, name="Trainable"):
     # Boxes on the four train images.
     for img in imgs[:4]:
         _add_box(client, img["id"], car)
+    save_dataset(client, pid, note="test fixture")
     return pid, imgs
 
 
@@ -150,6 +160,7 @@ def test_preview_warns_when_no_val_split(client):
     pid = make_project(client, "NoVal", classes=("car",))
     imgs = upload_images(client, pid, ["a.png", "b.png"])
     _add_box(client, imgs[0]["id"], _class_ids(client, pid)[0])
+    save_dataset(client, pid)
     p = client.get(f"/api/projects/{pid}/train/preview").json()
     assert p["can_train"] is True  # trainable, just not measurable
     assert any("validation" in w.lower() for w in p["warnings"])
@@ -181,12 +192,28 @@ def test_preview_no_tiny_warning_on_larger_set(client):
 
 
 def test_train_rejects_empty_train_split(client, no_train_run, fake_trainer):
-    """No accepted boxes in train = nothing to learn from = 400, no job row."""
+    """No boxes in the saved version's train split = nothing to learn = 400."""
     pid = make_project(client, "Empty", classes=("car",))
     upload_images(client, pid, ["a.png"])  # image, but no boxes
+    save_dataset(client, pid)
     r = client.post(f"/api/projects/{pid}/train", json={"trainer_key": "fake"})
     assert r.status_code == 400
     assert client.get(f"/api/projects/{pid}/training-jobs").json() == []
+
+
+def test_train_requires_a_saved_dataset(client, no_train_run, fake_trainer):
+    """The gate: you train a SAVED dataset, so an unsaved project is refused
+    with an instruction rather than trained against whatever the rows are."""
+    pid = make_project(client, "Unsaved", classes=("car",))
+    imgs = upload_images(client, pid, ["a.png"])
+    _add_box(client, imgs[0]["id"], _class_ids(client, pid)[0])
+    # Deliberately NOT saved.
+    r = client.post(f"/api/projects/{pid}/train", json={"trainer_key": "fake"})
+    assert r.status_code == 400
+    assert "save the dataset" in r.json()["detail"].lower()
+
+    p = client.get(f"/api/projects/{pid}/train/preview").json()
+    assert p["can_train"] is False and p["has_saved_version"] is False
 
 
 def test_train_rejects_unknown_trainer(client, no_train_run):
@@ -287,6 +314,49 @@ def test_versions_number_per_project_and_model(client, monkeypatch, fake_trainer
     other, _ = make_trainable_project(client, "VerB")
     v = client.post(f"/api/projects/{other}/train", json={"trainer_key": "fake", "epochs": 1}).json()
     assert v["version"] == 1, "a different project's versions restart at 1"
+
+
+def test_training_an_older_version_uses_that_version_data(client, monkeypatch, fake_trainer):
+    """Picking dataset v1 trains v1's snapshot, not the live rows.
+
+    This is the whole provenance claim: a run that says "trained on dataset v1"
+    must be describing what actually went into it, even though the dataset has
+    moved on since.
+    """
+    monkeypatch.setattr(
+        "app.services.training_job.SessionLocal",
+        client.SessionLocal,  # type: ignore[attr-defined]
+    )
+    pid, _ = make_trainable_project(client)  # v1: 4 train + 2 val
+    v1 = client.get(f"/api/projects/{pid}/dataset/versions").json()[0]
+    assert v1["version"] == 1 and v1["train_images"] == 4
+
+    # The dataset moves on: three more train images, saved as v2.
+    later = upload_images(client, pid, ["x1.png", "x2.png", "x3.png"])
+    car = _class_ids(client, pid)[0]
+    for img in later:
+        _add_box(client, img["id"], car)
+    v2 = save_dataset(client, pid)
+    assert v2["train_images"] == 7
+
+    # Train the OLD version explicitly.
+    r = client.post(
+        f"/api/projects/{pid}/train",
+        json={"trainer_key": "fake", "epochs": 1, "dataset_version_id": v1["id"]},
+    )
+    assert r.status_code == 202, r.text
+    job = client.get(f"/api/training-jobs/{r.json()['id']}").json()
+    assert job["status"] == "done", job.get("error")
+    assert job["dataset_version_id"] == v1["id"]
+    assert job["train_images"] == 4, "trained v1's 4 images, not the live 7"
+
+
+def test_train_defaults_to_the_latest_saved_version(client, no_train_run, fake_trainer):
+    pid, _ = make_trainable_project(client)
+    upload_images(client, pid, ["extra.png"])
+    v2 = save_dataset(client, pid)
+    job = client.post(f"/api/projects/{pid}/train", json={"trainer_key": "fake"}).json()
+    assert job["dataset_version_id"] == v2["id"], "no version given => newest save"
 
 
 def test_finetune_rejects_unusable_source(client, no_train_run, fake_trainer):

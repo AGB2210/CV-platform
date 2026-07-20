@@ -59,6 +59,10 @@ class DatasetVersion(Base):
     val_images: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     test_images: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     total_boxes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    #: Boxes in the TRAIN split specifically — what a run actually learns from,
+    #: so the train route can refuse an unlearnable version without parsing the
+    #: snapshot file.
+    train_boxes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     num_classes: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
 
     created_at: Mapped[datetime] = mapped_column(

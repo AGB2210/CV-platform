@@ -30,6 +30,7 @@ class DatasetVersionRead(BaseModel):
     val_images: int
     test_images: int
     total_boxes: int
+    train_boxes: int
     num_classes: int
     created_at: datetime
 

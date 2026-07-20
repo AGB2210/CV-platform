@@ -51,6 +51,11 @@ class TrainingJobCreate(BaseModel):
     # completed, has a checkpoint, matching class count).
     init_from_job_id: int | None = None
 
+    # Which SAVED dataset version to train. None = the latest saved version.
+    # Training always runs against a saved version, never the live rows, so a
+    # run's results stay attributable to a specific dataset.
+    dataset_version_id: int | None = None
+
 
 class EpochPoint(BaseModel):
     """One epoch on the loss/mAP curve."""
@@ -82,6 +87,8 @@ class TrainingJobRead(BaseModel):
     num_classes: int
     #: Set when this run continued another run's checkpoint (finetune).
     init_from_job_id: int | None
+    #: The saved dataset version this run trained on.
+    dataset_version_id: int | None
 
     current_epoch: int
     total_epochs: int

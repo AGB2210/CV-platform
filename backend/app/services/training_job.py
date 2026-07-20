@@ -96,22 +96,22 @@ def _run(db: Session, job: TrainingJob) -> None:
     job.started_at = datetime.now()
     db.commit()
 
+    # THE DATASET THIS RUN TRAINS ON IS A SAVED VERSION, not the live rows.
+    # Everything below — classes, counts, validation, the export — is derived
+    # from that snapshot, so the run is reproducible and its recorded provenance
+    # ("trained on dataset v3") stays true however the project changes later.
+    snapshot = _resolve_snapshot(db, job)
+
     # Classes define the model's output vocabulary and their ORDER fixes the
-    # channel-to-class mapping baked into the checkpoint. Ordered by id, the same
-    # order the exporters assign indices — so class_names[N] here matches label N
-    # in the exported data and in the trained weights.
-    categories = list(
-        db.scalars(
-            select(Category)
-            .where(Category.project_id == job.project_id)
-            .order_by(Category.id)
-        ).all()
-    )
-    if not categories:
+    # channel-to-class mapping baked into the checkpoint — the same order the
+    # exporter assigns indices, so class_names[N] means label N in the exported
+    # data and in the trained weights.
+    if not snapshot.categories:
         raise ValueError(
-            "This project has no classes. Add at least one class before training."
+            "That dataset version has no classes. Add at least one class, save "
+            "the dataset, and train again."
         )
-    class_names = [c.name for c in categories]
+    class_names = [c.name for c in snapshot.categories]
     job.num_classes = len(class_names)
 
     # Finetuning: resolve the source run's checkpoint to start from. Re-checked
@@ -132,18 +132,18 @@ def _run(db: Session, job: TrainingJob) -> None:
                 f"({init_weights}). Train a fresh model instead."
             )
 
-    # A run learns from ACCEPTED boxes in the TRAIN split. Validate that some
-    # exist before paying to export and spin up a framework — a run over zero
-    # labels trains a model that predicts nothing, slowly, and looks like a bug.
-    train_boxes = _accepted_box_count(db, job.project_id, Split.TRAIN)
-    if train_boxes == 0:
+    # A run learns from the boxes in the TRAIN split. Validate that some exist
+    # before paying to export and spin up a framework — a run over zero labels
+    # trains a model that predicts nothing, slowly, and looks like a bug.
+    if snapshot.box_count_for_split(Split.TRAIN) == 0:
         raise ValueError(
-            "No accepted boxes in the train split. Accept some proposals or draw "
-            "boxes and assign images to 'train' on the Dataset page, then train."
+            "That dataset version has no boxes in its train split. Annotate some "
+            "images, save the dataset, and train the new version."
         )
 
-    job.train_images = _image_count(db, job.project_id, Split.TRAIN)
-    job.val_images = _image_count(db, job.project_id, Split.VAL)
+    split_counts = snapshot.split_counts()
+    job.train_images = split_counts.get(Split.TRAIN, 0)
+    job.val_images = split_counts.get(Split.VAL, 0)
     db.commit()
 
     trainer = trainer_registry.get_class(job.trainer_key)()
@@ -163,9 +163,7 @@ def _run(db: Session, job: TrainingJob) -> None:
 
     # Export in the trainer's format, honouring the per-image split. Proposals
     # are excluded by the exporter itself — only proposed=False rows are written.
-    # The snapshot IS the dataset this run trains on. Each image carries its own
-    # split, so the exporter needs no separate map.
-    snapshot = build_snapshot(db, job.project_id)
+    # Each snapshot image carries its own split, so the exporter needs no map.
     exporter = exporters.get(trainer.export_format)
     exporter.export(
         snapshot,
@@ -237,6 +235,29 @@ def _run(db: Session, job: TrainingJob) -> None:
         result.epochs_completed,
         result.best_map,
     )
+
+
+def _resolve_snapshot(db: Session, job: TrainingJob):
+    """The dataset this run trains on: its recorded dataset version's snapshot.
+
+    Re-resolved here rather than trusting the route, because this runs later —
+    the version's file could have gone missing in between, and a run that
+    silently fell back to the live rows while claiming to be version 3 would be
+    the worst kind of wrong: plausible and untrue.
+    """
+    from app.models import DatasetVersion
+    from app.services.dataset_version import load_snapshot
+
+    if job.dataset_version_id is None:
+        raise ValueError(
+            "This run has no dataset version. Save the dataset, then train."
+        )
+    version = db.get(DatasetVersion, job.dataset_version_id)
+    if version is None or version.project_id != job.project_id:
+        raise ValueError(
+            f"Dataset version {job.dataset_version_id} no longer exists in this project."
+        )
+    return load_snapshot(version)
 
 
 def _accepted_box_count(db: Session, project_id: int, split: str) -> int:
