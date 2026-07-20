@@ -32,6 +32,8 @@ from pathlib import Path
 
 from sqlalchemy import select
 
+from app.services import storage
+
 logger = logging.getLogger(__name__)
 
 # Filenames that hold COCO annotations. Roboflow writes the first; the official
@@ -292,7 +294,6 @@ def execute(db, project_id: int, plan: ImportPlan) -> ImportResult:
     from app.models import Annotation, Category
     from app.models.image import Image
     from app.enums import CLASS_COLORS
-    from app.services import storage
 
     result = ImportResult(has_split_folders=plan.has_split_folders, notes=list(plan.notes))
 
@@ -401,18 +402,49 @@ def execute(db, project_id: int, plan: ImportPlan) -> ImportResult:
 
 
 def extract_archive(zip_path: Path, dest: Path) -> None:
-    """Extract a zip, refusing path traversal.
+    """Extract a zip, refusing path traversal and zip bombs.
 
     ZIP SLIP: a zip entry named "../../../etc/passwd" makes a naive
     extractall() write outside the destination. Python's extractall() has
     guarded against this since 3.6.2, but we check anyway — this is the one
     place untrusted input becomes filesystem paths, and the check is three
     lines.
+
+    ZIP BOMB: unlike the in-memory path this replaced, extractall() writes to
+    DISK, so a small archive declaring terabytes of uncompressed content fills
+    the volume before anything downstream gets a chance to reject it. The
+    header's declared sizes are checked first — they're attacker-controlled and
+    can lie, so the running total is also checked as members are written, which
+    is the figure that can't be faked.
     """
     dest.mkdir(parents=True, exist_ok=True)
     with zipfile.ZipFile(zip_path) as zf:
-        for member in zf.namelist():
-            target = (dest / member).resolve()
+        members = zf.infolist()
+        if len(members) > storage.MAX_ZIP_MEMBERS:
+            raise ValueError(
+                f"Archive contains more than {storage.MAX_ZIP_MEMBERS} entries."
+            )
+        declared = sum(m.file_size for m in members)
+        if declared > storage.MAX_ZIP_BYTES:
+            raise ValueError(
+                f"Archive expands to more than "
+                f"{storage.MAX_ZIP_BYTES // (1024**3)} GB."
+            )
+
+        for member in members:
+            target = (dest / member.filename).resolve()
             if not str(target).startswith(str(dest.resolve())):
-                raise ValueError(f"Unsafe path in archive: {member!r}")
-        zf.extractall(dest)
+                raise ValueError(f"Unsafe path in archive: {member.filename!r}")
+
+        written = 0
+        for member in members:
+            zf.extract(member, dest)
+            if member.is_dir():
+                continue
+            # The real size on disk, not the header's claim.
+            written += (dest / member.filename).stat().st_size
+            if written > storage.MAX_ZIP_BYTES:
+                raise ValueError(
+                    f"Archive expands to more than "
+                    f"{storage.MAX_ZIP_BYTES // (1024**3)} GB."
+                )

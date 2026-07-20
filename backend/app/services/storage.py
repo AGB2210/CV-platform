@@ -141,66 +141,6 @@ def save_image(project_id: int, content: bytes, original_name: str) -> SavedImag
     )
 
 
-def save_zip(project_id: int, content: bytes) -> tuple[list[SavedImage], list[str]]:
-    """Extract images from a zip archive. Returns (saved, skipped_reasons).
-
-    Never extracts to disk. Each member is read into memory, validated, and
-    written under our own generated name — so "zip slip" (an archive member
-    named `../../app/main.py` overwriting application code on extract) cannot
-    happen here by construction, because the archive's paths are only ever used
-    as display labels.
-    """
-    if len(content) > MAX_ZIP_BYTES:
-        raise ImageRejected(f"zip larger than {MAX_ZIP_BYTES // (1024**3)} GB")
-
-    saved: list[SavedImage] = []
-    skipped: list[str] = []
-
-    try:
-        archive = zipfile.ZipFile(io.BytesIO(content))
-    except zipfile.BadZipFile as exc:
-        raise ImageRejected("not a valid zip archive") from exc
-
-    with archive:
-        members = archive.infolist()
-        if len(members) > MAX_ZIP_MEMBERS:
-            raise ImageRejected(f"zip contains more than {MAX_ZIP_MEMBERS} entries")
-
-        for member in members:
-            name = member.filename
-
-            if member.is_dir():
-                continue
-
-            # macOS bundles resource-fork junk into every zip it makes. These
-            # are not images and reporting them as errors would be noise.
-            basename = Path(name).name
-            if "__MACOSX" in name or basename.startswith("._") or basename == ".DS_Store":
-                continue
-
-            if Path(name).suffix.lower() not in ALLOWED_EXTENSIONS:
-                skipped.append(f"{name}: unsupported file type")
-                continue
-
-            # Guard against a zip bomb: a member that claims to be small but
-            # inflates to gigabytes. Checked BEFORE reading, using the header's
-            # declared uncompressed size.
-            if member.file_size > MAX_IMAGE_BYTES:
-                skipped.append(f"{name}: larger than {MAX_IMAGE_BYTES // (1024 * 1024)} MB")
-                continue
-
-            try:
-                data = archive.read(member)
-                saved.append(save_image(project_id, data, basename))
-            except ImageRejected as exc:
-                skipped.append(f"{name}: {exc}")
-            except Exception as exc:  # noqa: BLE001
-                # One broken member must not abort the other 499.
-                skipped.append(f"{name}: {type(exc).__name__}")
-
-    return saved, skipped
-
-
 def is_zip(filename: str, content: bytes) -> bool:
     """True if this upload looks like a zip.
 

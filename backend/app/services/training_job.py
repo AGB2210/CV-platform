@@ -32,7 +32,6 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -41,10 +40,9 @@ from app.ml import registry as annotator_registry
 from app.ml.device import empty_cache, get_device
 from app.ml.trainers import registry as trainer_registry
 from app.ml.trainers.base import EpochMetrics, TrainConfig
-from app.models import Annotation, Category, Image, JobControl, JobStatus, TrainingJob
+from app.models import JobControl, JobStatus, TrainingJob
 from app.models.image import Split
 from app.services import exporters
-from app.services.dataset_snapshot import build_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -342,26 +340,3 @@ def _resolve_snapshot(db: Session, job: TrainingJob):
             f"Dataset version {job.dataset_version_id} no longer exists in this project."
         )
     return load_snapshot(version)
-
-
-def _accepted_box_count(db: Session, project_id: int, split: str) -> int:
-    """Accepted (non-proposed) boxes on images in one split of a project."""
-    return db.scalar(
-        select(func.count(Annotation.id))
-        .join(Image, Image.id == Annotation.image_id)
-        .where(
-            Image.project_id == project_id,
-            Image.split == split,
-            Annotation.proposed.is_(False),
-        )
-    ) or 0
-
-
-def _image_count(db: Session, project_id: int, split: str) -> int:
-    """Total images in one split of a project (negatives included — they're
-    legitimate training data)."""
-    return db.scalar(
-        select(func.count(Image.id)).where(
-            Image.project_id == project_id, Image.split == split
-        )
-    ) or 0
