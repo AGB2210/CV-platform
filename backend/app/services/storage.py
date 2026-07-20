@@ -17,6 +17,7 @@ filesystem listing degrades badly past a few tens of thousands of entries.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import shutil
 import uuid
@@ -57,6 +58,8 @@ class SavedImage:
     width: int
     height: int
     size_bytes: int
+    #: SHA-256 of the bytes — how a re-upload of the same picture is recognised.
+    content_hash: str = ""
 
 
 class ImageRejected(Exception):
@@ -138,7 +141,23 @@ def save_image(project_id: int, content: bytes, original_name: str) -> SavedImag
         width=width,
         height=height,
         size_bytes=len(content),
+        content_hash=content_digest(content),
     )
+
+
+def content_digest(content: bytes) -> str:
+    """SHA-256 of an image's bytes.
+
+    Identity for "is this the same picture?". Filenames can't answer that —
+    stored names are generated UUIDs, and every dataset in the world calls its
+    files img_0001.jpg. Bytes are the only thing that actually distinguishes.
+
+    SHA-256 rather than a faster non-cryptographic hash because a collision here
+    silently DISCARDS a real image as a duplicate, and at 256 bits that will not
+    happen by accident. Hashing is not the bottleneck either: it's a few hundred
+    MB/s against a decode-and-validate step that already read the same bytes.
+    """
+    return hashlib.sha256(content).hexdigest()
 
 
 def is_zip(filename: str, content: bytes) -> bool:

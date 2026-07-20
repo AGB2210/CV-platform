@@ -601,6 +601,10 @@ class ImportResult:
     splits: dict[str, int] = field(default_factory=dict)
     has_split_folders: bool = False
     notes: list[str] = field(default_factory=list)
+    #: Images already in this project, byte-for-byte, and therefore not added
+    #: again. Reported rather than silent — re-importing a folder used to
+    #: double the dataset with no indication anything had happened.
+    duplicates_skipped: int = 0
 
 
 def execute(db, project_id: int, plan: ImportPlan) -> ImportResult:
@@ -638,12 +642,30 @@ def execute(db, project_id: int, plan: ImportPlan) -> ImportResult:
         existing[name] = category
         result.classes_created.append(name)
 
+    # Every image already in this project, by content. Loaded once: a 5,000-file
+    # import would otherwise issue 5,000 SELECTs to ask the same question.
+    seen_hashes = {
+        h
+        for h in db.scalars(
+            select(Image.content_hash).where(
+                Image.project_id == project_id, Image.content_hash.is_not(None)
+            )
+        ).all()
+    }
+
     # --- images + annotations ----------------------------------------------
     for group in plan.groups:
         for name, path in group.image_files.items():
             try:
                 content = path.read_bytes()
+                # Checked before saving, so re-importing a folder doesn't strew
+                # orphaned copies of every image across storage/.
+                digest = storage.content_digest(content)
+                if digest in seen_hashes:
+                    result.duplicates_skipped += 1
+                    continue
                 saved = storage.save_image(project_id, content, name)
+                seen_hashes.add(digest)
             except (storage.ImageRejected, OSError) as exc:
                 result.skipped.append(f"{name}: {exc}")
                 continue
@@ -655,6 +677,7 @@ def execute(db, project_id: int, plan: ImportPlan) -> ImportResult:
                 width=saved.width,
                 height=saved.height,
                 size_bytes=saved.size_bytes,
+                content_hash=saved.content_hash,
                 split=group.split,
             )
             db.add(image)

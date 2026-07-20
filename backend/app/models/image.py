@@ -73,6 +73,22 @@ class Image(Base):
     height: Mapped[int] = mapped_column(Integer, nullable=False)
     size_bytes: Mapped[int] = mapped_column(Integer, nullable=False)
 
+    # SHA-256 of the image BYTES, used to recognise a re-upload of the same
+    # picture. Not unique at the DB level: the same photo legitimately appears
+    # in two different projects, and NULL is expected on rows created before
+    # this column existed (see scripts/backfill_content_hash.py).
+    #
+    # Hashing the content rather than trusting the filename is the whole point.
+    # Every stored name is a fresh UUID and every dataset calls its files
+    # img_0001.jpg, so neither is evidence of anything. Uploading the same
+    # folder twice used to silently double the dataset — and duplicate images
+    # are worse than wasted disk: they bias training toward whatever was
+    # duplicated, and a copy landing in train while the original is in val
+    # leaks evaluation data into the training set.
+    content_hash: Mapped[str | None] = mapped_column(
+        String(64), default=None, index=True
+    )
+
     # --- Split --------------------------------------------------------------
     #
     # train | val | test. Defaults to train so an upload is never blocked on a

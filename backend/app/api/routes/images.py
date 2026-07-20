@@ -5,7 +5,16 @@ import tempfile
 import zipfile
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Response,
+    UploadFile,
+    status,
+)
 from pydantic import BaseModel
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
@@ -23,6 +32,7 @@ router = APIRouter(tags=["images"])
 @router.get("/projects/{project_id}/images", response_model=list[ImageRead])
 def list_images(
     project_id: int,
+    response: Response,
     limit: int = 200,
     offset: int = 0,
     db: Session = Depends(get_db),
@@ -34,6 +44,13 @@ def list_images(
     project gets real. limit is clamped server-side — a client asking for
     ?limit=999999 doesn't get to decide how much memory we allocate.
 
+    THE TOTAL COMES BACK IN THE `X-Total-Count` HEADER. Without it a client
+    cannot tell "200 images" from "the first 200 of 5,000", and that is exactly
+    what went wrong: the grid asked for the default page, got 200 rows, and
+    rendered them as if they were the whole dataset. A header rather than an
+    envelope keeps the response body a plain list, so the callers that legitimately
+    want "some images" (Review, Visualize) need no changes.
+
     Ordered by id ASC, not DESC: the review workflow walks the dataset in a
     stable order, and "next image" should mean the next one, not a list that
     reshuffles as you upload.
@@ -44,6 +61,11 @@ def list_images(
     get_project_or_404(project_id, db)
     limit = max(1, min(limit, 500))
     offset = max(0, offset)
+
+    total = db.scalar(
+        select(func.count(Image.id)).where(Image.project_id == project_id)
+    ) or 0
+    response.headers["X-Total-Count"] = str(total)
 
     counts = (
         select(
@@ -143,6 +165,8 @@ async def upload_images(
 
     saved: list[storage.SavedImage] = []
     skipped: list[str] = []
+    duplicates = 0
+    seen = _existing_hashes(db, project_id)
     import_results: list[dataset_import.ImportResult] = []
 
     for upload in files:
@@ -159,8 +183,15 @@ async def upload_images(
             except (ValueError, zipfile.BadZipFile) as exc:
                 skipped.append(f"{name}: {exc}")
         else:
+            # Recognise a re-upload BEFORE writing the bytes, so a repeated
+            # folder doesn't leave a pile of orphaned files on disk.
+            digest = storage.content_digest(content)
+            if digest in seen:
+                duplicates += 1
+                continue
             try:
                 saved.append(storage.save_image(project_id, content, name))
+                seen.add(digest)  # catches duplicates WITHIN one batch too
             except storage.ImageRejected as exc:
                 skipped.append(f"{name}: {exc}")
 
@@ -179,9 +210,12 @@ async def upload_images(
     if not saved and skipped:
         # Nothing at all was storable. A 201 here would be a lie, and the UI
         # would show a success toast for an upload that did nothing.
+        #
+        # Every reason, not the first five: with a whole folder rejected, the
+        # one line explaining why is often not among the first few.
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No valid images found. " + "; ".join(skipped[:5]),
+            detail="No valid images found.\n" + "\n".join(skipped),
         )
 
     # One commit for the whole batch, not one per file. 500 individual commits
@@ -195,6 +229,7 @@ async def upload_images(
             width=s.width,
             height=s.height,
             size_bytes=s.size_bytes,
+            content_hash=s.content_hash,
         )
         for s in saved
     ]
@@ -206,6 +241,7 @@ async def upload_images(
     response = UploadResult(
         uploaded=[ImageRead.model_validate(r) for r in rows],
         skipped=skipped,
+        duplicates_skipped=duplicates,
     )
     # Merge in anything a zip contributed alongside loose files in the same
     # request (rare, but the UI allows dropping both at once).
@@ -216,6 +252,7 @@ async def upload_images(
         response.splits = merged.splits
         response.has_split_folders = merged.has_split_folders
         response.notes = merged.notes
+        response.duplicates_skipped += merged.duplicates_skipped
     return response
 
 
@@ -224,6 +261,24 @@ async def upload_images(
 #: Files that carry labels rather than pixels. Their presence in a selection is
 #: what turns "upload these pictures" into "import this dataset".
 ANNOTATION_SUFFIXES = {".json", ".txt", ".yaml", ".yml"}
+
+
+def _existing_hashes(db: Session, project_id: int) -> set[str]:
+    """Content hashes already in this project.
+
+    Fetched once per request rather than queried per file: a 400-image batch
+    would otherwise issue 400 SELECTs to ask the same question. Rows predating
+    the column have NULL and are excluded — they simply can't participate in
+    duplicate detection until the backfill script has run over them.
+    """
+    return {
+        h
+        for h in db.scalars(
+            select(Image.content_hash).where(
+                Image.project_id == project_id, Image.content_hash.is_not(None)
+            )
+        ).all()
+    }
 
 
 def _has_annotation_files(files: list[UploadFile]) -> bool:
@@ -344,6 +399,7 @@ def _merge_results(
         merged.skipped.extend(r.skipped)
         merged.notes.extend(r.notes)
         merged.has_split_folders = merged.has_split_folders or r.has_split_folders
+        merged.duplicates_skipped += r.duplicates_skipped
         for split, n in r.splits.items():
             merged.splits[split] = merged.splits.get(split, 0) + n
     merged.skipped.extend(extra_skipped)
@@ -370,6 +426,7 @@ def _result_to_response(
         splits=merged.splits,
         has_split_folders=merged.has_split_folders,
         notes=merged.notes,
+        duplicates_skipped=merged.duplicates_skipped,
     )
 
 

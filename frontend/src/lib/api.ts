@@ -28,25 +28,78 @@ export class ApiError extends Error {
   }
 }
 
-async function request<T>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${BASE_URL}${path}`, {
-    headers: { 'Content-Type': 'application/json', ...options?.headers },
-    ...options,
-  })
-
-  if (!res.ok) {
-    // FastAPI reports errors as {"detail": "..."} by convention. Fall back to
-    // the status text when the body isn't JSON (e.g. a proxy error page), so a
-    // dead backend produces a readable message instead of a JSON parse crash.
-    let detail = res.statusText
-    try {
-      const body = await res.json()
-      detail = body.detail ?? detail
-    } catch {
-      /* non-JSON body — keep statusText */
-    }
-    throw new ApiError(detail, res.status)
+/**
+ * Turn a failed Response into a message worth reading.
+ *
+ * FastAPI reports errors as {"detail": ...} by convention, but `detail` is not
+ * always a string: a 422 carries an ARRAY of per-field validation objects, and
+ * rendering that with template interpolation produced the useless
+ * "[object Object]". Each shape is unpacked to something a person can act on.
+ */
+async function describeFailure(res: Response): Promise<string> {
+  let body: unknown
+  try {
+    body = await res.json()
+  } catch {
+    // Not JSON at all — a proxy error page, or a dead backend. The status line
+    // is all there is, and it beats a JSON parse crash.
+    return `${res.status} ${res.statusText}`
   }
+
+  const detail = (body as { detail?: unknown })?.detail
+  if (typeof detail === 'string') return detail
+
+  if (Array.isArray(detail)) {
+    // Pydantic validation errors: [{loc: [...], msg: "...", type: "..."}]
+    return detail
+      .map((e) => {
+        const item = e as { loc?: unknown[]; msg?: string }
+        // Drop the leading "body"/"query" frame — it names the HTTP envelope,
+        // not the field the user got wrong.
+        const where = (item.loc ?? []).slice(1).join('.')
+        return where ? `${where}: ${item.msg}` : item.msg
+      })
+      .filter(Boolean)
+      .join('; ')
+  }
+
+  if (detail) return JSON.stringify(detail)
+  return `${res.status} ${res.statusText}`
+}
+
+/**
+ * A fetch() rejection, explained.
+ *
+ * fetch only rejects for network-level failures, and the browser deliberately
+ * gives one opaque message ("Failed to fetch" / "NetworkError") for all of them
+ * so a page can't probe the network. That message alone is useless to someone
+ * staring at an upload that didn't work, so we say what it can actually mean.
+ */
+function describeNetworkFailure(err: unknown, context: string): ApiError {
+  const raw = err instanceof Error ? err.message : String(err)
+  return new ApiError(
+    `Could not reach the server (${raw}).\n\n` +
+      `This is a connection-level failure, so there is no server message to ` +
+      `show. Usual causes, most likely first:\n` +
+      `  • ${context}\n` +
+      `  • the backend stopped — check the window running start.bat\n` +
+      `  • the request was refused before it finished sending`,
+    0,
+  )
+}
+
+async function request<T>(path: string, options?: RequestInit): Promise<T> {
+  let res: Response
+  try {
+    res = await fetch(`${BASE_URL}${path}`, {
+      headers: { 'Content-Type': 'application/json', ...options?.headers },
+      ...options,
+    })
+  } catch (err) {
+    throw describeNetworkFailure(err, 'the backend is not running')
+  }
+
+  if (!res.ok) throw new ApiError(await describeFailure(res), res.status)
 
   // 204 No Content has no body to parse.
   if (res.status === 204) return undefined as T
@@ -81,18 +134,115 @@ async function upload<T>(path: string, files: File[]): Promise<T> {
     for (const p of relative) form.append('paths', p)
   }
 
-  const res = await fetch(`${BASE_URL}${path}`, { method: 'POST', body: form })
-
-  if (!res.ok) {
-    let detail = res.statusText
-    try {
-      detail = (await res.json()).detail ?? detail
-    } catch {
-      /* non-JSON body */
-    }
-    throw new ApiError(detail, res.status)
+  let res: Response
+  try {
+    res = await fetch(`${BASE_URL}${path}`, { method: 'POST', body: form })
+  } catch (err) {
+    throw describeNetworkFailure(
+      err,
+      `the batch was too large for one request (${files.length} files, ` +
+        `${(files.reduce((n, f) => n + f.size, 0) / 1048576).toFixed(0)} MB)`,
+    )
   }
+
+  if (!res.ok) throw new ApiError(await describeFailure(res), res.status)
   return res.json() as Promise<T>
+}
+
+// --- Batching a large upload ------------------------------------------------
+//
+// Starlette refuses a multipart request carrying more than 1000 files, and it
+// refuses it partway through RECEIVING the body. The browser is still uploading
+// when the connection closes, so it never gets to read the 400 — it reports the
+// opaque "Failed to fetch" and the real reason ("Too many files. Maximum number
+// of files is 1000.") is never seen. A 5,000-image dataset hit this every time.
+//
+// So the client sends batches. Deliberately well under the limit, because each
+// batch also carries its annotation sidecars.
+
+/** Files per request. 1000 is the wall; this leaves room for sidecars. */
+const BATCH_MAX_FILES = 400
+/** Bytes per request. Bounds how much the server buffers at once, and keeps a
+ *  single failure from costing a large re-send. Generous because this is
+ *  loopback, not a network. */
+const BATCH_MAX_BYTES = 128 * 1024 * 1024
+
+/** Files that describe other files rather than being dataset content. */
+const SIDECAR_RE = /\.(json|ya?ml|txt|names)$/i
+
+const isSidecar = (f: File) => SIDECAR_RE.test(f.name)
+
+/** The top-level folder a file sits in — "train" for "train/images/a.jpg".
+ *  This is the scope the importer resolves annotations within, so it is also
+ *  the scope a batch's sidecars have to be chosen by. */
+function topFolder(f: File): string {
+  const rel = f.webkitRelativePath || ''
+  const parts = rel.split('/').filter(Boolean)
+  // parts[0] is the picked folder itself; parts[1] is the split.
+  return parts.length > 2 ? parts[1] : ''
+}
+
+/**
+ * Split a selection into batches the server will accept.
+ *
+ * Every batch carries the sidecars for its own top-level folder, plus any
+ * root-level ones (a YOLO data.yaml). That repetition is the price of a
+ * stateless endpoint: the server resolves each batch independently, so the
+ * annotations describing a batch's images must arrive WITH them. Scoping by
+ * folder keeps the cost bounded — a 25 MB train_coco.json rides along with
+ * train's batches only, never with test's.
+ */
+export function planUploadBatches(files: File[]): File[][] {
+  const images = files.filter((f) => !isSidecar(f))
+  const sidecars = files.filter(isSidecar)
+
+  // No folder structure and few enough files: one request, no repetition.
+  if (images.length + sidecars.length <= BATCH_MAX_FILES) {
+    const bytes = files.reduce((n, f) => n + f.size, 0)
+    if (bytes <= BATCH_MAX_BYTES) return files.length ? [files] : []
+  }
+
+  const rootSidecars = sidecars.filter((f) => topFolder(f) === '')
+  const sidecarsFor = (folder: string) => [
+    ...sidecars.filter((f) => f !== undefined && topFolder(f) === folder && folder !== ''),
+    ...rootSidecars,
+  ]
+
+  // Group by folder so each batch has one sidecar set, then fill batches.
+  const byFolder = new Map<string, File[]>()
+  for (const f of images) {
+    const key = topFolder(f)
+    const list = byFolder.get(key)
+    if (list) list.push(f)
+    else byFolder.set(key, [f])
+  }
+
+  const batches: File[][] = []
+  for (const [folder, group] of byFolder) {
+    const extras = sidecarsFor(folder)
+    const extraBytes = extras.reduce((n, f) => n + f.size, 0)
+    let current: File[] = []
+    let bytes = 0
+    for (const f of group) {
+      const wouldOverflow =
+        current.length + extras.length + 1 > BATCH_MAX_FILES ||
+        (current.length > 0 && bytes + extraBytes + f.size > BATCH_MAX_BYTES)
+      if (wouldOverflow) {
+        batches.push([...current, ...extras])
+        current = []
+        bytes = 0
+      }
+      current.push(f)
+      bytes += f.size
+    }
+    if (current.length) batches.push([...current, ...extras])
+  }
+
+  // A selection of nothing but sidecars still deserves to reach the server, so
+  // it can answer "no images found in that folder" rather than silently doing
+  // nothing.
+  if (!batches.length && sidecars.length) batches.push(sidecars)
+  return batches
 }
 
 export const api = {
@@ -178,6 +328,9 @@ export interface UploadResult {
   notes: string[]
   /** Imported train data with no validation set — prompt for a percentage. */
   needs_val_split: boolean
+  /** Images already in the project byte-for-byte, so not added again.
+   *  Re-uploading a folder used to silently double the dataset. */
+  duplicates_skipped: number
 }
 
 // --- Endpoints ------------------------------------------------------------
@@ -201,8 +354,129 @@ export const deleteClass = (classId: number) => api.delete<void>(`/classes/${cla
 
 export const listImages = (projectId: number) =>
   api.get<DatasetImage[]>(`/projects/${projectId}/images`)
-export const uploadImages = (projectId: number, files: File[]) =>
-  api.upload<UploadResult>(`/projects/${projectId}/images`, files)
+
+/** One page of images, plus how many there are in total.
+ *
+ *  The plain `listImages` above returns whatever the server's default page is,
+ *  which is fine for callers that just want "some images" (Review, Visualize)
+ *  and wrong for the grid, which is meant to show the dataset. */
+export async function listImagePage(
+  projectId: number,
+  limit: number,
+  offset: number,
+): Promise<{ images: DatasetImage[]; total: number }> {
+  let res: Response
+  try {
+    res = await fetch(
+      `${BASE_URL}/projects/${projectId}/images?limit=${limit}&offset=${offset}`,
+    )
+  } catch (err) {
+    throw describeNetworkFailure(err, 'the backend is not running')
+  }
+  if (!res.ok) throw new ApiError(await describeFailure(res), res.status)
+
+  const images = (await res.json()) as DatasetImage[]
+  // Absent header (an old backend, or a proxy that stripped it) degrades to
+  // "what we can see", which is the previous behaviour rather than a crash.
+  const total = Number(res.headers.get('X-Total-Count') ?? images.length)
+  return { images, total: Number.isFinite(total) ? total : images.length }
+}
+/** Progress of a batched upload, for the panel's status line. */
+export interface UploadProgress {
+  batch: number
+  batches: number
+  filesSent: number
+  filesTotal: number
+}
+
+/**
+ * Upload a selection, in as many requests as it takes.
+ *
+ * Sequential, not parallel: the server writes every batch into the same project
+ * and merges classes by name as it goes, so overlapping requests would race on
+ * creating the same class. It also keeps the progress number honest and stops a
+ * huge folder from opening six connections that each buffer 128 MB.
+ *
+ * A failing batch aborts the rest rather than pressing on. Continuing would
+ * leave a half-imported dataset whose splits and class list are silently
+ * incomplete, which is harder to notice — and to undo — than a clear failure
+ * partway through, which the reported counts describe exactly.
+ */
+export async function uploadImages(
+  projectId: number,
+  files: File[],
+  onProgress?: (p: UploadProgress) => void,
+): Promise<UploadResult> {
+  const batches = planUploadBatches(files)
+  const imagesTotal = files.filter((f) => !SIDECAR_RE.test(f.name)).length
+
+  let merged: UploadResult | null = null
+  let sent = 0
+
+  for (let i = 0; i < batches.length; i++) {
+    onProgress?.({
+      batch: i + 1,
+      batches: batches.length,
+      filesSent: sent,
+      filesTotal: imagesTotal,
+    })
+    const result = await api.upload<UploadResult>(
+      `/projects/${projectId}/images`,
+      batches[i],
+    )
+    sent += batches[i].filter((f) => !SIDECAR_RE.test(f.name)).length
+    merged = merged ? mergeUploadResults(merged, result) : result
+  }
+
+  onProgress?.({
+    batch: batches.length,
+    batches: batches.length,
+    filesSent: sent,
+    filesTotal: imagesTotal,
+  })
+
+  return (
+    merged ?? {
+      uploaded: [],
+      skipped: [],
+      uploaded_count: 0,
+      skipped_count: 0,
+      annotations_imported: 0,
+      classes_created: [],
+      splits: {},
+      has_split_folders: false,
+      notes: [],
+      needs_val_split: false,
+      duplicates_skipped: 0,
+    }
+  )
+}
+
+/** Fold one batch's result into the running total.
+ *
+ *  `uploaded` keeps only a bounded sample: a 5,000-image import would otherwise
+ *  hold every row in memory to render a panel that shows a count. */
+function mergeUploadResults(a: UploadResult, b: UploadResult): UploadResult {
+  const splits = { ...a.splits }
+  for (const [k, v] of Object.entries(b.splits)) splits[k] = (splits[k] ?? 0) + v
+  return {
+    uploaded: [...a.uploaded, ...b.uploaded].slice(0, 200),
+    skipped: [...a.skipped, ...b.skipped],
+    uploaded_count: a.uploaded_count + b.uploaded_count,
+    skipped_count: a.skipped_count + b.skipped_count,
+    annotations_imported: a.annotations_imported + b.annotations_imported,
+    // Classes are created once and reused by later batches, so the union is the
+    // set created across the whole import — not a per-batch tally.
+    classes_created: [...new Set([...a.classes_created, ...b.classes_created])],
+    splits,
+    has_split_folders: a.has_split_folders || b.has_split_folders,
+    notes: [...new Set([...a.notes, ...b.notes])],
+    // Recomputed from the merged totals: a batch of only-train images says
+    // "needs val" even when a later batch supplies one.
+    needs_val_split: (splits.train ?? 0) > 0 && (splits.val ?? 0) === 0,
+    duplicates_skipped: a.duplicates_skipped + b.duplicates_skipped,
+  }
+}
 export const deleteImage = (imageId: number) => api.delete<void>(`/images/${imageId}`)
 /** Delete several images — also how "delete all" is sent, so selecting
  *  everything takes the same path as selecting one. `recoverable` is true when

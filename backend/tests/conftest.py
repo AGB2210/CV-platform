@@ -19,6 +19,7 @@ tests exercise the real endpoints against them. Fast, deterministic, no GPU.
 from __future__ import annotations
 
 import io
+import itertools
 
 import pytest
 from fastapi.testclient import TestClient
@@ -73,8 +74,27 @@ def client(tmp_path, monkeypatch):
     app.dependency_overrides.clear()
 
 
-def png_bytes(w: int = 64, h: int = 48, colour=(180, 60, 60)) -> bytes:
-    """A tiny valid PNG for upload tests."""
+#: Makes each png_bytes() call produce different bytes. See below.
+_png_counter = itertools.count()
+
+
+def png_bytes(w: int = 64, h: int = 48, colour=None) -> bytes:
+    """A tiny valid PNG for upload tests. DISTINCT bytes on every call.
+
+    Upload deduplicates by content hash, so a helper that returned the same
+    image every time would have every file after the first recognised as a
+    re-upload and skipped — and dozens of tests would fail for a reason with
+    nothing to do with what they were testing. Real datasets contain distinct
+    pictures, so distinct-by-default is also the realistic fixture.
+
+    Pass an explicit `colour` to get deterministic, repeatable bytes — that's
+    how the duplicate-detection tests ask for the *same* image twice.
+    """
+    if colour is None:
+        n = next(_png_counter)
+        # Walk the colour cube so consecutive calls differ visibly as well as
+        # byte-wise, which helps when a failure dumps an image.
+        colour = (30 + (n * 37) % 220, 60 + (n * 53) % 190, 90 + (n * 71) % 160)
     buf = io.BytesIO()
     PILImage.new("RGB", (w, h), colour).save(buf, "PNG")
     return buf.getvalue()
@@ -89,11 +109,23 @@ def make_project(client, name="Test", classes=("car", "person")) -> int:
 
 
 def upload_images(client, pid: int, names: list[str]) -> list[dict]:
-    """Upload N images, return the created image rows."""
-    files = [("files", (n, png_bytes(), "image/png")) for n in names]
+    """Upload N DISTINCT images, return the created image rows.
+
+    Each gets its own colour, so each has its own bytes. That matters since
+    upload deduplicates by content hash: a helper handing the same PNG to every
+    name would have the second one onwards recognised as re-uploads and skipped,
+    and every test built on it would fail for a reason that has nothing to do
+    with what it was testing.
+
+    Real datasets have distinct images, so this is the realistic fixture — the
+    identical-bytes case belongs in the tests that are actually about duplicates.
+    """
+    files = [
+        ("files", (n, png_bytes(), "image/png")) for n in names
+    ]
     r = client.post(f"/api/projects/{pid}/images", files=files)
     assert r.status_code == 201, r.text
-    return client.get(f"/api/projects/{pid}/images").json()
+    return client.get(f"/api/projects/{pid}/images?limit=500").json()
 
 
 def add_proposals(client, image_id: int, category_id: int, n: int = 1) -> list[int]:

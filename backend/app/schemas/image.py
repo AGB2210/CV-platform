@@ -74,6 +74,9 @@ class UploadResult(BaseModel):
     #: split was chosen by the user's own data rather than defaulted by us.
     has_split_folders: bool = False
     notes: list[str] = []
+    #: Images already in this project byte-for-byte, so not added again.
+    #: Re-importing a folder used to silently double the dataset.
+    duplicates_skipped: int = 0
 
     @computed_field  # type: ignore[prop-decorator]
     @property

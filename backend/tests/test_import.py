@@ -503,3 +503,97 @@ def test_no_train_split_says_so_plainly(client):
     p = client.get(f"/api/projects/{pid}/train/preview").json()
     assert p["can_train"] is False
     assert any("No training images" in w for w in p["warnings"])
+
+
+# --- re-uploading the same data ---------------------------------------------
+# Images are identified by the SHA-256 of their bytes. Neither filename tells
+# you anything: stored names are generated UUIDs, and every dataset in the world
+# calls its files img_0001.jpg.
+
+
+def test_uploading_the_same_folder_twice_adds_nothing(client):
+    """THE bug this guards: re-uploading a folder used to DOUBLE the dataset.
+
+    Silently — nothing in the result said anything had been recognised. On a
+    5,000-image dataset that is 10,000 images, and duplicates are worse than
+    wasted disk: they bias training toward whatever was duplicated, and a copy
+    landing in train while the original sits in val leaks evaluation data
+    straight into the training set.
+    """
+    doc = {
+        "images": [{"id": 1, "file_name": "a.png", "width": 64, "height": 48}],
+        "annotations": [
+            {"id": 1, "image_id": 1, "category_id": 1, "bbox": [5, 5, 20, 20]}
+        ],
+        "categories": [{"id": 1, "name": "widget"}],
+    }
+    # An explicit colour makes png_bytes deterministic, so both uploads really
+    # do carry the same picture.
+    tree = {
+        "ds/train/a.png": png_bytes(64, 48, colour=(10, 20, 30)),
+        "ds/train/ann.json": json.dumps(doc).encode(),
+    }
+    pid = client.post("/api/projects", json={"name": "Twice"}).json()["id"]
+
+    first = client.post(f"/api/projects/{pid}/images", files=_folder_files(tree)).json()
+    assert first["uploaded_count"] == 1
+    assert first["annotations_imported"] == 1
+    assert first["duplicates_skipped"] == 0
+
+    second = client.post(f"/api/projects/{pid}/images", files=_folder_files(tree)).json()
+    assert second["uploaded_count"] == 0, "nothing new"
+    assert second["duplicates_skipped"] == 1, "and it says so"
+    assert second["annotations_imported"] == 0, "no second copy of the boxes either"
+
+    assert len(client.get(f"/api/projects/{pid}/images").json()) == 1
+    stats = client.get(f"/api/projects/{pid}/dataset/stats").json()
+    assert stats["total_boxes"] == 1, "boxes did not double"
+
+
+def test_a_renamed_copy_is_still_a_duplicate(client):
+    """Identity is the bytes, not the name — the same photo under two filenames
+    is one picture."""
+    same = png_bytes(64, 48, colour=(90, 40, 10))
+    pid = client.post("/api/projects", json={"name": "Renamed"}).json()["id"]
+
+    client.post(
+        f"/api/projects/{pid}/images",
+        files=[("files", ("original.png", same, "image/png"))],
+    )
+    body = client.post(
+        f"/api/projects/{pid}/images",
+        files=[("files", ("a-copy-with-a-different-name.png", same, "image/png"))],
+    ).json()
+    assert body["uploaded_count"] == 0
+    assert body["duplicates_skipped"] == 1
+
+
+def test_duplicates_within_a_single_upload_are_collapsed(client):
+    """The same file picked twice in one selection lands once."""
+    same = png_bytes(64, 48, colour=(5, 5, 5))
+    pid = client.post("/api/projects", json={"name": "SelfDup"}).json()["id"]
+    body = client.post(
+        f"/api/projects/{pid}/images",
+        files=[
+            ("files", ("a.png", same, "image/png")),
+            ("files", ("b.png", same, "image/png")),
+            ("files", ("c.png", png_bytes(64, 48, colour=(9, 9, 9)), "image/png")),
+        ],
+    ).json()
+    assert body["uploaded_count"] == 2
+    assert body["duplicates_skipped"] == 1
+
+
+def test_the_same_image_is_allowed_in_a_different_project(client):
+    """Dedup is scoped to a project. The same photo legitimately belongs to two
+    of them, and they have separate storage directories."""
+    same = png_bytes(64, 48, colour=(70, 70, 70))
+    a = client.post("/api/projects", json={"name": "First"}).json()["id"]
+    b = client.post("/api/projects", json={"name": "Second"}).json()["id"]
+    for pid in (a, b):
+        body = client.post(
+            f"/api/projects/{pid}/images",
+            files=[("files", ("x.png", same, "image/png"))],
+        ).json()
+        assert body["uploaded_count"] == 1
+        assert body["duplicates_skipped"] == 0
