@@ -11,6 +11,7 @@ from app.database import get_db
 from app.models import Category, DatasetVersion, Image, Project, TrainingJob
 from app.schemas import ProjectCreate, ProjectRead, ProjectUpdate
 from app.services import storage
+from app.services.naming import collides
 
 router = APIRouter(tags=["projects"])
 
@@ -29,6 +30,30 @@ def get_project_or_404(project_id: int, db: Session) -> Project:
             detail=f"Project {project_id} not found",
         )
     return project
+
+
+def _reject_duplicate_project(
+    db: Session, name: str, exclude_id: int | None = None
+) -> None:
+    """409 if another project already reads the same way.
+
+    Projects had no uniqueness check at all, so two "Street Scenes" could sit in
+    the list with nothing to tell them apart — and every screen that names the
+    project you're in (the sidebar, a run's provenance) becomes ambiguous.
+
+    Unlike classes there is no DB constraint to lean on, so this is the whole
+    guard. See services/naming.py on the race that implies and why it's
+    acceptable here.
+    """
+    query = select(Project.name)
+    if exclude_id is not None:
+        query = query.where(Project.id != exclude_id)
+    if collides(name, list(db.scalars(query).all())):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"A project named '{name.strip()}' already exists "
+            "(names are compared without regard to case).",
+        )
 
 
 def _last_activity(db: Session, project: Project) -> datetime:
@@ -154,6 +179,8 @@ def create_project(payload: ProjectCreate, db: Session = Depends(get_db)) -> Pro
     generated docs) that a new resource now exists, which is the whole point of
     using HTTP semantics instead of returning 200 for everything.
     """
+    _reject_duplicate_project(db, payload.name)
+
     project = Project(
         name=payload.name,
         description=payload.description,
@@ -186,7 +213,11 @@ def update_project(
     """
     project = get_project_or_404(project_id, db)
 
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    fields = payload.model_dump(exclude_unset=True)
+    if fields.get("name") is not None:
+        _reject_duplicate_project(db, fields["name"], exclude_id=project_id)
+
+    for field, value in fields.items():
         setattr(project, field, value)
 
     db.commit()

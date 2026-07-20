@@ -9,9 +9,25 @@ from app.database import get_db
 from app.enums import CLASS_COLORS
 from app.models import Category
 from app.schemas import CategoryCreate, CategoryRead, CategoryUpdate
+from app.services.naming import collides
 from app.api.routes.projects import get_project_or_404
 
 router = APIRouter(tags=["classes"])
+
+
+def _reject_duplicate_class(
+    db: Session, project_id: int, name: str, exclude_id: int | None = None
+) -> None:
+    """409 if this project already has a class reading the same way."""
+    query = select(Category.name).where(Category.project_id == project_id)
+    if exclude_id is not None:
+        query = query.where(Category.id != exclude_id)
+    if collides(name, list(db.scalars(query).all())):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"A class named '{name.strip()}' already exists in this project "
+            "(class names are compared without regard to case).",
+        )
 
 
 def _next_color(db: Session, project_id: int) -> str:
@@ -51,6 +67,13 @@ def create_class(
     """Add a class to a project."""
     get_project_or_404(project_id, db)
 
+    # Case-insensitive check BEFORE the insert. The unique constraint below
+    # catches exact duplicates, but SQLite compares strings case-sensitively, so
+    # "car" and "Car" both satisfy it — and then export as two classes, teaching
+    # the model to split one concept in half. See services/naming.py for why
+    # this half lives in the application rather than the schema.
+    _reject_duplicate_class(db, project_id, payload.name)
+
     category = Category(
         project_id=project_id,
         name=payload.name,
@@ -84,7 +107,13 @@ def update_class(
     if category is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, f"Class {class_id} not found")
 
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    fields = payload.model_dump(exclude_unset=True)
+    if "name" in fields and fields["name"] is not None:
+        # Excluding itself: renaming "car" to "Car" is a legitimate correction
+        # of its own capitalisation, not a collision with itself.
+        _reject_duplicate_class(db, category.project_id, fields["name"], exclude_id=class_id)
+
+    for field, value in fields.items():
         setattr(category, field, value)
 
     try:

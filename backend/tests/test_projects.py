@@ -56,3 +56,57 @@ def test_delete_cascades_to_images_and_classes(client):
         assert db.query(Annotation).count() == 0
     finally:
         db.close()
+
+
+# --- name uniqueness --------------------------------------------------------
+# One rule everywhere: names are compared stripped and case-folded. These had
+# drifted into three different answers — see services/naming.py.
+
+
+def test_duplicate_project_name_rejected(client):
+    assert client.post("/api/projects", json={"name": "Street Scenes"}).status_code == 201
+    r = client.post("/api/projects", json={"name": "Street Scenes"})
+    assert r.status_code == 409
+
+
+def test_project_name_duplicate_check_ignores_case_and_space(client):
+    client.post("/api/projects", json={"name": "Street Scenes"})
+    for variant in ("street scenes", "STREET SCENES", "  Street Scenes  "):
+        r = client.post("/api/projects", json={"name": variant})
+        assert r.status_code == 409, f"{variant!r} should collide"
+
+
+def test_renaming_a_project_to_an_existing_name_is_rejected(client):
+    a = client.post("/api/projects", json={"name": "Alpha"}).json()
+    client.post("/api/projects", json={"name": "Beta"})
+    assert client.patch(f"/api/projects/{a['id']}", json={"name": "beta"}).status_code == 409
+    # ...but renaming itself, including just its capitalisation, is fine.
+    assert client.patch(f"/api/projects/{a['id']}", json={"name": "ALPHA"}).status_code == 200
+
+
+def test_duplicate_class_name_rejected_case_insensitively(client):
+    """THE bug this guards: the DB unique constraint is case-SENSITIVE in
+    SQLite, so "car" and "Car" both existed — and then export as two separate
+    classes, teaching the model to split one concept in half."""
+    pid = client.post("/api/projects", json={"name": "Classy"}).json()["id"]
+    assert client.post(f"/api/projects/{pid}/classes", json={"name": "car"}).status_code == 201
+    for variant in ("Car", "CAR", " car "):
+        r = client.post(f"/api/projects/{pid}/classes", json={"name": variant})
+        assert r.status_code == 409, f"{variant!r} should collide"
+    assert len(client.get(f"/api/projects/{pid}/classes").json()) == 1
+
+
+def test_same_class_name_in_a_different_project_is_fine(client):
+    """Class names are scoped to their project — "car" belongs in many."""
+    a = client.post("/api/projects", json={"name": "A"}).json()["id"]
+    b = client.post("/api/projects", json={"name": "B"}).json()["id"]
+    assert client.post(f"/api/projects/{a}/classes", json={"name": "car"}).status_code == 201
+    assert client.post(f"/api/projects/{b}/classes", json={"name": "car"}).status_code == 201
+
+
+def test_renaming_a_class_to_fix_its_own_capitalisation(client):
+    pid = client.post("/api/projects", json={"name": "Fixup"}).json()["id"]
+    cid = client.post(f"/api/projects/{pid}/classes", json={"name": "car"}).json()["id"]
+    r = client.patch(f"/api/classes/{cid}", json={"name": "Car"})
+    assert r.status_code == 200, "a class does not collide with itself"
+    assert r.json()["name"] == "Car"

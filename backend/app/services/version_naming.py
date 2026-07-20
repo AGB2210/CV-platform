@@ -14,6 +14,8 @@ on what counts as a duplicate.
 
 from __future__ import annotations
 
+from app.services.naming import normalized
+
 
 class DuplicateNameError(Exception):
     """The requested name collides with another version's label."""
@@ -50,14 +52,14 @@ def ensure_unique(
         return
 
     # What another version currently displays as...
-    taken = {label_for(n, v).casefold() for n, v in others}
+    taken = {normalized(label_for(n, v)) for n, v in others}
     # ...plus every other version's NUMERIC label, even when it has a custom
     # name. "v2" always means version 2: without this, renaming v2 to "baseline"
     # would free up "v2" for version 5 to claim, and the number would stop
     # meaning anything.
-    taken |= {f"v{v}".casefold() for _, v in others}
+    taken |= {normalized(f"v{v}") for _, v in others}
 
-    if new_name.casefold() in taken:
+    if normalized(new_name) in taken:
         raise DuplicateNameError(
             f"“{new_name}” is already used by another version. Pick a different name."
         )
