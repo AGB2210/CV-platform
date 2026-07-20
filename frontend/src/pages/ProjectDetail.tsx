@@ -5,6 +5,7 @@ import {
   Cpu,
   Eye,
   History,
+  Pencil,
   Plus,
   RotateCcw,
   Save,
@@ -18,18 +19,29 @@ import {
 import { PageBody, PageHeader } from '@/components/layout/AppShell'
 import { ConfirmDialog } from '@/components/ui/Modal'
 import {
+  RenameDialog,
+  RowAction,
+  RowCheckbox,
+  SelectionToolbar,
+} from '@/components/VersionAdmin'
+import { useVersionSelection } from '@/lib/useVersionSelection'
+import {
+  bulkDeleteDatasetVersions,
   createClass,
   deleteClass,
+  deleteDatasetVersion,
   deleteImage,
   getProject,
   listClasses,
   listDatasetVersions,
   listImages,
+  renameDatasetVersion,
   restoreDatasetVersion,
   resplitDataset,
   saveDatasetVersion,
   setSplitForImages,
   uploadImages,
+  versionLabel,
   type DatasetImage,
   type DatasetVersion,
   type Project,
@@ -251,6 +263,10 @@ function VersionPanel({
   const [target, setTarget] = useState<DatasetVersion | null>(null)
   const [busy, setBusy] = useState(false)
   const [outcome, setOutcome] = useState<string | null>(null)
+  const [renaming, setRenaming] = useState<DatasetVersion | null>(null)
+  const [deleting, setDeleting] = useState<DatasetVersion | null>(null)
+  const [bulkOpen, setBulkOpen] = useState(false)
+  const { selected, toggle, toggleAll, clear } = useVersionSelection()
 
   async function save() {
     setSaving(true)
@@ -290,6 +306,37 @@ function VersionPanel({
     } catch (e) {
       onError((e as Error).message)
       setTarget(null)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function removeOne(v: DatasetVersion) {
+    setBusy(true)
+    onError(null)
+    try {
+      await deleteDatasetVersion(projectId, v.id)
+      setOutcome(`Deleted ${versionLabel(v)}.`)
+      setDeleting(null)
+      onChanged()
+    } catch (e) {
+      onError((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function removeSelected() {
+    setBusy(true)
+    onError(null)
+    try {
+      const r = await bulkDeleteDatasetVersions(projectId, [...selected])
+      setOutcome(`Deleted ${r.deleted} version(s).`)
+      clear()
+      setBulkOpen(false)
+      onChanged()
+    } catch (e) {
+      onError((e as Error).message)
     } finally {
       setBusy(false)
     }
@@ -340,39 +387,103 @@ function VersionPanel({
       </div>
 
       {versions.length > 0 && (
-        <ul className="max-h-72 divide-y divide-gray-100 overflow-y-auto">
-          {versions.map((v) => (
-            <li key={v.id} className="px-3 py-2 text-xs">
-              <div className="flex items-center justify-between gap-2">
-                <span className="flex items-center gap-1.5 font-medium text-gray-800">
-                  v{v.version}
-                  {v.id === latest?.id && (
-                    <span className="rounded bg-accent-100 px-1 py-px text-[9px] font-medium uppercase tracking-wide text-accent-700">
-                      latest
+        <>
+          <SelectionToolbar
+            count={selected.size}
+            total={versions.length}
+            onToggleAll={() => toggleAll(versions.map((v) => v.id))}
+            onDelete={() => setBulkOpen(true)}
+            busy={busy}
+          />
+          <ul className="max-h-72 divide-y divide-gray-100 overflow-y-auto">
+            {versions.map((v) => (
+              <li key={v.id} className="flex gap-2 px-3 py-2 text-xs">
+                <RowCheckbox
+                  checked={selected.has(v.id)}
+                  onChange={() => toggle(v.id)}
+                  label={`Select ${versionLabel(v)}`}
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center justify-between gap-1">
+                    <span className="flex min-w-0 items-center gap-1.5 font-medium text-gray-800">
+                      <span className="truncate">{versionLabel(v)}</span>
+                      {v.id === latest?.id && (
+                        <span className="shrink-0 rounded bg-accent-100 px-1 py-px text-[9px] font-medium uppercase tracking-wide text-accent-700">
+                          latest
+                        </span>
+                      )}
                     </span>
-                  )}
-                </span>
-                {/* Every version is restorable, INCLUDING the latest. Being the
-                    newest save doesn't mean the live dataset still matches it —
-                    delete some images and the two diverge immediately, and
-                    restoring the latest save is exactly the recovery you want. */}
-                <button
-                  onClick={() => setTarget(v)}
-                  className="flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] text-accent-700 hover:bg-accent-50"
-                >
-                  <RotateCcw size={11} />
-                  Restore
-                </button>
-              </div>
-              <p className="tabular-nums text-gray-500">
-                {v.total_images} imgs · {v.total_boxes} boxes ·{' '}
-                {new Date(v.created_at).toLocaleString()}
-              </p>
-              {v.note && <p className="truncate text-gray-400">{v.note}</p>}
-            </li>
-          ))}
-        </ul>
+                    <span className="flex shrink-0 items-center gap-0.5">
+                      <RowAction onClick={() => setRenaming(v)} title={`Rename ${versionLabel(v)}`}>
+                        <Pencil size={11} />
+                      </RowAction>
+                      <RowAction onClick={() => setDeleting(v)} title={`Delete ${versionLabel(v)}`} danger>
+                        <Trash2 size={11} />
+                      </RowAction>
+                    </span>
+                  </div>
+                  {/* Every version is restorable, INCLUDING the latest. Being the
+                      newest save doesn't mean the live dataset still matches it —
+                      delete some images and the two diverge immediately, and
+                      restoring the latest save is exactly the recovery you want. */}
+                  <button
+                    onClick={() => setTarget(v)}
+                    className="flex items-center gap-1 rounded text-[11px] text-accent-700 hover:underline"
+                  >
+                    <RotateCcw size={10} />
+                    Restore
+                  </button>
+                  <p className="tabular-nums text-gray-500">
+                    {v.total_images} imgs · {v.total_boxes} boxes ·{' '}
+                    {new Date(v.created_at).toLocaleString()}
+                  </p>
+                  {v.note && <p className="truncate text-gray-400">{v.note}</p>}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </>
       )}
+
+      <RenameDialog
+        open={renaming !== null}
+        currentName={renaming?.name ?? null}
+        fallbackLabel={`v${renaming?.version ?? ''}`}
+        onClose={() => setRenaming(null)}
+        onSave={async (name) => {
+          if (!renaming) return
+          await renameDatasetVersion(projectId, renaming.id, name)
+          onChanged()
+        }}
+      />
+
+      <ConfirmDialog
+        open={deleting !== null}
+        onClose={() => setDeleting(null)}
+        onConfirm={() => void (deleting && removeOne(deleting))}
+        title={`Delete ${deleting ? versionLabel(deleting) : ''}?`}
+        message={
+          `This permanently deletes the saved snapshot, so this dataset state can no ` +
+          `longer be restored or trained.\n\n` +
+          `Your images and their annotations are NOT affected — only this save point.`
+        }
+        confirmLabel="Delete"
+        busy={busy}
+      />
+
+      <ConfirmDialog
+        open={bulkOpen}
+        onClose={() => setBulkOpen(false)}
+        onConfirm={() => void removeSelected()}
+        title={`Delete ${selected.size} version(s)?`}
+        message={
+          `This permanently deletes ${selected.size} saved snapshot(s). Those dataset ` +
+          `states can no longer be restored or trained.\n\n` +
+          `Your images and their annotations are NOT affected.`
+        }
+        confirmLabel={`Delete ${selected.size}`}
+        busy={busy}
+      />
 
       <ConfirmDialog
         open={target !== null}

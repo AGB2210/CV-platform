@@ -8,20 +8,34 @@ import {
   Database,
   GitBranch,
   Layers,
+  Pencil,
   Play,
   SlidersHorizontal,
+  Trash2,
 } from 'lucide-react'
 import { PageBody, PageHeader } from '@/components/layout/AppShell'
 import { StatusBadge, type Status } from '@/components/StatusBadge'
 import { MetricsChart } from '@/components/MetricsChart'
+import { ConfirmDialog } from '@/components/ui/Modal'
 import {
+  RenameDialog,
+  RowAction,
+  RowCheckbox,
+  SelectionToolbar,
+} from '@/components/VersionAdmin'
+import { useVersionSelection } from '@/lib/useVersionSelection'
+import {
+  bulkDeleteTrainingJobs,
+  deleteTrainingJob,
   getDevice,
   getTrainPreview,
   listDatasetVersions,
   listTrainers,
   listTrainingJobs,
   getTrainingJob,
+  renameTrainingJob,
   startTraining,
+  versionLabel,
   type DatasetVersion,
   type DeviceInfo,
   type TrainerInfo,
@@ -486,10 +500,13 @@ export function Train() {
             {preview && <DatasetCard preview={preview} projectId={projectId} />}
             {modelJobs.length > 0 && (
               <VersionHistory
+                projectId={projectId}
                 jobs={modelJobs}
                 latestVersion={latestVersion}
                 selectedId={displayedJob?.id ?? null}
                 onSelect={setSelectedId}
+                onChanged={refresh}
+                onError={setError}
               />
             )}
           </aside>
@@ -752,52 +769,166 @@ function NumberField({
  * are unrelated models. The caller passes an already-filtered list.
  */
 function VersionHistory({
+  projectId,
   jobs,
   latestVersion,
   selectedId,
   onSelect,
+  onChanged,
+  onError,
 }: {
+  projectId: number
   jobs: TrainingJob[]
   latestVersion: number
   selectedId: number | null
   onSelect: (id: number) => void
+  onChanged: () => void
+  onError: (msg: string | null) => void
 }) {
+  const { selected, toggle, toggleAll, clear } = useVersionSelection()
+  const [renaming, setRenaming] = useState<TrainingJob | null>(null)
+  const [deleting, setDeleting] = useState<TrainingJob | null>(null)
+  const [bulkOpen, setBulkOpen] = useState(false)
+  const [busy, setBusy] = useState(false)
+
+  const inFlight = (j: TrainingJob) => j.status === 'running' || j.status === 'queued'
+
+  async function removeOne(j: TrainingJob) {
+    setBusy(true)
+    onError(null)
+    try {
+      await deleteTrainingJob(j.id)
+      setDeleting(null)
+      onChanged()
+    } catch (e) {
+      onError((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  async function removeSelected() {
+    setBusy(true)
+    onError(null)
+    try {
+      const r = await bulkDeleteTrainingJobs(projectId, [...selected])
+      const skipped = Object.keys(r.skipped).length
+      // A version still training is skipped, not fatal — say so rather than
+      // reporting a clean success that quietly did less than asked.
+      onError(skipped ? `Deleted ${r.deleted}. ${skipped} still training and kept.` : null)
+      clear()
+      setBulkOpen(false)
+      onChanged()
+    } catch (e) {
+      onError((e as Error).message)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <div className="card">
       <div className="border-b border-gray-200 px-3 py-2.5">
         <h2 className="text-sm font-medium text-gray-900">Versions</h2>
         <p className="text-xs text-gray-500">This model, this project</p>
       </div>
+
+      <SelectionToolbar
+        count={selected.size}
+        total={jobs.length}
+        onToggleAll={() => toggleAll(jobs.map((j) => j.id))}
+        onDelete={() => setBulkOpen(true)}
+        busy={busy}
+      />
+
       <ul className="divide-y divide-gray-100">
         {jobs.slice(0, 12).map((j) => (
-          <li key={j.id}>
-            {/* Clickable: opens this version's detail (curve + config) on the left. */}
-            <button
-              onClick={() => onSelect(j.id)}
-              className={`flex w-full items-center justify-between px-3 py-2 text-left text-xs transition-colors ${
-                selectedId === j.id ? 'bg-accent-50' : 'hover:bg-gray-50'
-              }`}
-            >
-              <div className="min-w-0">
-                <p className="flex items-center gap-1.5 truncate font-medium text-gray-800">
-                  v{j.version}
+          <li
+            key={j.id}
+            onClick={() => onSelect(j.id)}
+            className={`flex cursor-pointer gap-2 px-3 py-2 text-xs transition-colors ${
+              selectedId === j.id ? 'bg-accent-50' : 'hover:bg-gray-50'
+            }`}
+          >
+            <RowCheckbox
+              checked={selected.has(j.id)}
+              onChange={() => toggle(j.id)}
+              label={`Select ${versionLabel(j)}`}
+            />
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center justify-between gap-1">
+                <span className="flex min-w-0 items-center gap-1.5 font-medium text-gray-800">
+                  <span className="truncate">{versionLabel(j)}</span>
                   {j.version === latestVersion && (
-                    <span className="rounded bg-accent-100 px-1 py-px text-[9px] font-medium uppercase tracking-wide text-accent-700">
+                    <span className="shrink-0 rounded bg-accent-100 px-1 py-px text-[9px] font-medium uppercase tracking-wide text-accent-700">
                       latest
                     </span>
                   )}
-                  {j.init_from_job_id !== null && <GitBranch size={10} className="text-gray-400" />}
-                </p>
-                <p className="tabular-nums text-gray-500">
-                  {j.best_map !== null ? `mAP ${j.best_map.toFixed(3)} · ` : ''}
-                  {new Date(j.created_at).toLocaleTimeString()}
-                </p>
+                  {j.init_from_job_id !== null && (
+                    <GitBranch size={10} className="shrink-0 text-gray-400" />
+                  )}
+                </span>
+                <span className="flex shrink-0 items-center gap-0.5">
+                  <RowAction onClick={() => setRenaming(j)} title={`Rename ${versionLabel(j)}`}>
+                    <Pencil size={11} />
+                  </RowAction>
+                  {/* No delete on a run that's still going — the runner is
+                      actively writing to that row. */}
+                  {!inFlight(j) && (
+                    <RowAction onClick={() => setDeleting(j)} title={`Delete ${versionLabel(j)}`} danger>
+                      <Trash2 size={11} />
+                    </RowAction>
+                  )}
+                  <StatusBadge status={toStatus(j.status)} />
+                </span>
               </div>
-              <StatusBadge status={toStatus(j.status)} />
-            </button>
+              <p className="tabular-nums text-gray-500">
+                {j.best_map !== null ? `mAP ${j.best_map.toFixed(3)} · ` : ''}
+                {new Date(j.created_at).toLocaleTimeString()}
+              </p>
+            </div>
           </li>
         ))}
       </ul>
+
+      <RenameDialog
+        open={renaming !== null}
+        currentName={renaming?.name ?? null}
+        fallbackLabel={`v${renaming?.version ?? ''}`}
+        onClose={() => setRenaming(null)}
+        onSave={async (name) => {
+          if (!renaming) return
+          await renameTrainingJob(renaming.id, name)
+          onChanged()
+        }}
+      />
+
+      <ConfirmDialog
+        open={deleting !== null}
+        onClose={() => setDeleting(null)}
+        onConfirm={() => void (deleting && removeOne(deleting))}
+        title={`Delete ${deleting ? versionLabel(deleting) : ''}?`}
+        message={
+          `This permanently deletes the trained weights and the dataset copy this ` +
+          `run exported.\n\nAny version continued from it keeps its own weights, but ` +
+          `loses the link back.`
+        }
+        confirmLabel="Delete"
+        busy={busy}
+      />
+
+      <ConfirmDialog
+        open={bulkOpen}
+        onClose={() => setBulkOpen(false)}
+        onConfirm={() => void removeSelected()}
+        title={`Delete ${selected.size} version(s)?`}
+        message={
+          `This permanently deletes the trained weights for ${selected.size} version(s).\n\n` +
+          `Any still training are kept.`
+        }
+        confirmLabel={`Delete ${selected.size}`}
+        busy={busy}
+      />
     </div>
   )
 }

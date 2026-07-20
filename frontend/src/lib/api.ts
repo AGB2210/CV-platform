@@ -420,6 +420,8 @@ export interface TrainingJob {
   /** 1-based version within this project + model — what the UI shows, rather
    *  than the global row `id`. */
   version: number
+  /** User-given name; null means it displays as "v{version}". */
+  name: string | null
   status: 'queued' | 'running' | 'done' | 'failed'
   epochs: number
   batch_size: number
@@ -495,6 +497,8 @@ export interface DatasetVersion {
   project_id: number
   /** 1-based per project. */
   version: number
+  /** User-given name; null means it displays as "v{version}". */
+  name: string | null
   note: string | null
   total_images: number
   train_images: number
@@ -524,6 +528,31 @@ export const saveDatasetVersion = (projectId: number, note?: string) =>
   api.post<DatasetVersion>(`/projects/${projectId}/dataset/versions`, { note: note ?? null })
 export const restoreDatasetVersion = (projectId: number, versionId: number) =>
   api.post<RestoreResult>(`/projects/${projectId}/dataset/versions/${versionId}/restore`)
+/** Blank/undefined clears the name, reverting to "v{n}". 409 on a duplicate. */
+export const renameDatasetVersion = (projectId: number, versionId: number, name: string | null) =>
+  api.patch<DatasetVersion>(`/projects/${projectId}/dataset/versions/${versionId}`, { name })
+export const deleteDatasetVersion = (projectId: number, versionId: number) =>
+  api.delete<void>(`/projects/${projectId}/dataset/versions/${versionId}`)
+/** Also how "delete all" is sent — same path, every id selected. */
+export const bulkDeleteDatasetVersions = (projectId: number, versionIds: number[]) =>
+  api.post<{ deleted: number; not_found: number[] }>(
+    `/projects/${projectId}/dataset/versions/bulk-delete`,
+    { version_ids: versionIds },
+  )
+
+/** Model-version housekeeping. Uniqueness is per project + trainer. */
+export const renameTrainingJob = (jobId: number, name: string | null) =>
+  api.patch<TrainingJob>(`/training-jobs/${jobId}`, { name })
+export const deleteTrainingJob = (jobId: number) => api.delete<void>(`/training-jobs/${jobId}`)
+export const bulkDeleteTrainingJobs = (projectId: number, jobIds: number[]) =>
+  api.post<{ deleted: number; not_found: number[]; skipped: Record<string, string> }>(
+    `/projects/${projectId}/training-jobs/bulk-delete`,
+    { job_ids: jobIds },
+  )
+
+/** How a version presents in a list: its name, else its number. */
+export const versionLabel = (v: { name: string | null; version: number }) =>
+  v.name ?? `v${v.version}`
 
 export const bulkDeleteProjects = (projectIds: number[]) =>
   api.post<{ deleted: number; not_found: number[] }>('/projects/bulk-delete', {
