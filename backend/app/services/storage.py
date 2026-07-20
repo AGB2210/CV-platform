@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import logging
 import shutil
 import uuid
 import zipfile
@@ -26,9 +27,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from PIL import Image as PILImage
+from PIL import ImageOps
 from PIL import UnidentifiedImageError
 
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 # Formats we accept. Restricting this is a security control, not a convenience:
 # it's the allowlist that decides what bytes we're willing to write to disk.
@@ -123,9 +127,77 @@ def _validate_and_measure(content: bytes, original_name: str) -> tuple[int, int,
     return width, height, ext
 
 
+def normalise_orientation(content: bytes, ext: str) -> bytes:
+    """Bake an EXIF rotation into the pixels, so W×H means one thing.
+
+    THE BUG THIS PREVENTS. Cameras and phones almost never rotate the pixels
+    when you turn the device — they store the image as the sensor read it and
+    add an EXIF Orientation tag saying how to display it. So a portrait photo is
+    commonly 4032×3024 on disk with "rotate 90" attached.
+
+    Browsers honour that tag. PIL's `.size` does not. We stored the raw
+    dimensions and the annotation canvas uses them as its SVG viewBox, so the
+    coordinate space was TRANSPOSED relative to the picture the user was drawing
+    on: every box on a rotated photo landed somewhere else entirely. Nothing
+    errors, the boxes look fine while you draw them, and the dataset is wrong.
+
+    Normalising here rather than teaching each consumer about EXIF means the
+    bytes on disk are the truth. The canvas, both exporters, the trainer and any
+    future model all see the same image, and none of them has to remember a rule.
+
+    Cost: a rotated JPEG is re-encoded once, so it loses a little quality and
+    the stored bytes differ from the file the user picked. That is the right
+    trade against silently-misplaced ground truth. Untagged images — the large
+    majority — are returned byte-for-byte untouched.
+    """
+    try:
+        with PILImage.open(io.BytesIO(content)) as img:
+            orientation = (img.getexif() or {}).get(0x0112)  # 0x0112 = Orientation
+            if not orientation or orientation == 1:
+                return content  # upright already; don't touch the bytes
+
+            upright = ImageOps.exif_transpose(img)
+            if upright is None:
+                return content
+
+            buf = io.BytesIO()
+            fmt = "JPEG" if ext in (".jpg", ".jpeg") else (img.format or "PNG")
+            # quality=95 because this is ground-truth imagery and the re-encode
+            # is not something the user asked for.
+            #
+            # NOT subsampling="keep", which is only valid when saving an
+            # unmodified JPEG. exif_transpose returns a new image with no
+            # `format`, so it raises — and because that raise was swallowed
+            # below, the whole function became a silent no-op that returned the
+            # original bytes. The rotation "worked" and changed nothing.
+            save_kwargs = {"quality": 95} if fmt == "JPEG" else {}
+            # exif_transpose already dropped the orientation tag, so the result
+            # cannot be double-rotated by anything downstream.
+            upright.save(buf, fmt, **save_kwargs)
+            return buf.getvalue()
+    except Exception:  # noqa: BLE001
+        # A file we can't re-encode is not worth failing an upload over — the
+        # validation pass above already proved it decodes. LOGGED, though:
+        # silently returning the original is exactly how this shipped broken
+        # once, and a rotated image stored un-rotated is a wrong dataset rather
+        # than a missing feature.
+        logger.warning(
+            "Could not normalise EXIF orientation; storing as-is", exc_info=True
+        )
+        return content
+
+
 def save_image(project_id: int, content: bytes, original_name: str) -> SavedImage:
     """Validate and store one image. Raises ImageRejected if unusable."""
     width, height, ext = _validate_and_measure(content, original_name)
+
+    # Before anything measures or hashes it: rotate the pixels upright if EXIF
+    # says the camera was sideways, then re-measure. Order matters — the hash
+    # and the stored dimensions must describe the bytes we actually keep.
+    upright = normalise_orientation(content, ext)
+    if upright is not content:
+        content = upright
+        width, height, ext = _validate_and_measure(content, original_name)
 
     # A generated name, never the user's. This is what makes path traversal
     # structurally impossible rather than something we have to remember to
