@@ -186,11 +186,22 @@ export function MetricsChart({ points }: { points: EpochPoint[] }) {
             <span className="inline-block h-2 w-2 rounded-full bg-gray-400" /> mAP@50
           </span>
         </span>
-        {zoomed && (
-          <button onClick={() => setView(null)} className="text-accent-700 hover:underline">
+        {/* Always rendered, not just once zoomed. A control that only appears
+            after you've already zoomed is one you have to discover by accident —
+            and the double-click shortcut is invisible either way. Disabled when
+            there's nothing to reset, so it reads as "available, not needed". */}
+        <span className="flex items-center gap-2">
+          <span className="hidden text-gray-300 sm:inline">
+            scroll to zoom · drag to pan
+          </span>
+          <button
+            onClick={() => setView(null)}
+            disabled={!zoomed}
+            className="rounded border border-gray-200 px-1.5 py-px text-[10px] text-accent-700 enabled:hover:bg-accent-50 disabled:border-gray-100 disabled:text-gray-300"
+          >
             Reset zoom
           </button>
-        )}
+        </span>
       </div>
       <div ref={containerRef} className="w-full select-none">
         <svg

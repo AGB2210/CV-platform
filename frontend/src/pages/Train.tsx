@@ -1,6 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { ArrowLeft, Cpu, Database, GitBranch, Layers, Play } from 'lucide-react'
+import {
+  ArrowLeft,
+  ChevronDown,
+  ChevronUp,
+  Cpu,
+  Database,
+  GitBranch,
+  Layers,
+  Play,
+  SlidersHorizontal,
+} from 'lucide-react'
 import { PageBody, PageHeader } from '@/components/layout/AppShell'
 import { StatusBadge, type Status } from '@/components/StatusBadge'
 import { MetricsChart } from '@/components/MetricsChart'
@@ -40,6 +50,8 @@ export function Train() {
   const [batchSize, setBatchSize] = useState(8)
   const [imageSize, setImageSize] = useState(640)
   const [lr, setLr] = useState('')
+  // Tuning knobs stay hidden until asked for — see the config card.
+  const [showAdvanced, setShowAdvanced] = useState(false)
   // Finetune source: a completed run's id, or null to start from the pretrained
   // base. Lets you keep improving a model instead of re-learning from zero.
   const [initFromId, setInitFromId] = useState<number | null>(null)
@@ -106,18 +118,28 @@ export function Train() {
     }
   }, [projectId])
 
+  /** Apply a backend's recommended settings — what a run uses unless overridden. */
+  function applyDefaults(t: TrainerInfo | undefined) {
+    if (!t) return
+    setEpochs(t.default_epochs)
+    setBatchSize(t.default_batch_size)
+    setImageSize(t.default_image_size)
+    setLr('')
+  }
+
+  function resetParams() {
+    applyDefaults(trainers.find((x) => x.key === trainerKey))
+  }
+
   function selectTrainer(key: string) {
     setTrainerKey(key)
     // Versions are per-model, so a selection from the old model's list would
     // point at something no longer shown. Fall back to that model's latest.
     setSelectedId(null)
     setInitFromId(null)
-    const t = trainers.find((x) => x.key === key)
-    if (t) {
-      setEpochs(t.default_epochs)
-      setBatchSize(t.default_batch_size)
-      setImageSize(t.default_image_size)
-    }
+    // Defaults are per-architecture: a sane batch for YOLO-nano isn't one for a
+    // DETR, so switching backend must not carry the old numbers across.
+    applyDefaults(trainers.find((x) => x.key === key))
   }
 
   const pollRef = useRef<number | null>(null)
@@ -338,36 +360,87 @@ export function Train() {
                     </p>
                   </div>
 
-                  <div className="grid grid-cols-3 gap-3">
-                    <NumberField label="Epochs" value={epochs} onChange={setEpochs} min={1} max={1000} disabled={isRunning} />
-                    <NumberField label="Batch size" hint="lower if OOM" value={batchSize} onChange={setBatchSize} min={1} max={128} disabled={isRunning} />
-                    <NumberField label="Image size" hint="px, square" value={imageSize} onChange={setImageSize} min={64} max={2048} step={32} disabled={isRunning} />
-                  </div>
+                  {/* --- Tuning knobs, hidden by default ---
+                      Most runs want the backend's tuned defaults, and a wall of
+                      numeric fields makes a simple "train it" look like it needs
+                      expertise. So the defaults are stated in one line and the
+                      controls only appear when asked for. */}
+                  <div className="rounded-md border border-gray-200">
+                    <button
+                      type="button"
+                      onClick={() => setShowAdvanced((v) => !v)}
+                      className="flex w-full items-center justify-between px-2.5 py-2 text-left hover:bg-gray-50"
+                    >
+                      <span className="flex items-center gap-1.5 text-xs font-medium text-gray-700">
+                        <SlidersHorizontal size={12} className="text-gray-400" />
+                        Custom parameters
+                      </span>
+                      <span className="flex items-center gap-1.5">
+                        {!showAdvanced && (
+                          <span className="font-mono text-[11px] tabular-nums text-gray-400">
+                            {epochs} epochs · batch {batchSize} · {imageSize}px
+                          </span>
+                        )}
+                        {showAdvanced ? (
+                          <ChevronUp size={13} className="text-gray-400" />
+                        ) : (
+                          <ChevronDown size={13} className="text-gray-400" />
+                        )}
+                      </span>
+                    </button>
 
-                  <div>
-                    <label htmlFor="lr" className="mb-1 block text-xs font-medium text-gray-700">
-                      Learning rate <span className="font-normal text-gray-400">(optional)</span>
-                    </label>
-                    <input
-                      id="lr"
-                      type="number"
-                      value={lr}
-                      onChange={(e) => setLr(e.target.value)}
-                      disabled={isRunning}
-                      placeholder="framework default"
-                      step="0.0001"
-                      min="0"
-                      className="w-full rounded-md border border-gray-300 px-2.5 py-1.5 text-sm placeholder:text-gray-300 focus:border-accent-500 focus:outline-none disabled:bg-gray-50"
-                    />
-                    <p className="mt-0.5 text-xs text-gray-400">
-                      Leave empty to use the backend's tuned schedule — usually the right choice.
-                    </p>
-                  </div>
+                    {!showAdvanced && (
+                      <p className="px-2.5 pb-2 text-xs text-gray-400">
+                        Using {selected?.display_name ?? 'the backend'}'s recommended
+                        settings. Open to override.
+                      </p>
+                    )}
 
-                  <p className="rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs text-amber-900">
-                    On a 4 GB GPU, keep batch and image size small. If a run fails with an
-                    out-of-memory error, halve the batch size and retry.
-                  </p>
+                    {showAdvanced && (
+                      <div className="space-y-3 border-t border-gray-200 p-2.5">
+                        <div className="grid grid-cols-3 gap-3">
+                          <NumberField label="Epochs" value={epochs} onChange={setEpochs} min={1} max={1000} disabled={isRunning} />
+                          <NumberField label="Batch size" hint="lower if OOM" value={batchSize} onChange={setBatchSize} min={1} max={128} disabled={isRunning} />
+                          <NumberField label="Image size" hint="px, square" value={imageSize} onChange={setImageSize} min={64} max={2048} step={32} disabled={isRunning} />
+                        </div>
+
+                        <div>
+                          <label htmlFor="lr" className="mb-1 block text-xs font-medium text-gray-700">
+                            Learning rate <span className="font-normal text-gray-400">(optional)</span>
+                          </label>
+                          <input
+                            id="lr"
+                            type="number"
+                            value={lr}
+                            onChange={(e) => setLr(e.target.value)}
+                            disabled={isRunning}
+                            placeholder="framework default"
+                            step="0.0001"
+                            min="0"
+                            className="w-full rounded-md border border-gray-300 px-2.5 py-1.5 text-sm placeholder:text-gray-300 focus:border-accent-500 focus:outline-none disabled:bg-gray-50"
+                          />
+                          <p className="mt-0.5 text-xs text-gray-400">
+                            Leave empty to use the backend's tuned schedule — usually the right choice.
+                          </p>
+                        </div>
+
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs text-amber-900">
+                            On a 4 GB GPU, keep batch and image size small. If a run fails
+                            with an out-of-memory error, halve the batch size and retry.
+                          </p>
+                          <button
+                            type="button"
+                            onClick={() => resetParams()}
+                            disabled={isRunning}
+                            className="shrink-0 text-xs text-accent-700 hover:underline disabled:text-gray-300"
+                          >
+                            Reset
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
             )}
