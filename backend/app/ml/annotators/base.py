@@ -19,14 +19,15 @@ every implementation.
 
 Why an explicit load()/unload() lifecycle rather than loading in __init__?
 
-Because this machine has 4 GB of VRAM. Three annotators loaded at import time
-would OOM before serving a single request. Models are loaded on demand, and the
-registry guarantees at most one is resident (see registry.py). Grounded SAM
-depends on this directly: it cannot hold Grounding DINO and SAM simultaneously,
-so it loads DINO, runs it, unloads, then loads SAM.
+Because VRAM is finite, and on the consumer GPUs this tool targets it is scarce.
+Three annotators loaded at import time would OOM before serving a single
+request. Models are loaded on demand, and the registry guarantees at most one is
+resident (see registry.py). Grounded SAM depends on this directly: it cannot
+hold Grounding DINO and SAM simultaneously, so it loads DINO, runs it, unloads,
+then loads SAM.
 
-This constraint is a gift. Even on a 24 GB card the right design is lazy loading
-with explicit lifetimes — the small GPU just makes it non-optional.
+The constraint is a gift. On a large card the right design is still lazy loading
+with explicit lifetimes — a small GPU only makes it non-optional.
 """
 
 from __future__ import annotations
@@ -192,8 +193,8 @@ class AutoAnnotator(ABC):
         self._loaded = False
 
         # Dropping the Python reference is NOT enough — torch's caching
-        # allocator holds the freed blocks. On a 4 GB card the next model will
-        # OOM unless we hand them back. See device.empty_cache().
+        # allocator holds the freed blocks. Where VRAM is tight the next model
+        # will OOM unless we hand them back. See device.empty_cache().
         from app.ml.device import empty_cache
 
         empty_cache()

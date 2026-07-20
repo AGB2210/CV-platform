@@ -18,7 +18,7 @@ themselves. We don't get to step inside. So a Trainer exposes ONE call, train(),
 and reports back through a callback the framework invokes each epoch. There is no
 per-step lifecycle for us to manage, so there isn't one on the base class.
 
-What we DO still own is the 4 GB constraint: before a trainer runs, any resident
+What we DO still own is the memory constraint: before a trainer runs, any resident
 annotator must be evicted (the job runner does this), and only one trainer may run
 at a time (the route guards this). torch is imported lazily inside train(), never
 at module top level — importing this module must stay free so the /api/trainers
@@ -58,7 +58,8 @@ class TrainConfig:
 
     epochs: int
     batch_size: int
-    #: Square training resolution. Small on this GPU — 4 GB does not fit 1280.
+    #: Square training resolution. Memory scales with its square, so it is one
+    #: of the first things to lower when a run won't fit.
     image_size: int
     #: None means "use the framework's default schedule", which is usually the
     #: right call — its defaults are tuned per-architecture and we shouldn't
@@ -151,7 +152,7 @@ class Trainer(ABC):
     export_format: str = ""
 
     #: Defaults the UI pre-fills the config form with. Per-trainer because a
-    #: sane batch size for YOLO-nano on 4 GB is not a sane one for a DETR.
+    #: sane batch size for YOLO-nano is not a sane one for a DETR.
     default_epochs: int = 50
     default_batch_size: int = 8
     default_image_size: int = 640

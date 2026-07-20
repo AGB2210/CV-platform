@@ -64,8 +64,8 @@ def run_annotation_job(job_id: int) -> None:
             # polls. Every exit path must leave a terminal status.
             _fail(db, job, exc)
     finally:
-        # Always release VRAM, even on failure. A crashed job holding 2.5 GB on
-        # a 4 GB card means every subsequent job OOMs — one failure becomes
+        # Always release VRAM, even on failure. A crashed job still holding the
+        # model means every subsequent job OOMs — one failure becomes
         # permanent breakage until restart.
         registry.release()
         db.close()

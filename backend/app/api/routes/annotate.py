@@ -85,10 +85,10 @@ def start_annotation(
     except KeyError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from None
 
-    # Refuse to queue a second job while one is in flight. With 4 GB of VRAM two
-    # concurrent runs would evict each other's model on every image — thrashing
-    # weights in and out and running slower than either alone, if they didn't
-    # simply OOM.
+    # Refuse to queue a second job while one is in flight. Two concurrent runs
+    # would evict each other's model on every image — thrashing weights in and
+    # out and running slower than either alone, and on a GPU too small to hold
+    # both they would simply OOM.
     active = db.scalar(
         select(AnnotationJob).where(
             AnnotationJob.project_id == project_id,

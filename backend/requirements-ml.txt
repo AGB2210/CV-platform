@@ -3,13 +3,14 @@
 #
 # TORCH MUST BE INSTALLED FIRST, from the CUDA-specific index — the default PyPI
 # wheel is a different build and pip will not "upgrade" you onto the right one
-# once a plain torch is resident. For this machine (RTX 3050, driver 610.62):
+# once a plain torch is resident. PICK THE INDEX MATCHING YOUR OWN GPU AND
+# DRIVER from https://pytorch.org/get-started/locally/ — the cu126 URL below is
+# an example, not a recommendation for your machine:
 #
-#     pip install torch==2.13.0 torchvision --index-url https://download.pytorch.org/whl/cu126
+#     pip install torch torchvision --index-url https://download.pytorch.org/whl/cu126
 #     pip install -r requirements-ml.txt
 #
-# Pick your own index from https://pytorch.org/get-started/locally/ if the GPU
-# or driver differs. Verify afterwards with:
+# Verify afterwards with:
 #     python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
 
 # --- Phase 2: auto-annotation ---
@@ -27,7 +28,7 @@ supervision>=0.25.0
 # --- Phase 4: training ---
 # YOLO11 (Ultralytics) — the first training backend (app/ml/trainers/yolo.py).
 # Pulls polars + nvidia-ml-py + thop; torch is already satisfied, so the CUDA
-# build is left untouched. Nano fine-tunes within 4 GB.
+# build is left untouched. Nano fine-tunes on modest GPUs.
 ultralytics>=8.3.0
 # rfdetr>=1.1.0             # RF-DETR (COCO) — a later trainer, not yet wired
 
@@ -36,16 +37,19 @@ ultralytics>=8.3.0
 
 
 # =============================================================================
-# VRAM BUDGET — this machine has 4 GB (RTX 3050 Laptop)
+# VRAM BUDGET — what each model actually costs
 # =============================================================================
-# 4 GB is the binding constraint on every model choice in this project, and it
-# is why app/ml/registry.py enforces one resident model at a time.
+# Available VRAM is the binding constraint on model choice, and it is why
+# app/ml/registry.py enforces one resident model at a time. These figures are
+# properties of the MODELS — compare them against whatever card you run on.
+# The app reports yours in the Compute panel.
 #
-#   Grounding DINO Swin-T   ~700 MB weights   ~2-3 GB inference   fits (tight)
-#   SAM ViT-B               ~375 MB weights   ~2-3 GB inference   fits
-#   SAM ViT-H               ~2.4 GB weights   ~6-8 GB inference   DOES NOT FIT
-#   MobileSAM                ~40 MB weights     <1 GB inference   fits easily
+#   Grounding DINO Swin-T   ~700 MB weights   ~2-3 GB inference
+#   SAM ViT-B               ~375 MB weights   ~2-3 GB inference
+#   SAM ViT-H               ~2.4 GB weights   ~6-8 GB inference
+#   MobileSAM                ~40 MB weights     <1 GB inference
 #
-# So: ViT-B, not the ViT-H that every tutorial defaults to. And Grounded SAM
-# cannot hold DINO and SAM resident simultaneously (~5-6 GB) — it must run them
-# sequentially, unloading between stages.
+# The defaults favour the smaller variants — ViT-B, not the ViT-H every
+# tutorial reaches for — because they fit a far wider range of machines. And
+# Grounded SAM cannot hold DINO and SAM resident simultaneously (~5-6 GB
+# combined): it must run them sequentially, unloading between stages.

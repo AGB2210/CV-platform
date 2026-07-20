@@ -8,7 +8,7 @@ dominate. A trainer is called ONCE per job and manages its own model internally,
 so there is nothing to cache and no acquire/release/evict dance here — just
 metadata lookup and key resolution.
 
-The 4 GB single-resident-model rule still applies, but it's enforced elsewhere,
+The single-resident-model rule still applies, but it's enforced elsewhere,
 because it spans registries:
   - the job runner calls the ANNOTATOR registry's release() before training, so
     a model left resident from an auto-annotate run can't collide with training;

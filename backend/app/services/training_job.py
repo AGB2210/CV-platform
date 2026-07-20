@@ -10,7 +10,7 @@ imports FastAPI.
 WHAT THIS ORCHESTRATES (the trainer stays a thin adapter)
 --------------------------------------------------------
   1. Evict any resident annotator, so an auto-annotate model left in VRAM can't
-     collide with training on this 4 GB card.
+     collide with training for the GPU's memory.
   2. Export the project's dataset to disk in the trainer's format, respecting the
      per-image train/val/test split. Only accepted boxes export — proposals are
      never training data.
@@ -82,8 +82,8 @@ def run_training_job(job_id: int) -> None:
             # message intact rather than hanging.
             _fail(db, job, exc)
     finally:
-        # A trainer should free its own VRAM when train() returns, but on a 4 GB
-        # card "should" isn't good enough — hand torch's cached blocks back to
+        # A trainer should free its own VRAM when train() returns, but "should"
+        # isn't good enough when memory is tight — hand the cached blocks back to
         # the driver so the next job (or an annotate run) has room. Also drop any
         # annotator that somehow survived. One crashed job holding VRAM would
         # otherwise OOM every job after it until a restart.

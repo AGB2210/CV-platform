@@ -41,7 +41,7 @@ class TrainingJobCreate(BaseModel):
     # default is deliberately tiny.
     batch_size: int = Field(default=8, ge=1, le=128)
     # Square side. Multiple-of-32 is a YOLO requirement the trainer enforces;
-    # here we just bound it so 4 GB isn't asked to hold a 4096px batch.
+    # here we just bound it so a GPU isn't asked to hold a 4096px batch.
     image_size: int = Field(default=640, ge=64, le=2048)
     # None = the framework's own schedule, which is usually right. A real value
     # only when the user deliberately overrides it.

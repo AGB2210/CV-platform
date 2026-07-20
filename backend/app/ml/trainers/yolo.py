@@ -1,9 +1,9 @@
 """
 YOLO trainer (Ultralytics) — the first concrete training backend.
 
-Chosen to go first because it is the most forgiving path to a real run on this
-4 GB card: the nano model fits comfortably, the install is robust on Windows, and
-it consumes the YOLO export we already build and round-trip test. RF-DETR / RT-DETR
+Chosen to go first because it is the most forgiving path to a real run on a
+modest GPU: the nano model fits comfortably, the install is robust on Windows,
+and it consumes the YOLO export we already build and round-trip test. RF-DETR / RT-DETR
 (COCO-based) follow behind the same interface.
 
 HOW IT ADAPTS THE FRAMEWORK
@@ -53,8 +53,8 @@ class YoloTrainer(Trainer):
     default_batch_size = 8
     default_image_size = 640
 
-    #: Pretrained checkpoint to fine-tune from. Nano is the only sane default on
-    #: 4 GB — the small/medium variants OOM at any useful batch size. Downloaded
+    #: Pretrained checkpoint to fine-tune from. Nano is the safe default: the
+    #: larger variants OOM at any useful batch size on a small card. Downloaded
     #: once by ultralytics from its own release assets and then cached.
     base_weights = "yolo11n.pt"
 

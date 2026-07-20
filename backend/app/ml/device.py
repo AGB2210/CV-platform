@@ -3,7 +3,7 @@ Device selection and VRAM accounting.
 
 Isolated in its own module because every model in the project needs the same
 answers ("which device? how much memory is left?") and because it's the one
-place that knows this machine has a small GPU.
+place that knows how much memory the machine it is running on actually has.
 """
 
 from __future__ import annotations
@@ -94,7 +94,7 @@ def empty_cache() -> None:
     can reuse blocks without round-tripping the driver, and calling this in a
     hot loop makes things slower.
 
-    Here it's necessary. With 4 GB total, unloading Grounding DINO must actually
+    Here it's necessary. Where VRAM is tight, unloading Grounding DINO must
     free the memory before SAM loads, or Grounded SAM OOMs. Deleting the Python
     object drops the reference but leaves the block in torch's cache, where the
     NEXT model's allocation cannot use it if it needs a differently-shaped

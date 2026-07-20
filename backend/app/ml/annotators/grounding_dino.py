@@ -31,9 +31,10 @@ from app.ml.registry import register
 logger = logging.getLogger(__name__)
 
 # Swin-T backbone, ~700 MB. The "base" variant (Swin-B) is ~1.8 GB and needs
-# roughly 5-6 GB to run — it does not fit this machine's 4 GB card. Tiny is the
-# correct choice here, not a compromise we're apologising for: on common object
-# categories the gap is small, and the review UI exists to fix what it misses.
+# roughly 5-6 GB to run, which rules it out on the consumer GPUs this tool
+# targets. Tiny is the correct choice here, not a compromise we're apologising
+# for: on common object categories the gap is small, and the review UI exists
+# to fix what it misses.
 MODEL_ID = "IDEA-Research/grounding-dino-tiny"
 
 
@@ -202,8 +203,8 @@ class GroundingDinoAnnotator(AutoAnnotator):
 
         # inference_mode is torch.no_grad's stricter sibling: it also skips
         # version-counter bookkeeping. Without it, torch builds an autograd
-        # graph for every forward pass — pure waste here, and on a 4 GB card the
-        # stored activations are enough to OOM.
+        # graph for every forward pass — pure waste here, and on a small card
+        # the stored activations are enough to OOM.
         with torch.inference_mode():
             outputs = self._model(**inputs)
 

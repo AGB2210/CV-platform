@@ -26,8 +26,8 @@ _REGISTRY: dict[str, type["AutoAnnotator"]] = {}
 
 # Guards the single-resident-model invariant below. FastAPI runs sync endpoints
 # in a threadpool and BackgroundTasks share the process, so two jobs really can
-# race here — and two models loading concurrently on a 4 GB card is a guaranteed
-# OOM rather than a theoretical one.
+# race here — and two models loading concurrently on a small card is a
+# guaranteed OOM rather than a theoretical one.
 _lock = threading.Lock()
 _resident: "AutoAnnotator | None" = None
 
@@ -77,8 +77,8 @@ def get_class(key: str) -> type["AutoAnnotator"]:
 def acquire(key: str) -> "AutoAnnotator":
     """Get a loaded annotator, evicting whatever else was resident.
 
-    THE CORE VRAM POLICY. With 4 GB total there is room for exactly one of these
-    models, so acquiring a new one first unloads the old.
+    THE CORE VRAM POLICY. On a typical consumer GPU there is room for exactly
+    one of these models, so acquiring a new one first unloads the old.
 
     Note the deliberate *caching* when the same key is requested twice in a row:
     annotating 200 images issues 200 acquire("grounding_dino") calls, and
