@@ -730,7 +730,44 @@ def execute(
         db.scalars(select(Image).where(Image.project_id == project_id)).all()
     )
     by_hash = {i.content_hash: i for i in existing_images if i.content_hash}
-    by_name = {i.original_filename.lower(): i for i in existing_images}
+
+    # Filenames are NOT unique and cannot be treated as if they were. Datasets
+    # reuse them constantly (train/001.jpg, test/001.jpg), and dedup keeps those
+    # as separate images precisely because they are different pictures. A
+    # last-one-wins dict would silently attach a bare annotation file's labels
+    # to whichever image happened to be loaded last.
+    #
+    # So: a list per name, narrowed by SPLIT first. An annotation file that came
+    # from train/ describes train's images, which is the same per-folder scoping
+    # rule COCO image_ids already require. Only if that still leaves more than
+    # one candidate is the name genuinely ambiguous, and then the labels are
+    # skipped and reported rather than guessed at.
+    by_name: dict[str, list] = {}
+    for image in existing_images:
+        by_name.setdefault(image.original_filename.lower(), []).append(image)
+
+    def resolve_by_name(name: str, split: str) -> tuple[object | None, str | None]:
+        """(image, reason-it-failed) for a bare annotation file's filename."""
+        candidates = by_name.get(name.lower(), [])
+        if not candidates:
+            return None, "no such image in this project"
+        if len(candidates) == 1:
+            return candidates[0], None
+
+        # Ambiguous. Narrow by split ONLY when the split is evidence — i.e. the
+        # file actually came from a train/ or valid/ folder. In a flat upload
+        # `split` is just the default every group gets, so narrowing on it would
+        # dress a coin toss up as a resolution.
+        if plan.has_split_folders:
+            narrowed = [i for i in candidates if i.split == split]
+            if len(narrowed) == 1:
+                return narrowed[0], None
+
+        return None, (
+            f"{len(candidates)} images in this project share this filename — "
+            "upload the images alongside the annotations so they can be matched "
+            "by content instead"
+        )
 
     def attach(image, width: int, height: int, group, name: str, proposed: bool) -> int:
         """Write this file's boxes for one image. Returns how many landed.
@@ -784,9 +821,9 @@ def execute(
         # the only identifier such a file carries.
         if not group.image_files and group.has_labels:
             for name in _labelled_names(group):
-                image = by_name.get(name.lower())
+                image, problem = resolve_by_name(name, group.split)
                 if image is None:
-                    result.skipped.append(f"{name}: no such image in this project")
+                    result.skipped.append(f"{name}: {problem}")
                     continue
                 n = attach(image, image.width, image.height, group, name, proposed=True)
                 result.proposals_created += n
@@ -840,7 +877,7 @@ def execute(
             db.add(image)
             db.flush()
             by_hash[saved.content_hash] = image
-            by_name[saved.original_filename.lower()] = image
+            by_name.setdefault(saved.original_filename.lower(), []).append(image)
             result.images_added += 1
             result.splits[group.split] = result.splits.get(group.split, 0) + 1
 

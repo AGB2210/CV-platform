@@ -768,3 +768,53 @@ def test_rejecting_reannotation_keeps_the_original(client):
     accepted, proposed = _split(client, image_id)
     assert [round(a["x"]) for a in accepted] == [10], "original survives a reject"
     assert proposed == []
+
+
+def test_ambiguous_filename_is_reported_not_guessed(client):
+    """Filenames are NOT unique — datasets reuse 001.jpg across folders, and
+    dedup keeps those as separate images because they ARE different pictures.
+
+    A bare annotation file carries only the name, so when it matches more than
+    one image the labels are skipped and the reason is reported. Guessing here
+    attaches boxes to the wrong picture, which nothing downstream can detect.
+    """
+    pid = client.post("/api/projects", json={"name": "Ambiguous"}).json()["id"]
+    # Same NAME, different pictures, in different splits.
+    tree = {
+        "ds/train/001.jpg": png_bytes(640, 480, colour=(10, 20, 30)),
+        "ds/test/001.jpg": png_bytes(640, 480, colour=(200, 100, 50)),
+    }
+    client.post(f"/api/projects/{pid}/images", files=_folder_files(tree))
+    assert len(client.get(f"/api/projects/{pid}/images").json()) == 2
+
+    # A bare annotation file naming "001.jpg" at the ROOT — no split to scope by.
+    body = client.post(
+        f"/api/projects/{pid}/images",
+        files=[("files", ("l.json", _coco_for("001.jpg", [[1, 2, 30, 40]], "widget"), "application/json"))],
+    ).json()
+    assert body["proposals_created"] == 0
+    assert any("share this filename" in s for s in body["skipped"])
+
+
+def test_a_split_scoped_annotation_file_disambiguates(client):
+    """...but labels that arrive INSIDE train/ describe train's images.
+
+    That's the same per-folder scoping COCO image_ids already require, so a
+    Roboflow-shaped re-export resolves cleanly even with reused filenames.
+    """
+    pid = client.post("/api/projects", json={"name": "Scoped"}).json()["id"]
+    tree = {
+        "ds/train/001.jpg": png_bytes(640, 480, colour=(10, 20, 30)),
+        "ds/test/001.jpg": png_bytes(640, 480, colour=(200, 100, 50)),
+    }
+    client.post(f"/api/projects/{pid}/images", files=_folder_files(tree))
+
+    labels = {"ds/train/l.json": _coco_for("001.jpg", [[5, 6, 30, 40]], "widget")}
+    body = client.post(f"/api/projects/{pid}/images", files=_folder_files(labels)).json()
+    assert body["proposals_created"] == 1, "train/ scopes it to train's 001.jpg"
+
+    by_split = {i["split"]: i for i in client.get(f"/api/projects/{pid}/images").json()}
+    train_boxes = client.get(f"/api/images/{by_split['train']['id']}/annotations").json()
+    test_boxes = client.get(f"/api/images/{by_split['test']['id']}/annotations").json()
+    assert len(train_boxes) == 1 and round(train_boxes[0]["x"]) == 5
+    assert test_boxes == [], "the other 001.jpg is untouched"
