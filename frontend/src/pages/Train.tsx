@@ -266,8 +266,17 @@ export function Train() {
   const displayedJob =
     runningJob ?? modelJobs.find((j) => j.id === selectedId) ?? activeJob ?? modelJobs[0] ?? null
 
-  /** Version label for a job id — used for the "continued from" provenance. */
-  const versionOf = (jobId: number) => jobs.find((j) => j.id === jobId)?.version ?? null
+  /** How a job id presents in text — its NAME if it has one, else "v{n}".
+   *
+   *  Resolved from the live job list on every render rather than stored with
+   *  the run that continued it. Renaming v1 to "baseline" has to change every
+   *  place v1 is referred to, including "continued from v1" on the three runs
+   *  built off it — a name that only updates in one list is worse than no name,
+   *  because the two disagree on screen at the same time. */
+  const labelOf = (jobId: number) => {
+    const job = jobs.find((j) => j.id === jobId)
+    return job ? versionLabel(job) : null
+  }
   /** Dataset version number a run trained on. */
   const datasetVersionOf = (id: number | null) =>
     id === null ? null : (datasetVersions.find((v) => v.id === id)?.version ?? null)
@@ -321,7 +330,7 @@ export function Train() {
                   live={displayedJob.id === runningJob?.id}
                   fromVersion={
                     displayedJob.init_from_job_id !== null
-                      ? versionOf(displayedJob.init_from_job_id)
+                      ? labelOf(displayedJob.init_from_job_id)
                       : null
                   }
                   datasetVersion={datasetVersionOf(displayedJob.dataset_version_id)}
@@ -427,7 +436,7 @@ export function Train() {
                       <option value="">Pretrained weights (from scratch)</option>
                       {completedRuns.map((j) => (
                         <option key={j.id} value={j.id}>
-                          Continue v{j.version}
+                          Continue {versionLabel(j)}
                           {j.best_map !== null ? ` · mAP ${j.best_map.toFixed(3)}` : ''}
                         </option>
                       ))}
@@ -435,7 +444,7 @@ export function Train() {
                     <p className="mt-0.5 flex items-center gap-1 text-xs text-gray-400">
                       <GitBranch size={11} />
                       {initFromId
-                        ? `Builds on v${versionOf(initFromId)}'s weights, trained on the current dataset.`
+                        ? `Builds on ${labelOf(initFromId)}'s weights, trained on the current dataset.`
                         : 'Continue a finished version to keep improving it instead of re-learning from zero.'}
                     </p>
                   </div>
@@ -538,7 +547,7 @@ export function Train() {
                   <>
                     <Play size={14} />
                     {initFromId
-                      ? `Continue v${versionOf(initFromId)} → v${latestVersion + 1}`
+                      ? `Continue ${labelOf(initFromId)} → v${latestVersion + 1}`
                       : `Train v${latestVersion + 1}`}
                   </>
                 )}
@@ -633,7 +642,7 @@ function RunDetail({
 }: {
   job: TrainingJob
   live: boolean
-  fromVersion: number | null
+  fromVersion: string | null
   datasetVersion: number | null
   onStop: () => void
   onCancel: () => void
@@ -646,11 +655,13 @@ function RunDetail({
     <div className={`card transition-shadow ${live ? 'ring-2 ring-accent-400 ring-offset-2' : ''}`}>
       <div className="flex items-center justify-between border-b border-gray-200 px-4 py-2.5">
         <h2 className="flex items-center gap-2 text-sm font-medium text-gray-900">
-          {live ? `Training v${job.version}…` : `Version ${job.version}`}
+          {/* The NAME once it has one — the detail panel and the version list
+              must not disagree about what a run is called. */}
+          {live ? `Training ${versionLabel(job)}…` : versionLabel(job)}
           {job.init_from_job_id !== null && (
             <span className="flex items-center gap-1 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-normal text-gray-500">
               <GitBranch size={10} />
-              {fromVersion !== null ? `continued from v${fromVersion}` : 'continued'}
+              {fromVersion !== null ? `continued from ${fromVersion}` : 'continued'}
             </span>
           )}
           {job.stopped_early && (
@@ -953,6 +964,14 @@ function VersionHistory({
     }
   }
 
+  /** Same idea as the page-level resolver: a run's provenance is rendered from
+   *  the source's CURRENT name, so renaming it updates every reference. Scoped
+   *  to this model's list, which is where a finetune source always comes from. */
+  const labelOf = (jobId: number) => {
+    const source = jobs.find((j) => j.id === jobId)
+    return source ? versionLabel(source) : null
+  }
+
   async function removeSelected() {
     setBusy(true)
     onError(null)
@@ -1011,7 +1030,14 @@ function VersionHistory({
                     </span>
                   )}
                   {j.init_from_job_id !== null && (
-                    <GitBranch size={10} className="shrink-0 text-gray-400" />
+                    <GitBranch
+                      size={10}
+                      className="shrink-0 text-gray-400"
+                      // Resolved live, so renaming the source updates this too.
+                      aria-label={`Continued from ${labelOf(j.init_from_job_id) ?? 'an earlier run'}`}
+                    >
+                      <title>{`Continued from ${labelOf(j.init_from_job_id) ?? 'an earlier run'}`}</title>
+                    </GitBranch>
                   )}
                 </span>
                 <span className="flex shrink-0 items-center gap-0.5">
