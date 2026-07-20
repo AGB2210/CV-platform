@@ -155,35 +155,61 @@ class GroundingDinoAnnotator(AutoAnnotator):
         return prompt, back_map
 
     @staticmethod
-    def _resolve_label(raw: str, back_map: dict[str, str], fallback: str) -> str:
+    def _resolve_label(raw: str, back_map: dict[str, str]) -> str | None:
         """Map a model-returned phrase back to one of our class names.
 
-        Needed because the model doesn't always echo a prompt phrase verbatim.
-        It may return a sub-span ("car" from "a parked car"), merge adjacent
-        phrases, or return an empty string. Three passes, most-specific first;
-        a wrong label silently mislabels training data, so this is worth the
-        care.
+        Returns None when the phrase does not identify exactly one class. The
+        caller DROPS those boxes.
+
+        WHY NONE RATHER THAN A BEST GUESS. This used to fall back to
+        `class_names[0]` whenever it couldn't decide, which is how a real
+        mislabelling bug shipped: Grounding DINO returns an EMPTY label for
+        low-confidence detections, so on a two-class "car, person" project every
+        unlabelled box became a "car". Measured on the shapes demo, every
+        person-shaped box the model found below ~0.3 confidence was stored as a
+        car. The user saw "people don't get annotated"; what was actually
+        happening was worse — they were being annotated as the wrong class, and
+        that is training data being quietly poisoned.
+
+        A box whose class we cannot determine is not data. Dropping it loses a
+        detection the human can redraw; keeping it invents ground truth that
+        looks legitimate and is wrong.
+
+        Ambiguity is treated the same way. The model merges adjacent prompt
+        phrases — "car . person ." comes back as the single span "car person" —
+        and the old code resolved that by taking whichever class it iterated
+        first, so the answer depended on class ORDER rather than on the image.
+        A span that names two classes identifies neither.
         """
         cleaned = raw.lower().strip(" .")
         if not cleaned:
-            return fallback
+            return None
 
-        # 1. Exact match on the prompted phrase.
+        # 1. Exact match on the prompted phrase — unambiguous by construction.
         if cleaned in back_map:
             return back_map[cleaned]
 
         # 2. The returned span is contained in a prompt phrase, or vice versa.
-        for phrase, class_name in back_map.items():
-            if cleaned in phrase or phrase in cleaned:
-                return class_name
+        #    Collect every match: "car person" contains both "car" and "person",
+        #    and answering that with one of them is a coin toss.
+        matches = {
+            class_name
+            for phrase, class_name in back_map.items()
+            if cleaned in phrase or phrase in cleaned
+        }
+        if len(matches) == 1:
+            return matches.pop()
+        if matches:
+            return None  # names several classes — identifies none
 
-        # 3. Any prompt phrase shares a word with the returned span.
+        # 3. Loosest pass: a shared word ("parked car" -> "car").
         words = set(cleaned.split())
-        for phrase, class_name in back_map.items():
-            if words & set(phrase.split()):
-                return class_name
-
-        return fallback
+        matches = {
+            class_name
+            for phrase, class_name in back_map.items()
+            if words & set(phrase.split())
+        }
+        return matches.pop() if len(matches) == 1 else None
 
     # --- inference ---------------------------------------------------------
 
@@ -230,7 +256,7 @@ class GroundingDinoAnnotator(AutoAnnotator):
 
         boxes: list[Box] = []
         raw_labels = results.get("text_labels", results.get("labels", []))
-        fallback = request.class_names[0] if request.class_names else "object"
+        unlabelled = 0
 
         for box_t, score_t, raw_label in zip(
             results["boxes"], results["scores"], raw_labels, strict=False
@@ -238,7 +264,13 @@ class GroundingDinoAnnotator(AutoAnnotator):
             # .tolist() pulls the tensor to CPU python floats. Keeping tensors
             # around here would pin VRAM for the whole batch.
             x1, y1, x2, y2 = (float(v) for v in box_t.tolist())
-            label = self._resolve_label(str(raw_label), back_map, fallback)
+            label = self._resolve_label(str(raw_label), back_map)
+            if label is None:
+                # The model found something but didn't say what. Guessing a
+                # class here is how wrong ground truth gets manufactured — see
+                # _resolve_label. Count it so the log shows recall being lost.
+                unlabelled += 1
+                continue
 
             box = Box(
                 x1=x1,
@@ -253,10 +285,11 @@ class GroundingDinoAnnotator(AutoAnnotator):
                 boxes.append(box)
 
         logger.info(
-            "Grounding DINO: %d boxes in %.0f ms for %s",
+            "Grounding DINO: %d boxes in %.0f ms for %s%s",
             len(boxes),
             elapsed_ms,
             request.image_path,
+            f" ({unlabelled} dropped — model gave no usable class)" if unlabelled else "",
         )
         return AnnotationResult(
             boxes=boxes,
