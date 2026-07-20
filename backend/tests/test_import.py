@@ -597,3 +597,28 @@ def test_the_same_image_is_allowed_in_a_different_project(client):
         ).json()
         assert body["uploaded_count"] == 1
         assert body["duplicates_skipped"] == 0
+
+
+def test_same_filename_different_pictures_are_both_kept(client):
+    """Identity is the BYTES, and this is the direction that would destroy data.
+
+    Datasets reuse filenames constantly — train/001.jpg and test/001.jpg, or
+    img_0001.jpg in every folder. The upload also sends only BASENAMES in each
+    multipart part (the folder structure travels separately in `paths`), so by
+    the time the server sees them the names have genuinely collided.
+
+    Deduplicating on name would therefore silently discard real images, and the
+    loss would be invisible: the count would just be lower than the folder.
+    """
+    pid = client.post("/api/projects", json={"name": "NameClash"}).json()["id"]
+    body = client.post(
+        f"/api/projects/{pid}/images",
+        files=[
+            ("files", ("001.jpg", png_bytes(64, 48, colour=(200, 30, 30)), "image/png")),
+            ("files", ("001.jpg", png_bytes(64, 48, colour=(30, 30, 200)), "image/png")),
+        ],
+    ).json()
+
+    assert body["uploaded_count"] == 2, "the names collided; the pictures did not"
+    assert body["duplicates_skipped"] == 0
+    assert len(client.get(f"/api/projects/{pid}/images").json()) == 2
