@@ -190,9 +190,31 @@ export function MetricsChart({ points }: { points: EpochPoint[] }) {
   const hasData = data.length > 0
 
   // Epochs are whole numbers, so the epoch axis steps in whole numbers.
-  const xTicks = niceTicks(dom.x0, dom.x1, 6, true).filter(
-    (t) => t >= dom.x0 - 1e-6 && t <= dom.x1 + 1e-6,
-  )
+  const inDomain = (t: number) => t >= dom.x0 - 1e-6 && t <= dom.x1 + 1e-6
+  const baseTicks = niceTicks(dom.x0, dom.x1, 6, true).filter(inDomain)
+
+  // ALWAYS label the latest epoch reached.
+  //
+  // Round ticks alone (1, 11, 21, 31…) leave the most interesting number — how
+  // far the run has actually got — unlabelled for ten epochs at a time. So the
+  // newest point gets its own tick, which advances with the run: 35 while epoch
+  // 35 is the last one in, replaced by 36 when that arrives, and sitting at 60
+  // once a 60-epoch run finishes.
+  //
+  // Its neighbours are dropped when they'd collide: at ~24px apart two labels
+  // overlap into an unreadable smudge, and between "31" and the live epoch the
+  // live one is worth more.
+  const lastEpoch = hasData ? Math.max(...data.map((d) => d.epoch)) : null
+  const showLast = lastEpoch !== null && inDomain(lastEpoch)
+  const MIN_LABEL_GAP_PX = 24
+  const xTicks = showLast
+    ? [
+        ...baseTicks.filter(
+          (t) => t !== lastEpoch && Math.abs(sx(t) - sx(lastEpoch)) >= MIN_LABEL_GAP_PX,
+        ),
+        lastEpoch,
+      ]
+    : baseTicks
   const yTicks = niceTicks(dom.y0, dom.y1, 5).filter((t) => t >= dom.y0 - 1e-6 && t <= dom.y1 + 1e-6)
   const line = (key: 'val_map' | 'val_map50') =>
     data
@@ -271,14 +293,33 @@ export function MetricsChart({ points }: { points: EpochPoint[] }) {
             </g>
           ))}
           {/* x grid + labels */}
-          {xTicks.map((t) => (
-            <g key={`x${t}`}>
-              <line x1={sx(t)} y1={PAD.t} x2={sx(t)} y2={H - PAD.b} stroke="#f6f6f7" strokeWidth={1} />
-              <text x={sx(t)} y={H - PAD.b + 14} textAnchor="middle" className="fill-gray-400 text-[9px] tabular-nums">
-                {Math.round(t)}
-              </text>
-            </g>
-          ))}
+          {xTicks.map((t) => {
+            const isLast = showLast && t === lastEpoch
+            return (
+              <g key={`x${t}`}>
+                <line
+                  x1={sx(t)}
+                  y1={PAD.t}
+                  x2={sx(t)}
+                  y2={H - PAD.b}
+                  stroke={isLast ? '#e4e4e7' : '#f6f6f7'}
+                  strokeWidth={1}
+                />
+                {/* Darker, not coloured: it's the same kind of information as
+                    the other ticks, just the one you're most likely reading. */}
+                <text
+                  x={sx(t)}
+                  y={H - PAD.b + 14}
+                  textAnchor="middle"
+                  className={`text-[9px] tabular-nums ${
+                    isLast ? 'fill-gray-700 font-medium' : 'fill-gray-400'
+                  }`}
+                >
+                  {Math.round(t)}
+                </text>
+              </g>
+            )
+          })}
           {/* axis frame */}
           <line x1={PAD.l} y1={PAD.t} x2={PAD.l} y2={H - PAD.b} stroke="#d4d4d8" strokeWidth={1} />
           <line x1={PAD.l} y1={H - PAD.b} x2={W - PAD.r} y2={H - PAD.b} stroke="#d4d4d8" strokeWidth={1} />
