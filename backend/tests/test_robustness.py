@@ -173,3 +173,38 @@ def test_stored_paths_are_relative_to_storage(client):
 
     assert not Path(stored).is_absolute(), f"still absolute: {stored}"
     assert "versions" in stored
+
+
+def test_stored_paths_use_forward_slashes(client):
+    """A relative path is only portable if its SEPARATOR is portable.
+
+    str() on a Windows path gives a backslash-separated string, and on Linux that
+    not a nested path — it's one filename containing backslashes. Storing the
+    native separator defeated the entire point of storing a relative path the
+    moment the database moved between operating systems. POSIX separators work
+    on Windows too, so there is never a reason to write the other kind.
+    """
+    from app.models import DatasetVersion
+    from sqlalchemy import select
+
+    pid = make_project(client, "Slashes", classes=("car",))
+    upload_images(client, pid, ["a.png"])
+    client.post(f"/api/projects/{pid}/dataset/versions", json={"note": None})
+
+    db = client.SessionLocal()  # type: ignore[attr-defined]
+    try:
+        stored = db.scalars(select(DatasetVersion)).all()[0].snapshot_path
+    finally:
+        db.close()
+
+    assert "\\" not in stored, f"native separator leaked into the DB: {stored!r}"
+    assert stored.startswith("versions/")
+
+
+def test_windows_written_paths_still_resolve(client):
+    """Rows written before that fix hold backslashes. A database carried over
+    from a Windows machine must not report every version as missing."""
+    from app.config import from_storage_path, settings
+
+    resolved = from_storage_path(r"versions\2\v1.json")
+    assert resolved == settings.STORAGE_DIR / "versions" / "2" / "v1.json"

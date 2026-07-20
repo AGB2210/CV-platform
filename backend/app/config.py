@@ -107,12 +107,20 @@ def to_storage_path(path: Path | str) -> str:
     Relative paths make `storage/` self-describing: wherever the directory ends
     up, the rows still point into it.
 
+    ALWAYS WITH FORWARD SLASHES. `str()` on a Windows path yields
+    "versions\\2\\v1.json", and on Linux that is not a nested path at all — it
+    is one filename that happens to contain backslashes. Storing the native
+    separator would defeat the entire point of this function the moment the
+    database moved between operating systems, which is exactly the portability
+    it exists to provide. POSIX separators work on Windows too, so there is no
+    reason to ever write the other kind.
+
     A path outside STORAGE_DIR is stored absolute and unchanged. That isn't
     expected, but silently rewriting it would be worse than recording the truth.
     """
     path = Path(path)
     try:
-        return str(path.resolve().relative_to(settings.STORAGE_DIR.resolve()))
+        return path.resolve().relative_to(settings.STORAGE_DIR.resolve()).as_posix()
     except ValueError:
         return str(path)
 
@@ -124,8 +132,15 @@ def from_storage_path(stored: str | None) -> Path | None:
     absolute paths, and they must keep working whether or not the backfill
     script has been run — a migration that breaks the app until a script is run
     is a migration that will break someone's evening.
+
+    Backslashes are normalised first, because rows written by an earlier version
+    of `to_storage_path` on Windows hold "versions\\2\\v1.json". On Linux that
+    is one filename rather than a path, so without this a database carried over
+    from a Windows machine would report every version and checkpoint as missing.
     """
     if not stored:
         return None
-    path = Path(stored)
+    # Only safe because backslash is not a legal filename character on Windows,
+    # and every path we write is one we generated (uuid names, integer ids).
+    path = Path(stored.replace("\\", "/"))
     return path if path.is_absolute() else settings.STORAGE_DIR / path

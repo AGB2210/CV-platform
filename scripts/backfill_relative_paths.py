@@ -68,10 +68,27 @@ def main() -> int:
                 current = getattr(row, field)
                 if not current:
                     continue
-                if not Path(current).is_absolute():
-                    continue  # already relative
 
-                relative = to_storage_path(current)
+                # Two things need fixing, not one. An ALREADY-relative path can
+                # still hold Windows separators ("versions\\2\\v1.json"), which
+                # on Linux is a single filename rather than a nested path — so
+                # it is just as unportable as an absolute path was. Skipping
+                # anything already relative left exactly that case behind.
+                if not Path(current).is_absolute() and "\\" not in current:
+                    continue
+
+                # An ALREADY-relative path must not go through to_storage_path:
+                # that resolves against the current working directory, not
+                # storage/, so it lands outside and comes back unchanged — the
+                # separators never get fixed. Relative rows only need their
+                # separators normalised.
+                if Path(current).is_absolute():
+                    relative = to_storage_path(current)
+                else:
+                    relative = current.replace("\\", "/")
+
+                if relative == current:
+                    continue
                 if Path(relative).is_absolute():
                     # to_storage_path gives back an absolute path only when it
                     # sits outside storage/ — nothing this app writes does.
