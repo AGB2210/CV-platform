@@ -85,3 +85,47 @@ class Settings(BaseSettings):
 
 # A single shared instance, imported everywhere else as `from app.config import settings`.
 settings = Settings()
+
+
+# --- Portable paths ---------------------------------------------------------
+
+
+def to_storage_path(path: Path | str) -> str:
+    """A path stored in the DB: relative to STORAGE_DIR wherever possible.
+
+    THE PROBLEM THIS SOLVES. Version snapshots and model checkpoints used to be
+    recorded as absolute paths:
+
+        C:/Users/someone/Downloads/cv app/storage/versions/2/v1.json
+
+    which bakes one machine's directory layout into the data. Rename the folder,
+    move the project to another drive, or clone the repo somewhere else, and
+    every saved version and every trained model becomes unreachable — while the
+    rows still look perfectly healthy. For a tool meant to run on other people's
+    computers that is a defect, not a limitation.
+
+    Relative paths make `storage/` self-describing: wherever the directory ends
+    up, the rows still point into it.
+
+    A path outside STORAGE_DIR is stored absolute and unchanged. That isn't
+    expected, but silently rewriting it would be worse than recording the truth.
+    """
+    path = Path(path)
+    try:
+        return str(path.resolve().relative_to(settings.STORAGE_DIR.resolve()))
+    except ValueError:
+        return str(path)
+
+
+def from_storage_path(stored: str | None) -> Path | None:
+    """Resolve a DB-stored path back to a real one.
+
+    Accepts BOTH shapes on purpose. Rows written before this change hold
+    absolute paths, and they must keep working whether or not the backfill
+    script has been run — a migration that breaks the app until a script is run
+    is a migration that will break someone's evening.
+    """
+    if not stored:
+        return None
+    path = Path(stored)
+    return path if path.is_absolute() else settings.STORAGE_DIR / path

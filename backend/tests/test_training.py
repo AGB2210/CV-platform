@@ -13,6 +13,8 @@ stubs the annotation model.
 
 from __future__ import annotations
 
+from app.config import from_storage_path
+
 import pytest
 
 from tests.conftest import make_project, upload_images
@@ -355,7 +357,8 @@ def test_run_exports_records_metrics_and_checkpoint(client, monkeypatch, fake_tr
 
     # The checkpoint was recorded and actually exists on disk.
     assert job["checkpoint_path"]
-    assert Path(job["checkpoint_path"]).exists()
+    # Paths are stored relative to storage/ for portability.
+    assert from_storage_path(job["checkpoint_path"]).exists()
 
 
 def test_versions_number_per_project_and_model(client, monkeypatch, fake_trainer):
@@ -547,7 +550,8 @@ def test_stop_finishes_current_epoch_and_keeps_the_model(client, monkeypatch, co
     assert job["stopped_early"] is True
     assert job["current_epoch"] == 1, "stopped after the epoch in flight, not at 10"
     assert job["total_epochs"] == 10, "the schedule it was asked for is still recorded"
-    assert Path(job["checkpoint_path"]).exists(), "a stopped run still yields a model"
+    # Paths are stored relative to storage/ for portability.
+    assert from_storage_path(job["checkpoint_path"]).exists(), "a stopped run still yields a model"
 
 
 def test_cancel_discards_the_run_entirely(client, monkeypatch, controllable_trainer):
@@ -666,7 +670,8 @@ def test_delete_model_version_removes_its_run_directory(client, monkeypatch, fak
 
     pid, _ = make_trainable_project(client)
     a, b = _make_two_versions(client, monkeypatch, pid)
-    ckpt = Path(client.get(f"/api/training-jobs/{a['id']}").json()["checkpoint_path"])
+    stored = client.get(f"/api/training-jobs/{a['id']}").json()["checkpoint_path"]
+    ckpt = from_storage_path(stored)
     assert ckpt.exists()
 
     assert client.delete(f"/api/training-jobs/{a['id']}").status_code == 204
@@ -727,7 +732,10 @@ def test_finetune_continues_from_prior_checkpoint(client, monkeypatch, fake_trai
         f"/api/projects/{pid}/train", json={"trainer_key": "fake", "epochs": 2}
     ).json()
     assert client.get(f"/api/training-jobs/{first['id']}").json()["status"] == "done"
-    ckpt = client.get(f"/api/training-jobs/{first['id']}").json()["checkpoint_path"]
+    # Paths are stored relative to storage/; the runner resolves them back.
+    ckpt = from_storage_path(
+        client.get(f"/api/training-jobs/{first['id']}").json()["checkpoint_path"]
+    )
 
     second = client.post(
         f"/api/projects/{pid}/train",
@@ -741,4 +749,5 @@ def test_finetune_continues_from_prior_checkpoint(client, monkeypatch, fake_trai
     # The runner passed the first run's checkpoint to the trainer as init_weights.
     last_config = fake_trainer.received[-1]
     assert last_config.init_weights is not None
-    assert str(last_config.init_weights) == ckpt
+    # The runner resolves the stored relative path back to a real one.
+    assert last_config.init_weights == ckpt

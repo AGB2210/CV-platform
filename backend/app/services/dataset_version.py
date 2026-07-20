@@ -39,7 +39,7 @@ from pathlib import Path
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app.config import settings
+from app.config import from_storage_path, settings, to_storage_path
 from app.services.dataset_snapshot import (
     DatasetSnapshot,
     build_snapshot,
@@ -91,7 +91,7 @@ def save_version(db: Session, project_id: int, note: str | None = None):
         project_id=project_id,
         version=version,
         note=(note or None),
-        snapshot_path=str(path),
+        snapshot_path=to_storage_path(path),
         total_images=len(snapshot.images),
         train_images=counts.get(Split.TRAIN, 0),
         val_images=counts.get(Split.VAL, 0),
@@ -110,8 +110,8 @@ def save_version(db: Session, project_id: int, note: str | None = None):
 
 def load_snapshot(version) -> DatasetSnapshot:
     """Read a version's snapshot from disk."""
-    path = Path(version.snapshot_path)
-    if not path.exists():
+    path = from_storage_path(version.snapshot_path)
+    if path is None or not path.exists():
         raise DatasetVersionError(
             f"The snapshot file for dataset v{version.version} is missing "
             f"({path}). It may have been deleted from storage."
@@ -303,14 +303,15 @@ def delete_version(db: Session, version) -> None:
     become unreferenced once every version mentioning them is gone — a cleanup
     pass is the right home for that, not this.)
     """
-    path = Path(version.snapshot_path)
+    path = from_storage_path(version.snapshot_path)
     db.delete(version)
     db.commit()
     # After the commit: a crash between the two leaves an orphaned file, which
     # is wasted disk. The reverse order would leave a row pointing at a snapshot
     # that no longer exists, which breaks restore. Same trade the project makes
     # everywhere else.
-    path.unlink(missing_ok=True)
+    if path is not None:
+        path.unlink(missing_ok=True)
 
 
 def current_version(db: Session, project_id: int):

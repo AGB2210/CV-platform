@@ -34,7 +34,7 @@ from pathlib import Path
 
 from sqlalchemy.orm import Session
 
-from app.config import settings
+from app.config import from_storage_path, settings, to_storage_path
 from app.database import SessionLocal
 from app.ml import registry as annotator_registry
 from app.ml.device import empty_cache, get_device
@@ -141,7 +141,7 @@ def _run(db: Session, job: TrainingJob) -> None:
                 f"Cannot continue from run {job.init_from_job_id}: it has no saved "
                 "checkpoint."
             )
-        init_weights = Path(source.checkpoint_path)
+        init_weights = from_storage_path(source.checkpoint_path)
         if not init_weights.exists():
             raise ValueError(
                 f"The checkpoint for run {job.init_from_job_id} is missing on disk "
@@ -264,7 +264,7 @@ def _run(db: Session, job: TrainingJob) -> None:
     # estimates: best_map is the true best across all epochs, and the checkpoint
     # path is what Phase 5 will load to evaluate and serve.
     if result.best_checkpoint_path is not None:
-        job.checkpoint_path = str(result.best_checkpoint_path)
+        job.checkpoint_path = to_storage_path(result.best_checkpoint_path)
     if result.best_map is not None:
         job.best_map = result.best_map
     job.current_epoch = result.epochs_completed
@@ -312,8 +312,10 @@ def _reclaim_space(run_dir: Path, job: TrainingJob) -> None:
     try:
         shutil.rmtree(run_dir / "dataset", ignore_errors=True)
         if job.checkpoint_path:
-            last = Path(job.checkpoint_path).with_name("last.pt")
-            last.unlink(missing_ok=True)
+            resolved = from_storage_path(job.checkpoint_path)
+            last = resolved.with_name("last.pt") if resolved else None
+            if last is not None:
+                last.unlink(missing_ok=True)
     except Exception:  # noqa: BLE001
         # Housekeeping must never fail a run that actually succeeded.
         logger.warning("Could not reclaim space for run %s", job.id, exc_info=True)

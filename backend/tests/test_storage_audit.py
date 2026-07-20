@@ -10,6 +10,8 @@ exactly the data versions exist to protect.
 
 from __future__ import annotations
 
+from app.config import from_storage_path
+
 from tests.conftest import make_project, png_bytes, upload_images
 
 
@@ -131,7 +133,7 @@ def test_reclaim_refuses_when_a_snapshot_cannot_be_read(client):
     from app.models import DatasetVersion
 
     row = db.get(DatasetVersion, version["id"])
-    Path(row.snapshot_path).write_text("{ this is not valid json")
+    from_storage_path(row.snapshot_path).write_text("{ this is not valid json")
     db.close()
 
     report = _report(client, pid)

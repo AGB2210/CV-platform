@@ -35,6 +35,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.config import from_storage_path
 from app.services import storage
 from app.services.dataset_snapshot import read_snapshot
 
@@ -77,7 +78,7 @@ def _referenced_by_versions(db: Session, project_id: int) -> tuple[set[str], lis
         select(DatasetVersion).where(DatasetVersion.project_id == project_id)
     ).all():
         try:
-            snapshot = read_snapshot(Path(version.snapshot_path))
+            snapshot = read_snapshot(from_storage_path(version.snapshot_path))
         except Exception as exc:  # noqa: BLE001 — a bad file must not delete data
             logger.warning("Cannot read snapshot for v%s: %s", version.version, exc)
             unreadable.append(f"v{version.version}")

@@ -10,6 +10,8 @@ end-to-end (row gone, file kept, restore recreates both the image and its boxes)
 
 from __future__ import annotations
 
+from app.config import from_storage_path
+
 from tests.conftest import make_project, upload_images
 
 
@@ -361,7 +363,9 @@ def test_delete_version_removes_its_snapshot(client):
     try:
         from app.models import DatasetVersion
 
-        snapshot = Path(db.get(DatasetVersion, v1["id"]).snapshot_path)
+        # Stored RELATIVE to storage/ so the project folder can move; resolve
+        # it the way the app does.
+        snapshot = from_storage_path(db.get(DatasetVersion, v1["id"]).snapshot_path)
     finally:
         db.close()
     assert snapshot.exists()
