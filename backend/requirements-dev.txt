@@ -2,8 +2,17 @@
 #
 #   pip install -r requirements-dev.txt
 #   pytest
-#
-# httpx is already pulled in by fastapi/starlette (TestClient needs it), so
-# pytest is the only real add here.
 
 pytest>=8.0
+
+# Starlette's TestClient needs an HTTP client, and current versions want httpx2
+# specifically — with plain httpx it raises "requires the httpx2 package" and
+# the whole suite fails at conftest import.
+#
+# This file used to say the client came free with fastapi/starlette and that
+# pytest was the only real add. That was true once and quietly stopped being
+# true: existing dev machines kept working because they already had httpx
+# installed from an earlier resolve, so nothing failed locally. A clean install
+# from these files could not run a single test. Found by building a fresh venv
+# from the requirements alone, which is exactly what CI does on every run.
+httpx2>=0.28

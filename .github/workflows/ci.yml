@@ -1,0 +1,98 @@
+# Continuous integration: run the checks the project already treats as its gate.
+#
+# WHAT THIS IS AND ISN'T
+# ----------------------
+# This runs exactly the three commands HANDOFF.md tells a contributor to run
+# before calling something done — backend tests, frontend typecheck, frontend
+# lint. Nothing more. CI that checks something different from what people run
+# locally is how "works on my machine" starts.
+#
+# It deliberately does NOT install the ML dependencies (torch, ultralytics,
+# transformers). They are several GB, and the test suite is built to run without
+# them: annotation inserts proposal rows directly and training uses fake trainers
+# registered into the registry. So this stays a ~2 minute job instead of a
+# ~20 minute one, and it keeps honest the claim that the core app works without
+# a GPU. Real inference and real training are verified by driving the app, which
+# no runner here can do.
+#
+# The matrix is Linux-only on purpose for now. The app is developed on Windows,
+# so the interesting portability question is the other direction — whether the
+# path handling, the storage layout and the importer work on POSIX too. Adding
+# windows-latest later is a one-line change if it earns its runtime.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Lets a run be triggered by hand from the Actions tab, which is useful when
+  # you want to confirm a green result without pushing an empty commit.
+  workflow_dispatch:
+
+# A new push to the same branch makes the previous run's result irrelevant.
+# Cancelling it frees the runner instead of burning minutes on a stale commit.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend — pytest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # Matches the version the project is developed against. Pinning the
+          # minor rather than using "3.x" means a new Python release cannot turn
+          # a green branch red overnight for reasons unrelated to the change.
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
+
+      - name: Install dependencies
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Import sanity
+        working-directory: backend
+        # Cheap and specific: a broken import shows up here as one clear line
+        # rather than as 100 collection errors in the pytest output.
+        run: python -c "from app.main import app"
+
+      - name: Run tests
+        working-directory: backend
+        run: python -m pytest -q
+
+  frontend:
+    name: Frontend — typecheck + lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # `npm ci` rather than `npm install`: it installs exactly the lockfile and
+      # fails if package.json and the lock have drifted apart, which is a real
+      # error worth failing on rather than silently resolving.
+      - name: Install dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Typecheck
+        working-directory: frontend
+        run: npm run typecheck
+
+      - name: Lint
+        working-directory: frontend
+        run: npm run lint
