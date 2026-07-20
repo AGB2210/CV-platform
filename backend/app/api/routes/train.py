@@ -93,9 +93,23 @@ def start_training(
     if payload.init_from_job_id is not None:
         _validate_finetune_source(db, project_id, payload.init_from_job_id)
 
+    # Version number scoped to THIS project + model, 1-based. Counts every prior
+    # run of the same trainer here (any status) — a version is a training attempt,
+    # so failures occupy a number too and the sequence never silently reuses one.
+    version = 1 + (
+        db.scalar(
+            select(func.count(TrainingJob.id)).where(
+                TrainingJob.project_id == project_id,
+                TrainingJob.trainer_key == payload.trainer_key,
+            )
+        )
+        or 0
+    )
+
     job = TrainingJob(
         project_id=project_id,
         trainer_key=payload.trainer_key,
+        version=version,
         status=JobStatus.QUEUED,
         epochs=payload.epochs,
         batch_size=payload.batch_size,

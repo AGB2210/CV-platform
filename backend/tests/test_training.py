@@ -270,6 +270,25 @@ def test_run_exports_records_metrics_and_checkpoint(client, monkeypatch, fake_tr
     assert Path(job["checkpoint_path"]).exists()
 
 
+def test_versions_number_per_project_and_model(client, monkeypatch, fake_trainer):
+    """Version is 1-based per (project, trainer): consecutive runs increment, and
+    a different project restarts at 1 — not the global row id."""
+    monkeypatch.setattr(
+        "app.services.training_job.SessionLocal",
+        client.SessionLocal,  # type: ignore[attr-defined]
+    )
+    pid, _ = make_trainable_project(client, "VerA")
+    # TestClient runs the (fake) run to completion synchronously, so each POST is
+    # free to queue the next without tripping the one-GPU-job guard.
+    v1 = client.post(f"/api/projects/{pid}/train", json={"trainer_key": "fake", "epochs": 1}).json()
+    v2 = client.post(f"/api/projects/{pid}/train", json={"trainer_key": "fake", "epochs": 1}).json()
+    assert (v1["version"], v2["version"]) == (1, 2)
+
+    other, _ = make_trainable_project(client, "VerB")
+    v = client.post(f"/api/projects/{other}/train", json={"trainer_key": "fake", "epochs": 1}).json()
+    assert v["version"] == 1, "a different project's versions restart at 1"
+
+
 def test_finetune_rejects_unusable_source(client, no_train_run, fake_trainer):
     """Can't continue from a run that doesn't exist or never produced weights."""
     pid, _ = make_trainable_project(client)

@@ -83,10 +83,12 @@ export function Train() {
           setImageSize(t[0].default_image_size)
         }
         const running = j.find((x) => x.status === 'running' || x.status === 'queued')
-        if (running) setActiveJob(running)
-        // Land on the most recent run's detail so history is inspectable
-        // immediately, rather than an empty panel.
-        else if (j.length) setSelectedId(j[0].id)
+        if (running) {
+          setActiveJob(running)
+          // Show the model that's actually training, not just the first in the
+          // list — otherwise the form and the live version disagree.
+          setTrainerKey(running.trainer_key)
+        }
       })
       .catch((e: Error) => !cancelled && setError(e.message))
       .finally(() => !cancelled && setLoading(false))
@@ -97,6 +99,10 @@ export function Train() {
 
   function selectTrainer(key: string) {
     setTrainerKey(key)
+    // Versions are per-model, so a selection from the old model's list would
+    // point at something no longer shown. Fall back to that model's latest.
+    setSelectedId(null)
+    setInitFromId(null)
     const t = trainers.find((x) => x.key === key)
     if (t) {
       setEpochs(t.default_epochs)
@@ -161,14 +167,23 @@ export function Train() {
   const noTrainers = trainers.length === 0
   const canRun = !isRunning && !noTrainers && !!preview?.can_train
 
-  // Runs that produced a checkpoint — the candidates to finetune from.
-  const completedRuns = jobs.filter((j) => j.status === 'done' && j.checkpoint_path)
+  // Versions are scoped to THIS project (the endpoint) AND this model — a YOLO
+  // history shouldn't list RF-DETR versions, and you can't continue one
+  // architecture's weights from another's. Filtered client-side so switching the
+  // model dropdown re-scopes instantly with no round trip.
+  const modelJobs = jobs.filter((j) => j.trainer_key === trainerKey)
+  // Versions that produced a checkpoint — the candidates to continue from.
+  const completedRuns = modelJobs.filter((j) => j.status === 'done' && j.checkpoint_path)
+  const latestVersion = modelJobs.length ? Math.max(...modelJobs.map((j) => j.version)) : 0
 
-  // What the detail panel shows: the live run takes precedence, else the run the
-  // user clicked in history, else the last finished run.
+  // What the detail panel shows: the live run takes precedence, else the version
+  // the user clicked, else the newest version of this model.
   const runningJob = isRunning ? activeJob : null
   const displayedJob =
-    runningJob ?? jobs.find((j) => j.id === selectedId) ?? activeJob ?? null
+    runningJob ?? modelJobs.find((j) => j.id === selectedId) ?? activeJob ?? modelJobs[0] ?? null
+
+  /** Version label for a job id — used for the "continued from" provenance. */
+  const versionOf = (jobId: number) => jobs.find((j) => j.id === jobId)?.version ?? null
 
   if (loading) {
     return (
@@ -205,7 +220,15 @@ export function Train() {
           <section className="space-y-4">
             {displayedJob && (
               <div ref={jobRef}>
-                <RunDetail job={displayedJob} live={displayedJob.id === runningJob?.id} />
+                <RunDetail
+                  job={displayedJob}
+                  live={displayedJob.id === runningJob?.id}
+                  fromVersion={
+                    displayedJob.init_from_job_id !== null
+                      ? versionOf(displayedJob.init_from_job_id)
+                      : null
+                  }
+                />
               </div>
             )}
 
@@ -254,7 +277,7 @@ export function Train() {
                       <option value="">Pretrained weights (from scratch)</option>
                       {completedRuns.map((j) => (
                         <option key={j.id} value={j.id}>
-                          Continue run #{j.id}
+                          Continue v{j.version}
                           {j.best_map !== null ? ` · mAP ${j.best_map.toFixed(3)}` : ''}
                         </option>
                       ))}
@@ -262,8 +285,8 @@ export function Train() {
                     <p className="mt-0.5 flex items-center gap-1 text-xs text-gray-400">
                       <GitBranch size={11} />
                       {initFromId
-                        ? `Builds on run #${initFromId}'s weights instead of starting over.`
-                        : 'Continue a finished run to keep improving it instead of re-learning from zero.'}
+                        ? `Builds on v${versionOf(initFromId)}'s weights, trained on the current dataset.`
+                        : 'Continue a finished version to keep improving it instead of re-learning from zero.'}
                     </p>
                   </div>
 
@@ -308,7 +331,9 @@ export function Train() {
                 ) : (
                   <>
                     <Play size={14} />
-                    {initFromId ? `Continue run #${initFromId}` : 'Start training'}
+                    {initFromId
+                      ? `Continue v${versionOf(initFromId)} → v${latestVersion + 1}`
+                      : `Train v${latestVersion + 1}`}
                   </>
                 )}
               </button>
@@ -325,8 +350,13 @@ export function Train() {
           <aside className="space-y-4">
             {device && <DeviceCard device={device} />}
             {preview && <DatasetCard preview={preview} projectId={projectId} />}
-            {jobs.length > 0 && (
-              <JobHistory jobs={jobs} selectedId={displayedJob?.id ?? null} onSelect={setSelectedId} />
+            {modelJobs.length > 0 && (
+              <VersionHistory
+                jobs={modelJobs}
+                latestVersion={latestVersion}
+                selectedId={displayedJob?.id ?? null}
+                onSelect={setSelectedId}
+              />
             )}
           </aside>
         </div>
@@ -343,16 +373,24 @@ function fmt(v: number | null | undefined, dp = 3): string {
   return v === null || v === undefined ? '—' : v.toFixed(dp)
 }
 
-function RunDetail({ job, live }: { job: TrainingJob; live: boolean }) {
+function RunDetail({
+  job,
+  live,
+  fromVersion,
+}: {
+  job: TrainingJob
+  live: boolean
+  fromVersion: number | null
+}) {
   return (
     <div className={`card transition-shadow ${live ? 'ring-2 ring-accent-400 ring-offset-2' : ''}`}>
       <div className="flex items-center justify-between border-b border-gray-200 px-4 py-2.5">
         <h2 className="flex items-center gap-2 text-sm font-medium text-gray-900">
-          {live ? 'Training…' : `Run #${job.id}`}
+          {live ? `Training v${job.version}…` : `Version ${job.version}`}
           {job.init_from_job_id !== null && (
             <span className="flex items-center gap-1 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-normal text-gray-500">
               <GitBranch size={10} />
-              from #{job.init_from_job_id}
+              {fromVersion !== null ? `continued from v${fromVersion}` : 'continued'}
             </span>
           )}
         </h2>
@@ -566,24 +604,34 @@ function NumberField({
   )
 }
 
-function JobHistory({
+/**
+ * Versions of the CURRENTLY SELECTED model in this project, newest first.
+ *
+ * Scoped deliberately: mixing another model's versions (or another project's)
+ * into one list makes the numbering meaningless — v3 of YOLO and v3 of RF-DETR
+ * are unrelated models. The caller passes an already-filtered list.
+ */
+function VersionHistory({
   jobs,
+  latestVersion,
   selectedId,
   onSelect,
 }: {
   jobs: TrainingJob[]
+  latestVersion: number
   selectedId: number | null
   onSelect: (id: number) => void
 }) {
   return (
     <div className="card">
       <div className="border-b border-gray-200 px-3 py-2.5">
-        <h2 className="text-sm font-medium text-gray-900">Recent runs</h2>
+        <h2 className="text-sm font-medium text-gray-900">Versions</h2>
+        <p className="text-xs text-gray-500">This model, this project</p>
       </div>
       <ul className="divide-y divide-gray-100">
-        {jobs.slice(0, 10).map((j) => (
+        {jobs.slice(0, 12).map((j) => (
           <li key={j.id}>
-            {/* Clickable: opens this run's detail (metrics + config) on the left. */}
+            {/* Clickable: opens this version's detail (curve + config) on the left. */}
             <button
               onClick={() => onSelect(j.id)}
               className={`flex w-full items-center justify-between px-3 py-2 text-left text-xs transition-colors ${
@@ -591,8 +639,13 @@ function JobHistory({
               }`}
             >
               <div className="min-w-0">
-                <p className="flex items-center gap-1 truncate font-medium text-gray-800">
-                  Run #{j.id}
+                <p className="flex items-center gap-1.5 truncate font-medium text-gray-800">
+                  v{j.version}
+                  {j.version === latestVersion && (
+                    <span className="rounded bg-accent-100 px-1 py-px text-[9px] font-medium uppercase tracking-wide text-accent-700">
+                      latest
+                    </span>
+                  )}
                   {j.init_from_job_id !== null && <GitBranch size={10} className="text-gray-400" />}
                 </p>
                 <p className="tabular-nums text-gray-500">

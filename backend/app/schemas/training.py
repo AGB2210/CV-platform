@@ -69,6 +69,8 @@ class TrainingJobRead(BaseModel):
     id: int
     project_id: int
     trainer_key: str
+    #: 1-based version number within this project + trainer (what the UI shows).
+    version: int
     status: str
 
     epochs: int

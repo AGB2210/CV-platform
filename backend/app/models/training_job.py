@@ -40,6 +40,13 @@ class TrainingJob(Base):
     # because the registry lives in code, not the DB (same as AnnotationJob).
     trainer_key: Mapped[str] = mapped_column(String(64), nullable=False)
 
+    # Per-(project, trainer) version number, 1-based — "which iteration of THIS
+    # model on THIS project is this". Assigned at creation. Distinct from `id`,
+    # which is a global primary key shared across every project and model: this
+    # is what the UI shows, so the sequence starts at 1 per model and reads like
+    # versions rather than exposing internal row ids.
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
     # Reuses AnnotationJob's JobStatus vocabulary (queued/running/done/failed).
     # Not imported as a type here — it's a bag of string constants, and the
     # column just stores the string — but the values are deliberately identical

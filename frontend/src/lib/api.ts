@@ -417,6 +417,9 @@ export interface TrainingJob {
   id: number
   project_id: number
   trainer_key: string
+  /** 1-based version within this project + model — what the UI shows, rather
+   *  than the global row `id`. */
+  version: number
   status: 'queued' | 'running' | 'done' | 'failed'
   epochs: number
   batch_size: number
