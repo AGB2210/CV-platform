@@ -43,6 +43,7 @@ from app.ml.trainers.base import EpochMetrics, TrainConfig
 from app.models import Annotation, Category, Image, JobStatus, TrainingJob
 from app.models.image import Split
 from app.services import exporters
+from app.services.dataset_snapshot import build_snapshot
 
 logger = logging.getLogger(__name__)
 
@@ -162,20 +163,15 @@ def _run(db: Session, job: TrainingJob) -> None:
 
     # Export in the trainer's format, honouring the per-image split. Proposals
     # are excluded by the exporter itself — only proposed=False rows are written.
+    # The snapshot IS the dataset this run trains on. Each image carries its own
+    # split, so the exporter needs no separate map.
+    snapshot = build_snapshot(db, job.project_id)
     exporter = exporters.get(trainer.export_format)
-    split_map = {
-        row_id: row_split
-        for row_id, row_split in db.execute(
-            select(Image.id, Image.split).where(Image.project_id == job.project_id)
-        ).all()
-    }
     exporter.export(
-        db,
+        snapshot,
         exporters.ExportRequest(
-            project_id=job.project_id,
             out_dir=dataset_dir,
             include_unreviewed=True,
-            split=split_map,
             copy_images=True,
         ),
     )

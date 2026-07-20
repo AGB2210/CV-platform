@@ -5,11 +5,8 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session
-
-from app.models import Annotation, Category, Image
 from app.services import storage
+from app.services.dataset_snapshot import DatasetSnapshot
 from app.services.exporters.base import DatasetExporter, ExportRequest, coco_to_yolo
 
 
@@ -18,24 +15,12 @@ class YoloExporter(DatasetExporter):
     display_name = "YOLO (Ultralytics)"
     description = "One .txt per image + data.yaml. Consumed by YOLO26 / ultralytics."
 
-    def export(self, db: Session, request: ExportRequest) -> Path:
+    def export(self, snapshot: DatasetSnapshot, request: ExportRequest) -> Path:
         root = request.out_dir
         root.mkdir(parents=True, exist_ok=True)
 
-        categories = list(
-            db.scalars(
-                select(Category)
-                .where(Category.project_id == request.project_id)
-                .order_by(Category.id)
-            ).all()
-        )
-        images = list(
-            db.scalars(
-                select(Image)
-                .where(Image.project_id == request.project_id)
-                .order_by(Image.id)
-            ).all()
-        )
+        categories = snapshot.categories
+        images = snapshot.images
 
         # YOLO class ids are 0-BASED positional indices into data.yaml's names
         # list — NOT database ids. Off-by-one here trains every object as the
@@ -46,7 +31,7 @@ class YoloExporter(DatasetExporter):
         splits_seen: set[str] = set()
 
         for image in images:
-            split = request.split_for(image.id)
+            split = image.split
             splits_seen.add(split)
 
             # Ultralytics finds labels by PATH CONVENTION, not configuration: it
@@ -62,15 +47,13 @@ class YoloExporter(DatasetExporter):
 
             stem = Path(image.original_filename).stem
 
-            # Proposals never export — see the note in the COCO exporter.
-            query = select(Annotation).where(
-                Annotation.image_id == image.id, Annotation.proposed.is_(False)
-            )
+            # Proposals never export — a snapshot only holds accepted boxes.
+            anns = image.annotations
             if not request.include_unreviewed:
-                query = query.where(Annotation.reviewed.is_(True))
+                anns = [a for a in anns if a.reviewed]
 
             lines: list[str] = []
-            for ann in db.scalars(query).all():
+            for ann in anns:
                 cx, cy, nw, nh = coco_to_yolo(
                     ann.x, ann.y, ann.width, ann.height, image.width, image.height
                 )
@@ -87,7 +70,7 @@ class YoloExporter(DatasetExporter):
             (lbl_dir / f"{stem}.txt").write_text("\n".join(lines), encoding="utf-8")
 
             if request.copy_images:
-                src = storage.project_dir(image.project_id) / image.filename
+                src = storage.project_dir(snapshot.project_id) / image.filename
                 if src.exists():
                     shutil.copy2(src, img_dir / image.original_filename)
 

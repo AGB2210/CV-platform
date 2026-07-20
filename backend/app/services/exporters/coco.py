@@ -7,11 +7,8 @@ import shutil
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session
-
-from app.models import Annotation, Category, Image, Project
 from app.services import storage
+from app.services.dataset_snapshot import DatasetSnapshot
 from app.services.exporters.base import DatasetExporter, ExportRequest
 
 
@@ -20,28 +17,13 @@ class CocoExporter(DatasetExporter):
     display_name = "COCO JSON"
     description = "Standard COCO detection format. Consumed by RF-DETR, RT-DETR, and most tools."
 
-    def export(self, db: Session, request: ExportRequest) -> Path:
-        project = db.get(Project, request.project_id)
-        if project is None:
-            raise ValueError(f"Project {request.project_id} not found")
-
+    def export(self, snapshot: DatasetSnapshot, request: ExportRequest) -> Path:
         root = request.out_dir
         root.mkdir(parents=True, exist_ok=True)
 
-        categories = list(
-            db.scalars(
-                select(Category)
-                .where(Category.project_id == request.project_id)
-                .order_by(Category.id)
-            ).all()
-        )
-        images = list(
-            db.scalars(
-                select(Image)
-                .where(Image.project_id == request.project_id)
-                .order_by(Image.id)
-            ).all()
-        )
+        project_name = snapshot.project_name
+        categories = snapshot.categories
+        images = snapshot.images
 
         # COCO category ids are 1-based by convention (id 0 is reserved for
         # background in many tools). Our DB ids happen to start at 1 too, but
@@ -55,12 +37,12 @@ class CocoExporter(DatasetExporter):
         splits: dict[str, dict] = {}
 
         for image in images:
-            split = request.split_for(image.id)
+            split = image.split
             bucket = splits.setdefault(
                 split,
                 {
                     "info": {
-                        "description": project.name,
+                        "description": project_name,
                         "version": "1.0",
                         "date_created": datetime.now().isoformat(),
                     },
@@ -87,20 +69,19 @@ class CocoExporter(DatasetExporter):
                 }
             )
 
-            # Proposals are the model's suggestions, not your annotations. They
-            # are excluded unconditionally — exporting them would ship boxes
-            # nobody accepted as though they were ground truth.
-            query = select(Annotation).where(
-                Annotation.image_id == image.id, Annotation.proposed.is_(False)
-            )
+            # Proposals never reach here — a snapshot only ever holds accepted
+            # boxes, so exporting suggestions as ground truth is impossible by
+            # construction rather than by remembering a filter.
+            anns = image.annotations
             if not request.include_unreviewed:
-                query = query.where(Annotation.reviewed.is_(True))
+                anns = [a for a in anns if a.reviewed]
 
-            for ann in db.scalars(query).all():
+            for idx, ann in enumerate(anns):
                 bucket["annotations"].append(
                     {
-                        # Global annotation id, unique across the file.
-                        "id": ann.id,
+                        # Annotation id, unique across the file. Falls back to a
+                        # positional id for snapshots written without one.
+                        "id": ann.id if ann.id is not None else idx + 1,
                         "image_id": image.id,
                         "category_id": cat_id_map[ann.category_id],
                         # Direct field copy — no maths. This is the payoff for
@@ -122,7 +103,7 @@ class CocoExporter(DatasetExporter):
             if request.copy_images:
                 dest_dir = root / split / "images"
                 dest_dir.mkdir(parents=True, exist_ok=True)
-                src = storage.project_dir(image.project_id) / image.filename
+                src = storage.project_dir(snapshot.project_id) / image.filename
                 if src.exists():
                     # Copy under the ORIGINAL filename, matching file_name above.
                     # Our uuid storage names are an internal detail that would be

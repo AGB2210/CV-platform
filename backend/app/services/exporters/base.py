@@ -35,14 +35,21 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 
-from sqlalchemy.orm import Session
+from app.services.dataset_snapshot import DatasetSnapshot
 
 
 @dataclass
 class ExportRequest:
-    """What to export and where."""
+    """Where to write, and the couple of choices that aren't the data itself.
 
-    project_id: int
+    WHAT MOVED OUT: `project_id` and the `split` map used to live here. Both are
+    properties of the DATASET, and the dataset now arrives as a DatasetSnapshot
+    — each image carries its own split. That also fixed a quiet inconsistency:
+    the download export ignored splits entirely (everything landed in train/)
+    while the training exporter passed a map, so the two produced different
+    layouts from the same data.
+    """
+
     out_dir: Path
 
     #: When False, only boxes a human has confirmed (reviewed=True) are written.
@@ -50,16 +57,9 @@ class ExportRequest:
     #: knowingly train on drafts.
     include_unreviewed: bool = True
 
-    #: image_id -> "train" | "val". None means everything goes to train.
-    #: Populated by the Phase 6 train/val split UI.
-    split: dict[int, str] | None = None
-
     #: Copy image files next to the labels. Required by YOLO (it resolves images
     #: by path convention); optional for COCO, which only records file_name.
     copy_images: bool = True
-
-    def split_for(self, image_id: int) -> str:
-        return (self.split or {}).get(image_id, "train")
 
 
 class DatasetExporter(ABC):
@@ -70,8 +70,12 @@ class DatasetExporter(ABC):
     description: str = ""
 
     @abstractmethod
-    def export(self, db: Session, request: ExportRequest) -> Path:
-        """Write the dataset. Returns the root directory written."""
+    def export(self, snapshot: DatasetSnapshot, request: ExportRequest) -> Path:
+        """Write the dataset. Returns the root directory written.
+
+        Takes a snapshot rather than a Session so the SAME code exports the live
+        project and a saved dataset version — see dataset_snapshot.py.
+        """
 
 
 # --- Shared coordinate maths ------------------------------------------------

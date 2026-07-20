@@ -29,6 +29,7 @@ from app.schemas.annotation import (
 )
 from app.services import exporters
 from app.services.annotation_job import run_annotation_job
+from app.services.dataset_snapshot import build_snapshot
 
 router = APIRouter(tags=["annotate"])
 
@@ -440,9 +441,8 @@ def export_dataset(
     try:
         dataset_dir = tmp_root / "dataset"
         exporter.export(
-            db,
+            build_snapshot(db, project_id),
             exporters.ExportRequest(
-                project_id=project_id,
                 out_dir=dataset_dir,
                 include_unreviewed=include_unreviewed,
             ),
