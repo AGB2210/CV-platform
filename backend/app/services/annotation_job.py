@@ -172,9 +172,16 @@ def _run(db: Session, job: AnnotationJob) -> None:
         # changed — a proposal is not an annotation until you say so — so a
         # committed image stays committed and the dataset is undisturbed even
         # under scope="all".
+        # Scoped to source="auto": THIS pipeline's leftovers from an earlier
+        # run, which would otherwise stack two sets of suggestions for the same
+        # objects. Imported proposals (source="imported", from re-uploading an
+        # annotation file) are a different person's work awaiting the same
+        # review, and running the model must not throw them away.
         for stale in db.scalars(
             select(Annotation).where(
-                Annotation.image_id == image.id, Annotation.proposed.is_(True)
+                Annotation.image_id == image.id,
+                Annotation.proposed.is_(True),
+                Annotation.source == "auto",
             )
         ).all():
             db.delete(stale)

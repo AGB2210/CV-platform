@@ -509,6 +509,11 @@ def analyse(root: Path) -> ImportPlan:
                     "with annotations" if group.has_labels else "no annotations found"
                 )
                 plan.notes.append(f"{split}: {n} image(s), {labelled}")
+            elif group.has_labels:
+                # Labels for images already in the project — see the
+                # annotation-only path in execute().
+                plan.groups.append(group)
+                plan.notes.append(f"{split}: annotations only, no image files")
     else:
         # --- Case 1/2: flat ------------------------------------------------
         group = SplitGroup(split=Split.TRAIN)
@@ -533,7 +538,12 @@ def analyse(root: Path) -> ImportPlan:
         if group.coco is None:
             group.yolo = parse_yolo(group.image_files, root, yolo_classes)
 
-        if group.image_files:
+        if not group.image_files and group.has_labels:
+            plan.groups.append(group)
+            plan.notes.append(
+                "Annotations only — matching them to images already in this project"
+            )
+        elif group.image_files:
             plan.groups.append(group)
             if group.coco:
                 plan.notes.append(
@@ -605,6 +615,73 @@ class ImportResult:
     #: again. Reported rather than silent — re-importing a folder used to
     #: double the dataset with no indication anything had happened.
     duplicates_skipped: int = 0
+    #: Boxes written as PROPOSALS because their image was already here. They
+    #: wait for Accept/Reject rather than overwriting existing work.
+    proposals_created: int = 0
+    #: How many existing images received those proposals.
+    reannotated_images: int = 0
+
+
+def _labelled_names(group: SplitGroup) -> list[str]:
+    """Original filenames this group has labels for.
+
+    Needed by the annotation-only path, where there are no image files to walk
+    — the file itself is the only list of what it describes.
+    """
+    if group.coco is not None:
+        return list(group.coco.images_by_name)
+    if group.yolo is not None:
+        return list(group.yolo.label_files)
+    return []
+
+
+def _boxes_for(
+    group: SplitGroup, name: str, width: int, height: int, plan: ImportPlan, categories: dict
+) -> list[tuple[int, float, float, float, float]]:
+    """One image's boxes as (category_id, x, y, w, h) in absolute pixels.
+
+    The single place COCO and YOLO converge. Both readers produce corner-based
+    absolute pixels here, so everything downstream — clamping, storing,
+    proposing — is written once and cannot drift between the two formats.
+    """
+    out: list[tuple[int, float, float, float, float]] = []
+
+    if group.yolo is not None:
+        label_path = group.yolo.label_files.get(name.lower())
+        if label_path is None:
+            return out
+        for class_index, (x, y, w, h) in parse_yolo_label_file(label_path, width, height):
+            # The index IS the class identity in YOLO. Out of range means the
+            # label file and the class list disagree — drop rather than guess.
+            if not (0 <= class_index < len(plan.class_names)):
+                continue
+            category = categories.get(plan.class_names[class_index])
+            if category is not None:
+                out.append((category.id, x, y, w, h))
+        return out
+
+    if group.coco is None:
+        return out
+
+    # Resolve against THIS group's COCO doc only. See the module docstring:
+    # each split numbers its image_ids from 1, so a global lookup would
+    # cheerfully attach train's boxes to valid's images.
+    meta = group.coco.images_by_name.get(name.lower())
+    if meta is None:
+        return out
+
+    for raw in group.coco.anns_by_image.get(meta["id"], []):
+        bbox = raw.get("bbox") or []
+        if len(bbox) != 4:
+            continue
+        x, y, w, h = (float(v) for v in bbox)
+        if w <= 0 or h <= 0:
+            continue
+        class_name = group.coco.categories.get(int(raw.get("category_id", -1)))
+        category = categories.get(class_name) if class_name else None
+        if category is not None:
+            out.append((category.id, x, y, w, h))
+    return out
 
 
 def execute(
@@ -644,30 +721,107 @@ def execute(
         existing[name] = category
         result.classes_created.append(name)
 
-    # Every image already in this project, by content. Loaded once: a 5,000-file
-    # import would otherwise issue 5,000 SELECTs to ask the same question.
-    seen_hashes = {
-        h
-        for h in db.scalars(
-            select(Image.content_hash).where(
-                Image.project_id == project_id, Image.content_hash.is_not(None)
+    # Every image already in this project, keyed by content. Loaded once: a
+    # 5,000-file import would otherwise issue 5,000 SELECTs to ask the same
+    # question. Keyed by hash AND by original filename, because re-annotation
+    # arrives both ways — with the images again (matched by bytes) or as a bare
+    # annotation file (matched by name, which is all it carries).
+    existing_images = list(
+        db.scalars(select(Image).where(Image.project_id == project_id)).all()
+    )
+    by_hash = {i.content_hash: i for i in existing_images if i.content_hash}
+    by_name = {i.original_filename.lower(): i for i in existing_images}
+
+    def attach(image, width: int, height: int, group, name: str, proposed: bool) -> int:
+        """Write this file's boxes for one image. Returns how many landed.
+
+        `proposed` is the whole re-annotation story. Boxes for a NEW image are
+        accepted ground truth; boxes for an image already in the project arrive
+        as PROPOSALS, because they conflict with whatever is already there and
+        that conflict is the user's to resolve. It reuses the review workflow
+        auto-annotation already has: dashed boxes on the canvas, Accept (which
+        replaces your boxes on the images covered) or Reject.
+
+        The alternative — overwrite on import — silently destroys manual
+        corrections made since the first import, which is exactly the kind of
+        loss nothing later can detect.
+        """
+        written = 0
+        for category_id, x, y, w, h in _boxes_for(group, name, width, height, plan, existing):
+            # Clamp against the REAL dimensions, not what the file claims. They
+            # disagree more often than you'd expect — resized exports with stale
+            # metadata are common — and the image is the authority.
+            x = max(0.0, min(x, width))
+            y = max(0.0, min(y, height))
+            w = min(w, width - x)
+            h = min(h, height - y)
+            if w <= 0 or h <= 0:
+                continue
+            db.add(
+                Annotation(
+                    image_id=image.id,
+                    category_id=category_id,
+                    x=x,
+                    y=y,
+                    width=w,
+                    height=h,
+                    confidence=None,  # human-authored ground truth, not a model's
+                    # A third provenance value alongside auto/manual. NOT "auto":
+                    # an auto-annotate run clears its own leftover proposals, and
+                    # must never discard imported ones awaiting review.
+                    source="imported",
+                    reviewed=not proposed,
+                    proposed=proposed,
+                )
             )
-        ).all()
-    }
+            written += 1
+        return written
 
     # --- images + annotations ----------------------------------------------
     for group in plan.groups:
+        # An annotation file uploaded on its own: no pixels to store, just
+        # labels for images already here. Matched by original filename, which is
+        # the only identifier such a file carries.
+        if not group.image_files and group.has_labels:
+            for name in _labelled_names(group):
+                image = by_name.get(name.lower())
+                if image is None:
+                    result.skipped.append(f"{name}: no such image in this project")
+                    continue
+                n = attach(image, image.width, image.height, group, name, proposed=True)
+                result.proposals_created += n
+                if n:
+                    result.reannotated_images += 1
+            continue
+
         for name, path in group.image_files.items():
             try:
                 content = path.read_bytes()
                 # Checked before saving, so re-importing a folder doesn't strew
                 # orphaned copies of every image across storage/.
                 digest = storage.content_digest(content)
-                if digest in seen_hashes:
-                    result.duplicates_skipped += 1
-                    continue
+            except OSError as exc:
+                result.skipped.append(f"{name}: {exc}")
+                continue
+
+            duplicate = by_hash.get(digest)
+            if duplicate is not None:
+                # The image is already here. Its bytes aren't stored again — but
+                # the annotations that came with it are NOT discarded, which is
+                # what used to happen: the file was silently ignored while its
+                # classes were still created, so a corrected export produced a
+                # phantom class, no new boxes, and a success response.
+                result.duplicates_skipped += 1
+                n = attach(
+                    duplicate, duplicate.width, duplicate.height, group, name, proposed=True
+                )
+                result.proposals_created += n
+                if n:
+                    result.reannotated_images += 1
+                continue
+
+            try:
                 saved = storage.save_image(project_id, content, name)
-                seen_hashes.add(digest)
             except (storage.ImageRejected, OSError) as exc:
                 result.skipped.append(f"{name}: {exc}")
                 continue
@@ -685,102 +839,14 @@ def execute(
             )
             db.add(image)
             db.flush()
+            by_hash[saved.content_hash] = image
+            by_name[saved.original_filename.lower()] = image
             result.images_added += 1
             result.splits[group.split] = result.splits.get(group.split, 0) + 1
 
-            if group.yolo is not None:
-                # YOLO: one .txt beside (or in a sibling labels/ of) each image.
-                # Coordinates come back already absolute — parse_yolo_label_file
-                # does the normalised->pixel conversion against the REAL
-                # dimensions read off disk, so a stale data.yaml can't skew them.
-                label_path = group.yolo.label_files.get(name.lower())
-                if label_path is None:
-                    continue
-                for class_index, (x, y, w, h) in parse_yolo_label_file(
-                    label_path, saved.width, saved.height
-                ):
-                    # The index IS the class identity in YOLO. Out of range means
-                    # the label file and the class list disagree — drop rather
-                    # than guess, the same rule the annotator now follows.
-                    if not (0 <= class_index < len(plan.class_names)):
-                        continue
-                    category = existing.get(plan.class_names[class_index])
-                    if category is None:
-                        continue
-                    x = max(0.0, min(x, saved.width))
-                    y = max(0.0, min(y, saved.height))
-                    w = min(w, saved.width - x)
-                    h = min(h, saved.height - y)
-                    if w <= 0 or h <= 0:
-                        continue
-                    db.add(
-                        Annotation(
-                            image_id=image.id,
-                            category_id=category.id,
-                            x=x,
-                            y=y,
-                            width=w,
-                            height=h,
-                            confidence=None,
-                            source="imported",
-                            reviewed=True,
-                        )
-                    )
-                    result.annotations_added += 1
-                continue
-
-            if group.coco is None:
-                continue
-
-            # Resolve against THIS group's COCO doc only. See module docstring:
-            # each split numbers its image_ids from 1, so a global lookup would
-            # cheerfully attach train's boxes to valid's images.
-            meta = group.coco.images_by_name.get(name.lower())
-            if meta is None:
-                continue
-
-            for raw in group.coco.anns_by_image.get(meta["id"], []):
-                bbox = raw.get("bbox") or []
-                if len(bbox) != 4:
-                    continue
-                x, y, w, h = (float(v) for v in bbox)
-                if w <= 0 or h <= 0:
-                    continue
-
-                class_name = group.coco.categories.get(int(raw.get("category_id", -1)))
-                category = existing.get(class_name) if class_name else None
-                if category is None:
-                    continue
-
-                # Clamp against the REAL image dimensions read off disk, not the
-                # width/height COCO claims. They disagree more often than you'd
-                # expect — resized exports with stale metadata are common — and
-                # the file is the authority.
-                x = max(0.0, min(x, saved.width))
-                y = max(0.0, min(y, saved.height))
-                w = min(w, saved.width - x)
-                h = min(h, saved.height - y)
-                if w <= 0 or h <= 0:
-                    continue
-
-                db.add(
-                    Annotation(
-                        image_id=image.id,
-                        category_id=category.id,
-                        x=x,
-                        y=y,
-                        width=w,
-                        height=h,
-                        confidence=None,  # human-authored ground truth
-                        # A third provenance value alongside auto/manual. It is
-                        # not "auto" — which matters, because the annotation job
-                        # deletes source="auto" boxes on re-run and must never
-                        # touch imported ground truth.
-                        source="imported",
-                        reviewed=True,
-                    )
-                )
-                result.annotations_added += 1
+            result.annotations_added += attach(
+                image, saved.width, saved.height, group, name, proposed=False
+            )
 
     db.commit()
     return result

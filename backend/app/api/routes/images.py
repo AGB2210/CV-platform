@@ -358,8 +358,8 @@ async def _import_as_tree(
         if not plan.groups:
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST,
-                "No images found in that folder. A dataset needs image files, "
-                "not only annotations.",
+                "Nothing importable in that selection — no image files, and no "
+                "annotation file we could read as COCO or YOLO.",
             )
 
         merged = dataset_import.execute(db, project_id, plan, import_id)
@@ -404,6 +404,8 @@ def _merge_results(
         merged.notes.extend(r.notes)
         merged.has_split_folders = merged.has_split_folders or r.has_split_folders
         merged.duplicates_skipped += r.duplicates_skipped
+        merged.proposals_created += r.proposals_created
+        merged.reannotated_images += r.reannotated_images
         for split, n in r.splits.items():
             merged.splits[split] = merged.splits.get(split, 0) + n
     merged.skipped.extend(extra_skipped)
@@ -435,6 +437,8 @@ def _result_to_response(
         notes=merged.notes,
         duplicates_skipped=merged.duplicates_skipped,
         import_id=import_id,
+        proposals_created=merged.proposals_created,
+        reannotated_images=merged.reannotated_images,
     )
 
 

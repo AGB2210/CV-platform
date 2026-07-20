@@ -801,6 +801,24 @@ function UploadPanel({
               {result.classes_created.length > 4 ? '…' : ''})
             </span>
           )}
+          {/* Annotations for images already here. They can't just overwrite
+              existing work, so they queue as proposals and go through the same
+              review as an auto-annotate run. Without this line the upload would
+              look like it did nothing. */}
+          {result.proposals_created > 0 && (
+            <p className="mt-1.5 rounded border border-accent-200 bg-accent-50 px-2 py-1 text-accent-900">
+              <span className="font-medium">
+                {result.proposals_created} box(es) proposed on {result.reannotated_images}{' '}
+                image(s) already in this project.
+              </span>{' '}
+              Their existing boxes are untouched — open{' '}
+              <Link to={`/projects/${projectId}/review`} className="underline">
+                Annotate
+              </Link>{' '}
+              to accept or reject the new ones.
+            </p>
+          )}
+
           {/* Re-uploading a folder used to double the dataset silently. Now it
               adds nothing and says so, which is the only way to tell a
               successful no-op from a broken one. */}

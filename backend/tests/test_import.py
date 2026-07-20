@@ -622,3 +622,149 @@ def test_same_filename_different_pictures_are_both_kept(client):
     assert body["uploaded_count"] == 2, "the names collided; the pictures did not"
     assert body["duplicates_skipped"] == 0
     assert len(client.get(f"/api/projects/{pid}/images").json()) == 2
+
+
+# --- re-annotating images already in the project ----------------------------
+# An annotation file that describes images already here conflicts with whatever
+# is already on them, and that conflict is the user's to resolve. So the boxes
+# arrive as PROPOSALS and go through the same Accept/Reject review as an
+# auto-annotate run — here the FILE proposes and the human disposes.
+
+
+def _coco_for(filename: str, boxes: list[list[float]], cls: str) -> bytes:
+    return json.dumps(
+        {
+            "images": [{"id": 1, "file_name": filename, "width": 640, "height": 480}],
+            "annotations": [
+                {"id": i + 1, "image_id": 1, "category_id": 1, "bbox": b}
+                for i, b in enumerate(boxes)
+            ],
+            "categories": [{"id": 1, "name": cls}],
+        }
+    ).encode()
+
+
+def _split(client, image_id: int):
+    anns = client.get(f"/api/images/{image_id}/annotations").json()
+    return (
+        [a for a in anns if not a["proposed"]],
+        [a for a in anns if a["proposed"]],
+    )
+
+
+def test_reuploading_corrected_annotations_arrives_as_proposals(client):
+    """THE bug this guards: the second upload used to report 201 success, leave
+    the boxes untouched, and STILL create the new class — a phantom class, no
+    new boxes, and every reason to believe the correction had landed."""
+    same = png_bytes(640, 480, colour=(200, 60, 60))
+    pid = client.post("/api/projects", json={"name": "Reann"}).json()["id"]
+
+    first = client.post(
+        f"/api/projects/{pid}/images",
+        files=[
+            ("files", ("a.png", same, "image/png")),
+            ("files", ("ann.json", _coco_for("a.png", [[10, 10, 50, 50]], "widget"), "application/json")),
+        ],
+    ).json()
+    assert first["annotations_imported"] == 1
+    assert first["proposals_created"] == 0, "a new image's labels are ground truth"
+
+    image_id = client.get(f"/api/projects/{pid}/images").json()[0]["id"]
+
+    second = client.post(
+        f"/api/projects/{pid}/images",
+        files=[
+            ("files", ("a.png", same, "image/png")),
+            ("files", ("ann.json", _coco_for("a.png", [[100, 100, 200, 200]], "gadget"), "application/json")),
+        ],
+    ).json()
+    assert second["duplicates_skipped"] == 1, "the image itself is not stored twice"
+    assert second["proposals_created"] == 1, "but its labels are NOT discarded"
+    assert second["reannotated_images"] == 1
+
+    accepted, proposed = _split(client, image_id)
+    assert [round(a["x"]) for a in accepted] == [10], "existing work untouched"
+    assert [round(a["x"]) for a in proposed] == [100], "the correction awaits review"
+
+
+def test_an_annotation_file_can_be_uploaded_on_its_own(client):
+    """Matched to existing images by filename — the natural action after
+    re-exporting labels, and it avoids re-sending gigabytes of pixels."""
+    pid = client.post("/api/projects", json={"name": "JsonOnly"}).json()["id"]
+    client.post(
+        f"/api/projects/{pid}/images",
+        files=[("files", ("a.png", png_bytes(640, 480), "image/png"))],
+    )
+    image_id = client.get(f"/api/projects/{pid}/images").json()[0]["id"]
+
+    body = client.post(
+        f"/api/projects/{pid}/images",
+        files=[("files", ("labels.json", _coco_for("a.png", [[7, 8, 30, 40]], "widget"), "application/json"))],
+    ).json()
+    assert body["proposals_created"] == 1
+    assert body["reannotated_images"] == 1
+
+    _, proposed = _split(client, image_id)
+    assert (round(proposed[0]["x"]), round(proposed[0]["y"])) == (7, 8)
+
+
+def test_annotations_for_unknown_images_are_reported(client):
+    """Nothing to attach them to — say so rather than silently doing nothing."""
+    pid = client.post("/api/projects", json={"name": "Unknown"}).json()["id"]
+    client.post(
+        f"/api/projects/{pid}/images",
+        files=[("files", ("a.png", png_bytes(640, 480), "image/png"))],
+    )
+    body = client.post(
+        f"/api/projects/{pid}/images",
+        files=[("files", ("l.json", _coco_for("not-here.png", [[1, 2, 3, 4]], "widget"), "application/json"))],
+    ).json()
+    assert body["proposals_created"] == 0
+    assert any("no such image" in s for s in body["skipped"])
+
+
+def test_accepting_reannotation_replaces_the_old_boxes(client):
+    """The payoff: the existing review workflow finishes the job unchanged."""
+    same = png_bytes(640, 480, colour=(9, 9, 9))
+    pid = client.post("/api/projects", json={"name": "AcceptReann"}).json()["id"]
+    client.post(
+        f"/api/projects/{pid}/images",
+        files=[
+            ("files", ("a.png", same, "image/png")),
+            ("files", ("ann.json", _coco_for("a.png", [[10, 10, 50, 50]], "widget"), "application/json")),
+        ],
+    )
+    image_id = client.get(f"/api/projects/{pid}/images").json()[0]["id"]
+    client.post(
+        f"/api/projects/{pid}/images",
+        files=[("files", ("fix.json", _coco_for("a.png", [[100, 100, 200, 200]], "widget"), "application/json"))],
+    )
+
+    r = client.post(f"/api/projects/{pid}/proposals/accept").json()
+    assert r["accepted"] == 1 and r["deleted_existing"] == 1
+
+    accepted, proposed = _split(client, image_id)
+    assert [round(a["x"]) for a in accepted] == [100], "the correction won"
+    assert proposed == []
+
+
+def test_rejecting_reannotation_keeps_the_original(client):
+    same = png_bytes(640, 480, colour=(3, 3, 3))
+    pid = client.post("/api/projects", json={"name": "RejectReann"}).json()["id"]
+    client.post(
+        f"/api/projects/{pid}/images",
+        files=[
+            ("files", ("a.png", same, "image/png")),
+            ("files", ("ann.json", _coco_for("a.png", [[10, 10, 50, 50]], "widget"), "application/json")),
+        ],
+    )
+    image_id = client.get(f"/api/projects/{pid}/images").json()[0]["id"]
+    client.post(
+        f"/api/projects/{pid}/images",
+        files=[("files", ("fix.json", _coco_for("a.png", [[100, 100, 200, 200]], "widget"), "application/json"))],
+    )
+
+    client.delete(f"/api/projects/{pid}/proposals")
+    accepted, proposed = _split(client, image_id)
+    assert [round(a["x"]) for a in accepted] == [10], "original survives a reject"
+    assert proposed == []

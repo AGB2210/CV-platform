@@ -338,6 +338,11 @@ export interface UploadResult {
   /** Groups every image from ONE upload across all its batches, so a partly
    *  failed import can be undone as a unit. */
   import_id: string | null
+  /** Boxes written as PROPOSALS because their image was already in the project
+   *  — a corrected export, or a second annotator's pass. They await
+   *  Accept/Reject rather than overwriting existing work. */
+  proposals_created: number
+  reannotated_images: number
 }
 
 // --- Endpoints ------------------------------------------------------------
@@ -461,6 +466,8 @@ export async function uploadImages(
       needs_val_split: false,
       duplicates_skipped: 0,
       import_id: importId,
+      proposals_created: 0,
+      reannotated_images: 0,
     }
   )
 }
@@ -490,6 +497,8 @@ function mergeUploadResults(a: UploadResult, b: UploadResult): UploadResult {
     duplicates_skipped: a.duplicates_skipped + b.duplicates_skipped,
     // Same across every batch by construction — see uploadImages.
     import_id: a.import_id ?? b.import_id,
+    proposals_created: a.proposals_created + b.proposals_created,
+    reannotated_images: a.reannotated_images + b.reannotated_images,
   }
 }
 export const deleteImage = (imageId: number) => api.delete<void>(`/images/${imageId}`)

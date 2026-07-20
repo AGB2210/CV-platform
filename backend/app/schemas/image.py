@@ -80,6 +80,11 @@ class UploadResult(BaseModel):
     #: Groups every image added by ONE upload, across all the requests a large
     #: folder is split into, so the whole import can be undone as a unit.
     import_id: str | None = None
+    #: Boxes written as PROPOSALS because their image was already in the
+    #: project. They await Accept/Reject rather than overwriting existing work.
+    proposals_created: int = 0
+    #: How many existing images received those proposals.
+    reannotated_images: int = 0
 
     @computed_field  # type: ignore[prop-decorator]
     @property
