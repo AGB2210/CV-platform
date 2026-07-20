@@ -71,8 +71,10 @@ class RestoreResult(BaseModel):
     #: Images the version referenced whose file is gone from disk. Non-empty
     #: means the restore was partial, and the UI says so.
     missing_files: list[str]
-    #: The safety version taken of the pre-restore state, so this is undoable.
-    backup_version: int
+    #: Classes that existed only after this version, removed to rewind the class
+    #: list. Non-empty means any pending proposals using them went too, so the
+    #: UI reports it rather than letting it happen silently.
+    classes_removed: list[str] = []
 
 
 class SplitRequest(BaseModel):

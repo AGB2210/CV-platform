@@ -182,8 +182,9 @@ def restore_dataset_version(
 ) -> RestoreResult:
     """Rewind the live dataset to a saved version.
 
-    Safe by construction: the current state is saved as a new version first, so
-    an unwanted restore is undone by restoring that one.
+    Nothing is auto-saved first — only an explicit "Save dataset" makes a
+    version — so this DISCARDS unsaved changes. The UI warns before the click
+    when the dataset matches no save point.
     """
     get_project_or_404(project_id, db)
     version = _get_version_or_404(db, project_id, version_id)
@@ -198,7 +199,7 @@ def restore_dataset_version(
         boxes_restored=result.boxes_restored,
         images_removed=result.images_removed,
         missing_files=result.missing_files,
-        backup_version=result.backup_version,
+        classes_removed=result.classes_removed,
     )
 
 

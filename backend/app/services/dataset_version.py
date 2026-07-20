@@ -6,20 +6,28 @@ the dataset looks like right now; restoring rewinds the live rows to match one.
 
 TWO RULES THAT MAKE THIS SAFE
 -----------------------------
-1. **Restoring is itself undoable.** It takes a snapshot of the CURRENT state
-   first ("before restoring vN"), so a mistaken restore is one more restore away
-   from being fixed. Nothing this module does is a one-way door.
+1. **A version is only ever created by an explicit "Save dataset".** Nothing in
+   this module saves on your behalf — restore used to mint an automatic backup
+   of the pre-restore state, and it no longer does. One deliberate gesture keeps
+   the list short and every entry meaningful. The trade-off is that restoring
+   over UNSAVED work discards it, so the UI warns before the click when the live
+   dataset matches no save point.
 2. **Image bytes are never deleted.** Deleting an image drops its row but leaves
    the file (services/storage.py), so a restore can recreate the row pointing at
    the same bytes. Without that, versions would be a promise we couldn't keep.
 
 WHAT RESTORE TOUCHES — AND WHAT IT LEAVES ALONE
 ----------------------------------------------
-It rewrites the dataset: which images exist, their splits, and their ACCEPTED
-boxes. Pending proposals on surviving images are left untouched — they aren't
-dataset content (they're a model's un-actioned suggestions), so a version never
-captured them and restoring shouldn't silently throw them away. Proposals on
-images the version doesn't contain disappear with the image, by cascade.
+It rewrites the dataset: which images exist, their splits, their CLASSES, and
+their ACCEPTED boxes. Pending proposals on surviving images are left untouched —
+they aren't dataset content (they're a model's un-actioned suggestions), so a
+version never captured them and restoring shouldn't silently throw them away.
+
+Two exceptions, both structural rather than chosen: proposals on images the
+version doesn't contain disappear with the image, and proposals labelled with a
+class the version doesn't contain disappear with the class. Both go by cascade,
+and a proposal whose class or image is gone could never have been accepted
+anyway. The class case is counted and reported.
 """
 
 from __future__ import annotations
@@ -119,42 +127,27 @@ class RestoreResult:
     #: Images the version references whose FILE is gone from disk — reported so a
     #: partial restore is never silently presented as a complete one.
     missing_files: list[str]
-    #: The version holding the pre-restore state. A NEW auto-saved version when
-    #: that state wasn't saved anywhere; otherwise the existing version that
-    #: already captured it — either way, the number to restore to undo this.
-    backup_version: int
+    #: Classes that existed only after this version and were therefore removed.
+    #: Reported because removing one silently discards any pending proposals that
+    #: referenced it — see the note in `restore_version`.
+    classes_removed: list[str]
 
 
 def restore_version(db: Session, project_id: int, version) -> RestoreResult:
-    """Rewind the live dataset to `version`, after backing up the current state."""
+    """Rewind the live dataset to `version`.
+
+    NOTHING IS AUTO-SAVED FIRST. Only an explicit "Save dataset" creates a
+    version, so a restore over genuinely unsaved changes discards them. The UI
+    warns before the click when the live dataset matches no save point; that
+    warning is the safety net that the auto-backup used to be.
+    """
     from app.models import Annotation, Category, Image
     from app.enums import CLASS_COLORS
     from app.services import storage
 
     snapshot = load_snapshot(version)
 
-    # 1. Back up what's about to be replaced — but ONLY if it would otherwise be
-    #    lost. Backing up unconditionally meant every restore minted a version,
-    #    and most were byte-identical copies of one already in the list: restore
-    #    v1 twice and you get two "auto-saved" versions holding exactly v1's
-    #    content. Comparing fingerprints means a backup appears only when the
-    #    live dataset genuinely isn't saved anywhere.
-    from app.models import DatasetVersion as DatasetVersionModel
-
-    backup_version = current_version_number(db, project_id)
-    live_hash = build_snapshot(db, project_id).content_hash()
-    already_saved = db.scalar(
-        select(func.count(DatasetVersionModel.id)).where(
-            DatasetVersionModel.project_id == project_id,
-            DatasetVersionModel.content_hash == live_hash,
-        )
-    )
-    if not already_saved:
-        backup_version = save_version(
-            db, project_id, note=f"Auto-saved before restoring v{version.version}"
-        ).version
-
-    # 2. Classes, matched BY NAME. Ids drift (a class deleted and re-added gets a
+    # 1. Classes, matched BY NAME. Ids drift (a class deleted and re-added gets a
     #    new one), but the name is what the boxes mean. Missing classes are
     #    recreated so a restore can bring back a deleted one.
     existing = {
@@ -173,12 +166,39 @@ def restore_version(db: Session, project_id: int, version) -> RestoreResult:
             db.add(category)
             db.flush()
             existing[sc.name] = category
+
+    # ...and classes added SINCE the version go away again. The class list is
+    # dataset content — it's in the snapshot, it's in the content fingerprint,
+    # and it fixes the model's output vocabulary — so a restore that rewound the
+    # boxes but kept a later class left the dataset matching NO saved version.
+    # The fingerprint then never matched again, which made the app report
+    # "unsaved changes" immediately after a restore and, worse, made an
+    # unqualified Train fall back to the newest version — the very state the
+    # user had just rolled away from.
+    #
+    # The cost: deleting a class cascades to its boxes, so any PENDING PROPOSAL
+    # for a class that only exists after this version is discarded with it.
+    # That's the one place restore touches proposals, and it's unavoidable —
+    # a proposal labelled with a class the dataset no longer has cannot be
+    # accepted. It's reported rather than done silently.
+    wanted_names = {sc.name for sc in snapshot.categories}
+    classes_removed: list[str] = []
+    for name, category in list(existing.items()):
+        if name not in wanted_names:
+            db.delete(category)
+            classes_removed.append(name)
+            del existing[name]
+    if classes_removed:
+        # Flush the cascade now, so the annotation queries below don't see rows
+        # that are already condemned.
+        db.flush()
+
     # snapshot category id -> live category id
     cat_by_snapshot_id = {
         sc.id: existing[sc.name].id for sc in snapshot.categories if sc.name in existing
     }
 
-    # 3. Images. Keyed by the stored uuid filename, which is stable across
+    # 2. Images. Keyed by the stored uuid filename, which is stable across
     #    delete/restore because the FILE is never removed.
     current = {
         img.filename: img
@@ -266,7 +286,7 @@ def restore_version(db: Session, project_id: int, version) -> RestoreResult:
         boxes_restored=boxes_restored,
         images_removed=images_removed,
         missing_files=missing_files,
-        backup_version=backup_version,
+        classes_removed=classes_removed,
     )
 
 
@@ -293,17 +313,6 @@ def delete_version(db: Session, version) -> None:
     path.unlink(missing_ok=True)
 
 
-def current_version_number(db: Session, project_id: int) -> int:
-    """Version number matching the LIVE dataset, or 0 if it matches none.
-
-    Deliberately not "the newest version": after restoring an older one the two
-    are different, and treating newest as current is how training ends up
-    running against data the user has just rolled away from.
-    """
-    version = current_version(db, project_id)
-    return version.version if version else 0
-
-
 def current_version(db: Session, project_id: int):
     """The saved version whose content matches the live dataset, if any.
 
@@ -322,6 +331,33 @@ def current_version(db: Session, project_id: int):
         # is the version that state is really "known as".
         .order_by(DatasetVersion.version.asc())
     )
+
+
+def latest_version(db: Session, project_id: int):
+    """The highest-numbered saved version, or None."""
+    from app.models import DatasetVersion
+
+    return db.scalar(
+        select(DatasetVersion)
+        .where(DatasetVersion.project_id == project_id)
+        .order_by(DatasetVersion.version.desc())
+    )
+
+
+def default_training_version(db: Session, project_id: int):
+    """The version an unqualified "train it" would run, or None if never saved.
+
+    THE ONE DEFINITION, used by both the train route and the readiness preview.
+    They had drifted: readiness described `latest` while the route trained
+    `current`, so restoring an older version with an empty train split lit up a
+    "ready to train" button whose click was rejected with a 400. Any question of
+    the form "what would training do right now?" has to come through here.
+
+    Prefers the version the live dataset MATCHES over the newest one. The two
+    diverge after restoring an older version, and "just train it" must mean
+    "train what I'm looking at", not "train whatever was saved most recently".
+    """
+    return current_version(db, project_id) or latest_version(db, project_id)
 
 
 def has_any_version(db: Session, project_id: int) -> bool:

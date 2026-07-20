@@ -529,8 +529,9 @@ export interface RestoreResult {
   boxes_restored: number
   images_removed: number
   missing_files: string[]
-  /** The safety version taken of the pre-restore state — restoring is undoable. */
-  backup_version: number
+  /** Classes that existed only after the restored version, removed to rewind the
+   *  class list. Non-empty means pending proposals using them went too. */
+  classes_removed: string[]
 }
 
 export const listDatasetVersions = (projectId: number) =>

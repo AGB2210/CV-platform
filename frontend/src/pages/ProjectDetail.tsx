@@ -268,6 +268,11 @@ function VersionPanel({
   const [bulkOpen, setBulkOpen] = useState(false)
   const { selected, toggle, toggleAll, clear } = useVersionSelection()
 
+  // No version matching the live dataset means there is unsaved work on screen.
+  // Restore no longer auto-saves a backup, so that work is about to be lost —
+  // this is the whole reason the confirm dialog changes shape below.
+  const hasUnsavedChanges = versions.length > 0 && !versions.some((v) => v.is_current)
+
   async function save() {
     setSaving(true)
     onError(null)
@@ -295,7 +300,9 @@ function VersionPanel({
       const bits = [
         `Restored v${r.restored_version}: ${r.images_restored} image(s), ${r.boxes_restored} box(es).`,
         r.images_removed ? `${r.images_removed} later image(s) removed.` : '',
-        `Previous state saved as v${r.backup_version}.`,
+        r.classes_removed.length
+          ? `Removed class(es) added since: ${r.classes_removed.join(', ')}.`
+          : '',
         r.missing_files.length
           ? `${r.missing_files.length} image(s) could not be recovered — their files are gone.`
           : '',
@@ -502,12 +509,21 @@ function VersionPanel({
         message={
           `The dataset will be reset to v${target?.version ?? ''}: ` +
           `${target?.total_images ?? 0} image(s) and ${target?.total_boxes ?? 0} box(es).\n\n` +
-          `Images added since then are removed, and images deleted since then come back.\n\n` +
-          `Your current dataset is saved as a new version first, so you can undo this.`
+          `Images added since then are removed, images deleted since then come back, ` +
+          `and classes added since then are removed.\n\n` +
+          // The consequential half. Nothing is auto-saved any more, so restoring
+          // over unsaved work destroys it — say so plainly, and only when it's
+          // actually true, so the warning keeps its meaning.
+          (hasUnsavedChanges
+            ? `The dataset has UNSAVED CHANGES that are not in any version. ` +
+              `Restoring discards them permanently. Save the dataset first if you want to keep them.`
+            : `The current state is already saved as a version, so you can get back to it.`)
         }
         confirmLabel="Restore"
         busy={busy}
-        destructive={false}
+        // Red only when something genuinely unrecoverable is at stake. A restore
+        // over saved work is still the recovery tool it has always been.
+        destructive={hasUnsavedChanges}
       />
     </div>
   )

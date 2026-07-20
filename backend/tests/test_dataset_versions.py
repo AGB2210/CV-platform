@@ -159,55 +159,99 @@ def test_restore_removes_images_added_after_the_version(client):
     assert names == {f"i{i}.png" for i in range(4)}, "the later upload is rolled back"
 
 
-def test_restore_is_itself_undoable(client):
-    """A mistaken restore is one more restore away from being fixed: the current
-    state is saved first."""
+def test_restore_between_two_saved_versions_is_reversible(client):
+    """With both states saved, a restore is undone by restoring the other one.
+
+    Restore no longer auto-saves anything, so reversibility is a consequence of
+    the user having saved — not something the app arranges behind their back.
+    """
     pid, imgs = _setup(client)
     v1 = _save(client, pid)
     upload_images(client, pid, ["later.png"])
+    v2 = _save(client, pid)
 
-    r = client.post(f"/api/projects/{pid}/dataset/versions/{v1['id']}/restore").json()
-    backup = r["backup_version"]
-    assert backup == 2, "the pre-restore state was saved as the next version"
-
-    # Undo the restore by restoring the backup — the later upload returns.
-    versions = _versions(client, pid)
-    backup_row = next(v for v in versions if v["version"] == backup)
-    client.post(f"/api/projects/{pid}/dataset/versions/{backup_row['id']}/restore")
+    client.post(f"/api/projects/{pid}/dataset/versions/{v1['id']}/restore")
     names = {i["original_filename"] for i in client.get(f"/api/projects/{pid}/images").json()}
-    assert "later.png" in names, "restoring the backup undid the restore"
+    assert "later.png" not in names
+
+    client.post(f"/api/projects/{pid}/dataset/versions/{v2['id']}/restore")
+    names = {i["original_filename"] for i in client.get(f"/api/projects/{pid}/images").json()}
+    assert "later.png" in names, "restoring v2 undid the restore of v1"
 
 
-# --- which version am I looking at? -----------------------------------------
+# --- only an explicit save creates a version --------------------------------
 
 
-def test_restore_does_not_mint_a_redundant_version(client):
-    """Restoring when nothing would be lost must not create a save point.
+def test_restore_never_creates_a_version(client):
+    """"Save dataset" is the ONLY thing that makes a version.
 
-    Backing up unconditionally meant every restore added a version holding
-    content already saved elsewhere — restore v1 twice and the list grew two
-    identical copies of v1.
+    Restore used to mint an automatic backup of the pre-restore state. It made
+    the list grow on its own — often with near-identical entries — and that is
+    not what the user asked the app to keep.
     """
-    pid, _ = _setup(client)
+    pid, imgs = _setup(client)
     v1 = _save(client, pid)
     assert len(_versions(client, pid)) == 1
 
-    # Nothing has changed since v1, so there is nothing to preserve.
-    r = client.post(f"/api/projects/{pid}/dataset/versions/{v1['id']}/restore").json()
-    assert len(_versions(client, pid)) == 1, "no redundant auto-save"
-    assert r["backup_version"] == 1, "undo points at the version already holding that state"
+    # Genuinely unsaved divergence: the old auto-backup would have kept this.
+    client.delete(f"/api/images/{imgs[0]['id']}")
+    client.post(f"/api/projects/{pid}/dataset/versions/{v1['id']}/restore")
+
+    assert len(_versions(client, pid)) == 1, "restore created no version"
 
 
-def test_restore_backs_up_only_genuinely_unsaved_work(client):
+def test_restore_discards_unsaved_changes(client):
+    """The cost of not auto-saving, asserted so it stays a deliberate choice."""
     pid, imgs = _setup(client)
     v1 = _save(client, pid)
-    # Real, unsaved divergence.
-    client.delete(f"/api/images/{imgs[0]['id']}")
+    upload_images(client, pid, ["unsaved.png"])
 
     client.post(f"/api/projects/{pid}/dataset/versions/{v1['id']}/restore")
-    versions = _versions(client, pid)
-    assert len(versions) == 2, "the unsaved 3-image state was worth keeping"
-    assert versions[0]["total_images"] == 3
+    names = {i["original_filename"] for i in client.get(f"/api/projects/{pid}/images").json()}
+    assert "unsaved.png" not in names, "unsaved work is gone — the UI warns first"
+
+
+def test_restore_rewinds_the_class_list(client):
+    """A class added after the version is removed by restoring it.
+
+    THE BUG THIS GUARDS: classes are dataset content — they're in the snapshot,
+    they're in the content fingerprint, and they fix the model's output
+    vocabulary. Restore rewound the boxes but kept a later class, so the
+    fingerprint never matched again: the app reported "unsaved changes"
+    immediately after a restore, no version showed as current, and an
+    unqualified Train fell back to the newest version — the exact state the
+    user had just rolled away from.
+    """
+    pid, imgs = _setup(client)
+    v1 = _save(client, pid)
+
+    client.post(f"/api/projects/{pid}/classes", json={"name": "truck"})
+    assert len(client.get(f"/api/projects/{pid}/classes").json()) == 2
+
+    r = client.post(f"/api/projects/{pid}/dataset/versions/{v1['id']}/restore").json()
+    assert r["classes_removed"] == ["truck"], "reported, not silent"
+
+    names = {c["name"] for c in client.get(f"/api/projects/{pid}/classes").json()}
+    assert names == {"car"}, "the later class is gone"
+
+    by_version = {v["version"]: v for v in _versions(client, pid)}
+    assert by_version[1]["is_current"] is True, "the restored version IS what's on screen"
+
+
+def test_restore_still_brings_back_a_deleted_class(client):
+    """The other direction: a class deleted after the version comes back."""
+    pid, imgs = _setup(client)
+    car = _class_id(client, pid)
+    _add_box(client, imgs[0]["id"], car)
+    v1 = _save(client, pid)
+
+    client.delete(f"/api/classes/{car}")
+    assert client.get(f"/api/projects/{pid}/classes").json() == []
+
+    r = client.post(f"/api/projects/{pid}/dataset/versions/{v1['id']}/restore").json()
+    assert r["classes_removed"] == []
+    names = {c["name"] for c in client.get(f"/api/projects/{pid}/classes").json()}
+    assert names == {"car"}, "the deleted class is restored"
 
 
 def test_current_marks_the_version_on_screen_not_the_newest(client):
