@@ -404,3 +404,102 @@ def test_selecting_images_and_a_coco_json_together_imports_labels(client):
     assert body["uploaded_count"] == 1
     assert body["annotations_imported"] == 1, "the json was read, not dropped"
     assert body["classes_created"] == ["widget"]
+
+
+# --- partial and lopsided split layouts -------------------------------------
+
+
+def test_folders_without_annotations_import_as_unannotated(client):
+    """train/ labelled, valid/ not: the unlabelled images still import.
+
+    They land as ordinary unannotated images — which is both a legitimate state
+    (an empty image exports as a negative example) and visible in the stats, so
+    the gap is obvious rather than silent.
+    """
+    doc = {
+        "images": [
+            {"id": 1, "file_name": "t1.png", "width": 640, "height": 480},
+            {"id": 2, "file_name": "t2.png", "width": 640, "height": 480},
+        ],
+        "annotations": [
+            {"id": 1, "image_id": 1, "category_id": 1, "bbox": [10, 10, 50, 50]},
+            {"id": 2, "image_id": 2, "category_id": 1, "bbox": [10, 10, 50, 50]},
+        ],
+        "categories": [{"id": 1, "name": "widget"}],
+    }
+    tree = {
+        "ds/train/t1.png": png_bytes(640, 480),
+        "ds/train/t2.png": png_bytes(640, 480),
+        "ds/train/_annotations.coco.json": json.dumps(doc).encode(),
+        "ds/valid/v1.png": png_bytes(640, 480),
+        "ds/valid/v2.png": png_bytes(640, 480),
+    }
+    pid = client.post("/api/projects", json={"name": "Mixed"}).json()["id"]
+    body = client.post(f"/api/projects/{pid}/images", files=_folder_files(tree)).json()
+
+    assert body["uploaded_count"] == 4
+    assert body["annotations_imported"] == 2
+    assert body["splits"] == {"train": 2, "val": 2}
+    assert any("no annotations found" in n for n in body["notes"])
+
+    stats = client.get(f"/api/projects/{pid}/dataset/stats").json()
+    assert stats["annotated_images"] == 2
+    assert stats["unannotated_images"] == 2
+
+    by_name = {i["original_filename"]: i for i in client.get(f"/api/projects/{pid}/images").json()}
+    assert by_name["v1.png"]["split"] == "val"
+    assert by_name["v1.png"]["annotation_count"] == 0
+
+
+def test_a_lone_valid_folder_stays_val(client):
+    """THE bug this guards: a dataset that is ONLY valid/ was imported as train.
+
+    _strip_wrapper descends through single-child directories to get past the
+    wrapper folder a zip always has. With only valid/ inside, it stepped into
+    that too — and from there the layout looks flat, so everything became TRAIN.
+    Uploading a validation set silently turned it into a training set, which
+    invalidates every metric the resulting model reports.
+    """
+    tree = {
+        "ds/valid/v1.png": png_bytes(640, 480),
+        "ds/valid/v2.png": png_bytes(640, 480),
+    }
+    pid = client.post("/api/projects", json={"name": "OnlyValid"}).json()["id"]
+    body = client.post(f"/api/projects/{pid}/images", files=_folder_files(tree)).json()
+    assert body["splits"] == {"val": 2}, "not silently relabelled as train"
+    assert body["has_split_folders"] is True
+
+
+def test_a_lone_test_folder_stays_test(client):
+    tree = {"ds/test/s1.png": png_bytes(640, 480)}
+    pid = client.post("/api/projects", json={"name": "OnlyTest"}).json()["id"]
+    body = client.post(f"/api/projects/{pid}/images", files=_folder_files(tree)).json()
+    assert body["splits"] == {"test": 1}
+
+
+def test_wrapper_folder_is_still_stripped(client):
+    """The behaviour the split check must not break: a real wrapper directory
+    (the folder every zip export puts everything inside) is still skipped."""
+    tree = {
+        "My-Export-v3/train/t1.png": png_bytes(640, 480),
+        "My-Export-v3/valid/v1.png": png_bytes(640, 480),
+    }
+    pid = client.post("/api/projects", json={"name": "Wrapped"}).json()["id"]
+    body = client.post(f"/api/projects/{pid}/images", files=_folder_files(tree)).json()
+    assert body["splits"] == {"train": 1, "val": 1}
+
+
+def test_no_train_split_says_so_plainly(client):
+    """valid/ + test/ and nothing else. "The train split has no accepted boxes"
+    sends someone looking for images that don't exist."""
+    tree = {
+        "ds/valid/v1.png": png_bytes(640, 480),
+        "ds/test/s1.png": png_bytes(640, 480),
+    }
+    pid = client.post("/api/projects", json={"name": "NoTrainSplit"}).json()["id"]
+    client.post(f"/api/projects/{pid}/images", files=_folder_files(tree))
+    client.post(f"/api/projects/{pid}/dataset/versions", json={"note": None})
+
+    p = client.get(f"/api/projects/{pid}/train/preview").json()
+    assert p["can_train"] is False
+    assert any("No training images" in w for w in p["warnings"])

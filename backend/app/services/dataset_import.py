@@ -409,14 +409,24 @@ def _strip_wrapper(root: Path) -> Path:
     Roboflow's are no exception. Without this, every path check below would have
     to know about a directory name we can't predict. Loops in case of
     "export/dataset/train/...".
+
+    IT MUST NOT DESCEND INTO A SPLIT FOLDER. A dataset containing only `valid/`
+    is a single-child directory, so this used to step inside it — and from there
+    the layout looks flat, so every image was imported as TRAIN. Uploading a
+    validation set silently turned it into a training set, which is the one
+    mistake that quietly invalidates every metric a model reports afterwards.
+    A lone `train/` was harmless by luck; `valid/` and `test/` were not.
     """
+    from app.models.image import Split
+
     current = root
     for _ in range(4):  # bounded: a pathological zip shouldn't spin us
         entries = [p for p in current.iterdir() if not p.name.startswith("__MACOSX")]
-        if len(entries) == 1 and entries[0].is_dir():
-            current = entries[0]
-        else:
+        if len(entries) != 1 or not entries[0].is_dir():
             break
+        if Split.from_folder(entries[0].name):
+            break  # that's the dataset, not a wrapper around it
+        current = entries[0]
     return current
 
 

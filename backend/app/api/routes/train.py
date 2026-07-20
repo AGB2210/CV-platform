@@ -387,7 +387,16 @@ def train_preview(project_id: int, db: Session = Depends(get_db)) -> dict:
         )
     if num_classes == 0:
         warnings.append("No classes defined — add at least one on the Dataset page.")
-    if counts[Split.TRAIN]["boxes"] == 0:
+    if counts[Split.TRAIN]["images"] == 0:
+        # Distinct from "train has images but no boxes". A dataset imported as
+        # only valid/ and test/ has nothing in train AT ALL, and telling someone
+        # to annotate a split that is empty sends them looking for images that
+        # aren't there.
+        warnings.append(
+            "No training images — every image is in val or test. Move some to "
+            "'train' on the Dataset page, or use the percentage split."
+        )
+    elif counts[Split.TRAIN]["boxes"] == 0:
         warnings.append(
             "The train split has no accepted boxes — nothing to learn from."
         )
