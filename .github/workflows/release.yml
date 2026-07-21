@@ -1,0 +1,192 @@
+# Continuous delivery: turn a version tag into a runnable download.
+#
+# WHAT "CD" MEANS FOR THIS APP
+# ---------------------------
+# Not deployment. This is a local, GPU-bound, single-user tool with no
+# authentication — its entire premise is "your hardware, no cloud". There is no
+# server to deploy it to, and a public instance would be an unauthenticated
+# upload endpoint with a broken feature set.
+#
+# So the deliverable is an ARTIFACT: a zip someone downloads, unpacks, and runs
+# by double-clicking run.bat. That is genuine continuous delivery — every tag
+# produces a tested, installable build with no manual steps.
+#
+# WHAT MAKES IT RUNNABLE
+# ----------------------
+# The frontend is compiled here, so the download needs no Node at all, and
+# FastAPI serves the built files from the same origin as /api (app/main.py).
+# One process, no dev server, no CORS.
+#
+# THE SMOKE TEST IS THE POINT
+# ---------------------------
+# Publishing a build nobody has run is worse than publishing nothing: it looks
+# finished and fails on someone else's machine. So the job unpacks its own zip
+# into a clean directory, installs from it, starts the server, and asks it real
+# questions — does the app shell load, does a deep link work, does a mistyped
+# API path still 404 — before anything is published. If that fails, no release.
+
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  # Lets a build be rehearsed without cutting a tag. It runs everything except
+  # the publish step.
+  workflow_dispatch:
+
+permissions:
+  contents: write # required to create the release
+
+jobs:
+  release:
+    name: Build, verify, publish
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # --- build ---------------------------------------------------------
+
+      - name: Build the frontend
+        working-directory: frontend
+        # `npm ci` installs exactly the lockfile and fails if it has drifted
+        # from package.json — a real error worth stopping on.
+        run: |
+          npm ci
+          npm run build
+
+      - name: Assemble the artifact
+        id: assemble
+        run: |
+          VERSION="${GITHUB_REF_NAME:-dev}"
+          STAGE="cv-platform-${VERSION}"
+          mkdir -p "dist/$STAGE"
+
+          # Backend source, minus anything generated, local, or downloaded.
+          #
+          # Most of these are gitignored, so a CI checkout wouldn't have them
+          # anyway — they're listed because assembling from a working tree
+          # (rehearsing this locally) otherwise sweeps them in. Doing that once
+          # picked up 11 MB of ultralytics weights and a stray runs/ directory.
+          # `.env` matters most: it holds local configuration and must never
+          # ride along in a published download.
+          rsync -a \
+                --exclude venv --exclude __pycache__ --exclude .pytest_cache \
+                --exclude '*.db*' --exclude '*.pt' --exclude '*.pth' \
+                --exclude runs --exclude .env \
+                backend "dist/$STAGE/"
+
+          # The COMPILED frontend only. No source, no node_modules — the whole
+          # point is that the download needs no Node.
+          mkdir -p "dist/$STAGE/frontend"
+          cp -r frontend/dist "dist/$STAGE/frontend/dist"
+
+          cp -r scripts "dist/$STAGE/scripts"
+          cp run.bat README.md "dist/$STAGE/"
+
+          # start.bat runs the Vite dev server, which this build has no source
+          # for. Shipping it would hand people a button that cannot work.
+          rm -f "dist/$STAGE/scripts/dev.py"
+
+          cd dist && zip -qr "$STAGE.zip" "$STAGE"
+          echo "stage=$STAGE" >> "$GITHUB_OUTPUT"
+          echo "zip=dist/$STAGE.zip" >> "$GITHUB_OUTPUT"
+          ls -lh "$STAGE.zip"
+
+      # --- verify --------------------------------------------------------
+
+      - name: Smoke-test the artifact
+        run: |
+          set -e
+          STAGE="${{ steps.assemble.outputs.stage }}"
+
+          # Unpack somewhere completely separate, so nothing from the checkout
+          # can accidentally satisfy a dependency the zip forgot to include.
+          mkdir -p /tmp/smoke && cd /tmp/smoke
+          unzip -q "$GITHUB_WORKSPACE/dist/$STAGE.zip"
+          cd "$STAGE"
+
+          test -f frontend/dist/index.html || { echo "no built frontend in the artifact"; exit 1; }
+          test ! -d frontend/src           || { echo "frontend source leaked into the artifact"; exit 1; }
+          test ! -d backend/venv           || { echo "a venv leaked into the artifact"; exit 1; }
+
+          python -m venv backend/venv
+          backend/venv/bin/python -m pip install -q --upgrade pip
+          backend/venv/bin/python -m pip install -q -r backend/requirements.txt
+
+          cd backend
+          venv/bin/python -m uvicorn app.main:app --port 8765 &
+          SERVER=$!
+          cd ..
+
+          # Poll rather than sleep a fixed amount: startup time varies with the
+          # runner, and a fixed wait is either flaky or wasteful.
+          for i in $(seq 1 40); do
+            curl -sf http://127.0.0.1:8765/api/health >/dev/null && break
+            sleep 1
+          done
+
+          fail=0
+          check() { # path, expected status, label
+            code=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:8765$1")
+            if [ "$code" = "$2" ]; then echo "  ok   $3 ($1 -> $code)";
+            else echo "  FAIL $3 ($1 -> $code, wanted $2)"; fail=1; fi
+          }
+          check /                        200 "app shell loads"
+          check /api/health              200 "API answers"
+          check /projects/7/train        200 "deep link falls back to the SPA"
+          check /api/definitely-not-real 404 "unmatched API path still 404s"
+
+          kill $SERVER 2>/dev/null || true
+          exit $fail
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cv-platform-${{ github.ref_name }}
+          path: ${{ steps.assemble.outputs.zip }}
+
+      # --- publish -------------------------------------------------------
+      # Tag pushes only. A manual run builds and verifies but publishes nothing,
+      # so a rehearsal can't accidentally create a release.
+
+      - name: Publish the release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.assemble.outputs.zip }}
+          generate_release_notes: true
+          body: |
+            ## Install
+
+            1. Download the zip below and unpack it anywhere.
+            2. Double-click **run.bat**.
+
+            First launch creates a Python environment and installs
+            dependencies (a minute or two); after that it starts in seconds,
+            and opens at <http://127.0.0.1:8000>.
+
+            Requires **Python 3.10+**. No Node needed — the interface is
+            already built.
+
+            ### Notes
+
+            - **Starts empty.** This is the application, not data. Create a
+              project and upload images.
+            - **Object detection only.** Segmentation is a later phase.
+            - **Auto-annotation and training need the extra ML dependencies**
+              (`backend/requirements-ml.txt`) and a GPU. Read the notes at the
+              top of that file before installing torch — the default PyPI
+              wheel may not match your card. Everything else works without
+              them.
+            - **No authentication.** It binds to localhost, so only this
+              machine can reach it. Don't expose it to a network you don't
+              trust.
