@@ -142,9 +142,12 @@ scratch/
 # =============================================================================
 # Local-only working docs
 # =============================================================================
-# HANDOFF.md is a live working note, rewritten only at end stages — kept on disk
-# but out of version control so it doesn't churn history mid-work.
+# Working notes live OUTSIDE this directory now (alongside the project, not in
+# it), so there is nothing here to ignore. This rule is kept as a backstop: a
+# note that lands here by accident stays unpublished rather than riding along
+# in the next `git add -A`.
 HANDOFF.md
+*-HANDOFF.md
 
 # Which server processes the dev launcher owned last run, so the next run can
 # attribute and clean up orphans. Machine-local runtime state.
