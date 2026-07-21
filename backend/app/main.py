@@ -19,6 +19,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from app.api import api_router
 from app.config import REPO_ROOT, settings
 from app.database import init_db
+from app.version import __version__
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +44,9 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title=settings.APP_NAME,
     description="Local, self-hosted computer vision platform. MVP scope: object detection.",
-    version="0.1.0",
+    # From the VERSION file at the repo root — see app/version.py for why
+    # this isn't a literal.
+    version=__version__,
     lifespan=lifespan,
 )
 

@@ -54,6 +54,25 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Tag matches VERSION
+        # The number on the download must match the code inside it. Without
+        # this, tagging v0.3.0 against a 0.1.0 tree publishes a build that
+        # reports the wrong version forever, and nothing would catch it.
+        run: |
+          python scripts/version.py --check
+          FILE_VERSION="$(cat VERSION)"
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            TAG_VERSION="${GITHUB_REF_NAME#v}"
+            if [ "$TAG_VERSION" != "$FILE_VERSION" ]; then
+              echo "Tag ${GITHUB_REF_NAME} does not match VERSION ($FILE_VERSION)."
+              echo "Run: python scripts/version.py --set $TAG_VERSION"
+              exit 1
+            fi
+            echo "  tag ${GITHUB_REF_NAME} matches VERSION $FILE_VERSION"
+          else
+            echo "  manual run — building $FILE_VERSION, publishing nothing"
+          fi
+
       # --- build ---------------------------------------------------------
 
       - name: Build the frontend
@@ -67,8 +86,7 @@ jobs:
       - name: Assemble the artifact
         id: assemble
         run: |
-          VERSION="${GITHUB_REF_NAME:-dev}"
-          STAGE="cv-platform-${VERSION}"
+          STAGE="cv-platform-v$(cat VERSION)"
           mkdir -p "dist/$STAGE"
 
           # Backend source, minus anything generated, local, or downloaded.
@@ -151,7 +169,7 @@ jobs:
 
       - uses: actions/upload-artifact@v7
         with:
-          name: cv-platform-${{ github.ref_name }}
+          name: cv-platform-${{ steps.assemble.outputs.stage }}
           path: ${{ steps.assemble.outputs.zip }}
 
       # --- publish -------------------------------------------------------

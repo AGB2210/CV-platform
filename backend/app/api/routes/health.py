@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database import get_db
+from app.version import __version__
 
 # Routers let each feature area own its endpoints in its own file; main.py just
 # mounts them. Phase 1 adds `projects.py` and `images.py` alongside this.
@@ -31,6 +32,9 @@ def health_check(db: Session = Depends(get_db)) -> dict:
     return {
         "status": "ok",
         "app": settings.APP_NAME,
+        # So a running instance can be asked what it is — useful when
+        # someone reports a bug against "the downloaded one".
+        "version": __version__,
         "database": db_status,
         "storage_dir": str(settings.STORAGE_DIR),
     }

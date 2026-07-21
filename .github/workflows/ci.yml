@@ -60,6 +60,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt -r requirements-dev.txt
 
+      - name: Versions agree
+        # VERSION is the single source of truth; package.json holds a literal
+        # because npm can't read it. This is what stops them drifting apart
+        # again — they already had, three different ways.
+        run: python scripts/version.py --check
+
       - name: Import sanity
         working-directory: backend
         # Cheap and specific: a broken import shows up here as one clear line
