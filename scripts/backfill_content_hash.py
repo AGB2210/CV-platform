@@ -11,9 +11,9 @@ folder into an OLD project still creates duplicates: the new rows get hashes and
 dedupe against each other, but nothing recognises them as copies of what was
 already there.
 
-This is the fourth hand-written backfill in this project (after
-TrainingJob.version and DatasetVersion.content_hash), which is the argument for
-Alembic that HANDOFF.md keeps making.
+One of several hand-written backfills in this project (see the others in this
+directory). Each one is an argument for replacing `_add_missing_columns` with
+Alembic, which can add a column but cannot fill it.
 
 USAGE
 -----

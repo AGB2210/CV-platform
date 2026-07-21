@@ -2,10 +2,10 @@
 #
 # WHAT THIS IS AND ISN'T
 # ----------------------
-# This runs exactly the three commands HANDOFF.md tells a contributor to run
-# before calling something done — backend tests, frontend typecheck, frontend
-# lint. Nothing more. CI that checks something different from what people run
-# locally is how "works on my machine" starts.
+# This runs exactly the three commands the README documents as the gate before
+# calling something done — backend tests, frontend typecheck, frontend lint.
+# Nothing more. CI that checks something different from what people run locally
+# is how "works on my machine" starts.
 #
 # It deliberately does NOT install the ML dependencies (torch, ultralytics,
 # transformers). They are several GB, and the test suite is built to run without

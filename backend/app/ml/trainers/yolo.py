@@ -171,7 +171,8 @@ class YoloTrainer(Trainer):
                 # of each epoch, so setting it here lets the epoch in flight
                 # finish and checkpoint before the loop exits. Requesting a stop
                 # therefore keeps a usable best.pt rather than truncating mid-
-                # epoch, which is exactly the behaviour the user asked for.
+                # epoch — a half-written epoch is worse than one more epoch of
+                # waiting.
                 #
                 # `finished` also closes the door on the post-loop validation
                 # callback, which would otherwise land as a phantom epoch.

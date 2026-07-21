@@ -167,9 +167,10 @@ class GroundingDinoAnnotator(AutoAnnotator):
         low-confidence detections, so on a two-class "car, person" project every
         unlabelled box became a "car". Measured on the shapes demo, every
         person-shaped box the model found below ~0.3 confidence was stored as a
-        car. The user saw "people don't get annotated"; what was actually
-        happening was worse — they were being annotated as the wrong class, and
-        that is training data being quietly poisoned.
+        car. That surfaces as "people don't get annotated", but the truth is
+        worse: they ARE annotated, as the wrong class. The box looks right in
+        review and only the label is wrong, which is training data being
+        quietly poisoned.
 
         A box whose class we cannot determine is not data. Dropping it loses a
         detection the human can redraw; keeping it invents ground truth that
