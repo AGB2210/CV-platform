@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime
-
 from pydantic import BaseModel, ConfigDict, Field, computed_field
+
+from app.timestamps import UtcDatetime
 
 
 class TrainerInfo(BaseModel):
@@ -125,9 +125,9 @@ class TrainingJobRead(BaseModel):
     checkpoint_path: str | None
     error: str | None
 
-    created_at: datetime
-    started_at: datetime | None
-    finished_at: datetime | None
+    created_at: UtcDatetime
+    started_at: UtcDatetime | None
+    finished_at: UtcDatetime | None
 
     # Loaded from the ORM but not serialised raw — exposed parsed via `metrics`
     # below, so the frontend gets an array to plot rather than a JSON string to

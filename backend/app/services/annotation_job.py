@@ -16,12 +16,11 @@ from __future__ import annotations
 import json
 import logging
 import traceback
-from datetime import datetime
-
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
+from app.timestamps import utcnow
 from app.ml import registry
 from app.ml.annotators.base import AnnotationRequest
 from app.models import Annotation, AnnotationJob, Category, Image, JobStatus
@@ -34,7 +33,7 @@ def _fail(db: Session, job: AnnotationJob, exc: Exception) -> None:
     """Record a job failure with its traceback."""
     job.status = JobStatus.FAILED
     job.error = f"{type(exc).__name__}: {exc}\n\n{traceback.format_exc()}"
-    job.finished_at = datetime.now()
+    job.finished_at = utcnow()
     db.commit()
     logger.exception("Annotation job %s failed", job.id)
 
@@ -100,7 +99,7 @@ def _images_in_scope(db: Session, job: AnnotationJob) -> list[Image]:
 
 def _run(db: Session, job: AnnotationJob) -> None:
     job.status = JobStatus.RUNNING
-    job.started_at = datetime.now()
+    job.started_at = utcnow()
     db.commit()
 
     # Classes define what we're looking for. No classes means nothing to prompt
@@ -123,7 +122,7 @@ def _run(db: Session, job: AnnotationJob) -> None:
 
     if not images:
         job.status = JobStatus.DONE
-        job.finished_at = datetime.now()
+        job.finished_at = utcnow()
         db.commit()
         return
 
@@ -218,6 +217,6 @@ def _run(db: Session, job: AnnotationJob) -> None:
         db.commit()
 
     job.status = JobStatus.DONE
-    job.finished_at = datetime.now()
+    job.finished_at = utcnow()
     db.commit()
     logger.info("Job %s done: %d boxes over %d images", job.id, total_boxes, len(images))

@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import json
 import shutil
-from datetime import datetime
 from pathlib import Path
 
 from app.services import storage
 from app.services.dataset_snapshot import DatasetSnapshot
+from app.timestamps import utcnow
 from app.services.exporters.base import DatasetExporter, ExportRequest
 
 
@@ -44,7 +44,7 @@ class CocoExporter(DatasetExporter):
                     "info": {
                         "description": project_name,
                         "version": "1.0",
-                        "date_created": datetime.now().isoformat(),
+                        "date_created": utcnow().isoformat(),
                     },
                     "licenses": [],
                     "images": [],

@@ -29,7 +29,6 @@ import json
 import logging
 import shutil
 import traceback
-from datetime import datetime
 from pathlib import Path
 
 from sqlalchemy.orm import Session
@@ -43,6 +42,7 @@ from app.ml.trainers.base import EpochMetrics, TrainConfig
 from app.models import JobControl, JobStatus, TrainingJob
 from app.models.image import Split
 from app.services import exporters
+from app.timestamps import utcnow
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +51,7 @@ def _fail(db: Session, job: TrainingJob, exc: Exception) -> None:
     """Record a job failure with its traceback."""
     job.status = JobStatus.FAILED
     job.error = f"{type(exc).__name__}: {exc}\n\n{traceback.format_exc()}"
-    job.finished_at = datetime.now()
+    job.finished_at = utcnow()
     db.commit()
     logger.exception("Training job %s failed", job.id)
 
@@ -102,7 +102,7 @@ def _discard(db: Session, job: TrainingJob) -> None:
 
 def _run(db: Session, job: TrainingJob) -> None:
     job.status = JobStatus.RUNNING
-    job.started_at = datetime.now()
+    job.started_at = utcnow()
     db.commit()
 
     # Cancelled while still queued — before a single epoch ran. Bail out here
@@ -274,7 +274,7 @@ def _run(db: Session, job: TrainingJob) -> None:
     job.control = None
 
     job.status = JobStatus.DONE
-    job.finished_at = datetime.now()
+    job.finished_at = utcnow()
     db.commit()
 
     _reclaim_space(run_dir, job)

@@ -1,8 +1,8 @@
 """Pydantic schemas for images."""
 
-from datetime import datetime
-
 from pydantic import BaseModel, ConfigDict, computed_field
+
+from app.timestamps import UtcDatetime
 
 
 class ImageRead(BaseModel):
@@ -17,7 +17,7 @@ class ImageRead(BaseModel):
     width: int
     height: int
     size_bytes: int
-    created_at: datetime
+    created_at: UtcDatetime
 
     #: train | val | test
     split: str = "train"

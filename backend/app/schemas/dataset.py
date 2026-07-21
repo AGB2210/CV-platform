@@ -4,9 +4,9 @@ The staging -> dataset commit schemas (CommitMode, DatasetCommit, CommitPreview)
 are gone along with the two-stage model. See routes/dataset.py.
 """
 
-from datetime import datetime
-
 from pydantic import BaseModel, ConfigDict, Field
+
+from app.timestamps import UtcDatetime
 
 
 class DatasetVersionCreate(BaseModel):
@@ -54,7 +54,7 @@ class DatasetVersionRead(BaseModel):
     total_boxes: int
     train_boxes: int
     num_classes: int
-    created_at: datetime
+    created_at: UtcDatetime
     #: True for the version the LIVE dataset currently matches. Computed per
     #: request, and not necessarily the newest — after a restore it's the one
     #: that was restored.

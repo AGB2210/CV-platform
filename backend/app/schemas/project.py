@@ -1,8 +1,8 @@
 """Pydantic schemas for projects."""
 
-from datetime import datetime
-
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+from app.timestamps import UtcDatetime
 
 from app.enums import TaskType
 
@@ -78,8 +78,8 @@ class ProjectRead(BaseModel):
     name: str
     description: str | None
     task_type: str
-    created_at: datetime
-    updated_at: datetime
+    created_at: UtcDatetime
+    updated_at: UtcDatetime
 
     # Computed per-request by the route with a COUNT query, not stored on the
     # projects table. Keeping a counter column would mean keeping it correct on
@@ -96,4 +96,4 @@ class ProjectRead(BaseModel):
     #: `updated_at` untouched, so sorting by it would order projects by when
     #: somebody last renamed one — almost never what "last modified" means to
     #: the person reading the list.
-    last_activity_at: datetime | None = None
+    last_activity_at: UtcDatetime | None = None

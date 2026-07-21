@@ -1,8 +1,8 @@
 """Pydantic schemas for annotations, auto-annotation jobs, and models."""
 
-from datetime import datetime
-
 from pydantic import BaseModel, ConfigDict, Field, computed_field
+
+from app.timestamps import UtcDatetime
 
 
 class AnnotatorInfo(BaseModel):
@@ -139,9 +139,9 @@ class AnnotationJobRead(BaseModel):
     processed_images: int
     boxes_created: int
     error: str | None
-    created_at: datetime
-    started_at: datetime | None
-    finished_at: datetime | None
+    created_at: UtcDatetime
+    started_at: UtcDatetime | None
+    finished_at: UtcDatetime | None
 
     @computed_field  # type: ignore[prop-decorator]
     @property

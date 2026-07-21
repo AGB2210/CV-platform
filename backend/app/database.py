@@ -9,13 +9,12 @@ session is closed even if the handler raises.
 from collections.abc import Generator
 
 import logging
-from datetime import datetime
-
 from sqlalchemy import create_engine, event
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from app.config import settings
+from app.timestamps import utcnow
 
 # `check_same_thread=False` is a SQLite-specific requirement. By default SQLite
 # refuses to use a connection from a thread other than the one that created it.
@@ -223,7 +222,7 @@ def _fail_interrupted_jobs() -> None:
                     "The server stopped while this job was running, so it was "
                     "interrupted. Nothing was corrupted — start it again."
                 )
-                job.finished_at = datetime.now()
+                job.finished_at = utcnow()
                 reclaimed += 1
         if reclaimed:
             db.commit()
