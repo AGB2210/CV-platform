@@ -51,6 +51,11 @@ PATCH — "the same thing, working properly."
     wrong; deep links 404'd instead of loading; SQLite hit "database is locked"
     under a training run.
 
+RESETTING. MINOR returns to 0 when MAJOR increments; PATCH returns to 0 when
+MINOR increments. So 0.1.9 -> next feature -> 0.2.0, not 0.2.9. That is why
+the current version reads 0.1.0: first cut of this feature set, no fixes on
+top of it yet.
+
 WHEN YOU CAN'T DECIDE, the tiebreaker is: does anything that worked yesterday
 work differently today? Yes -> MAJOR. No, but there's something new -> MINOR.
 No to both -> PATCH.
