@@ -154,12 +154,26 @@ export function Visualize() {
             usually right but should never be a surprise. */}
         {stats && stats.unannotated_images > 0 && (
           <div className="mb-4 rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
-            <span className="font-medium">
-              {stats.unannotated_images} image
-              {stats.unannotated_images === 1 ? '' : 's'} have no boxes.
-            </span>{' '}
-            They'll export as negative examples (scenes containing none of your
-            classes). Annotate or delete them if that isn't what you want.
+            {/* Agreement runs through the whole sentence, not just the noun.
+                Pluralising "image" alone left "1 image have no boxes … delete
+                them", which reads as broken software in a warning the user is
+                meant to trust. */}
+            {stats.unannotated_images === 1 ? (
+              <>
+                <span className="font-medium">1 image has no boxes.</span> It'll
+                export as a negative example (a scene containing none of your
+                classes). Annotate or delete it if that isn't what you want.
+              </>
+            ) : (
+              <>
+                <span className="font-medium">
+                  {stats.unannotated_images} images have no boxes.
+                </span>{' '}
+                They'll export as negative examples (scenes containing none of
+                your classes). Annotate or delete them if that isn't what you
+                want.
+              </>
+            )}
           </div>
         )}
 
