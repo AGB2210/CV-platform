@@ -18,15 +18,42 @@ import (app/version.py); this script is what keeps the copies that CANNOT read
 it — `package.json`, which npm requires to hold a literal — in step, and
 `--check` is what CI runs so they can never silently drift again.
 
-THE SCHEME
-----------
-Semantic versioning, and the numbers mean something:
+THE SCHEME — WHAT EACH NUMBER MEANS
+-----------------------------------
+MAJOR.MINOR.PATCH, most disruptive first. Each answers one question for
+somebody upgrading: what does this cost me?
 
-    MAJOR   incompatible change to how the app is used or its data is stored.
-            Stays 0 until the phase plan in README.md is complete.
-    MINOR   a phase lands, or a feature arrives. 0.1.0 is phases 0-4;
-            phase 5 (evaluation + inference) will be 0.2.0.
-    PATCH   fixes and internal work, nothing new to use.
+MAJOR — "something you relied on no longer works that way."
+    Existing usage breaks, or existing data needs migrating by hand. Upgrading
+    requires reading the notes first.
+
+    Real example: training now REFUSES to start without a validation split.
+    Projects that trained fine before suddenly couldn't. Under 1.x that would
+    have forced 2.0.0.
+
+    Stays 0 until the phase plan in README.md is complete — a leading zero is
+    semver's way of saying "the shape is still moving", which is honest while
+    phase 5 is unwritten.
+
+MINOR — "there's something new, and nothing you did stopped working."
+    A capability added alongside what exists. Upgrading is safe.
+
+    Real examples: YOLO import, folder upload, grid pagination. None of them
+    changed anything that already worked.
+
+    0.1.0 is phases 0-4; phase 5 will be 0.2.0.
+
+PATCH — "the same thing, working properly."
+    Fixes and internal work. Nothing new to learn, nothing to migrate; the
+    number moves so a bug report can name a build.
+
+    Real examples: rotated photos stored transposed dimensions so boxes landed
+    wrong; deep links 404'd instead of loading; SQLite hit "database is locked"
+    under a training run.
+
+WHEN YOU CAN'T DECIDE, the tiebreaker is: does anything that worked yesterday
+work differently today? Yes -> MAJOR. No, but there's something new -> MINOR.
+No to both -> PATCH.
 
 A release tag is this number with a `v`: VERSION 0.2.0 -> tag v0.2.0. The
 release workflow refuses to publish if a tag and this file disagree, so the
@@ -110,7 +137,13 @@ def bump(current: str, part: str) -> str:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        # Without this, argparse re-wraps the docstring into one paragraph and
+        # the whole explanation of what the numbers mean becomes unreadable —
+        # which is the opposite of why it's written there.
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--check", action="store_true", help="verify every place agrees")
     group.add_argument("--set", dest="value", help="set an exact version")
