@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { NavLink, useMatch } from 'react-router-dom'
 import { getProject } from '@/lib/api'
-import { LayoutGrid, Boxes, Tags, Cpu, PlayCircle, SquarePen, Eye } from 'lucide-react'
+import { LayoutGrid, Boxes, Tags, Cpu, PlayCircle, SquarePen, Eye, Gauge } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 
 /**
@@ -44,6 +44,7 @@ const PROJECT_NAV: NavItem[] = [
   { suffix: '/annotate', label: 'Auto-annotate', icon: Tags, ready: true, nested: true },
   { suffix: '/review', label: 'Annotate', icon: SquarePen, ready: true, nested: true },
   { suffix: '/train', label: 'Train', icon: Cpu, ready: true },
+  { suffix: '/evaluate', label: 'Evaluate', icon: Gauge, ready: true },
   { suffix: '/deploy', label: 'Deploy', icon: PlayCircle, ready: true },
 ]
 

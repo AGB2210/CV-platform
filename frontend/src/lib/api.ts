@@ -708,6 +708,42 @@ export interface PredictionResult {
 export const listModels = (projectId: number) =>
   api.get<DeployableModel[]>(`/projects/${projectId}/models`)
 
+// --- Evaluation (test-split mAP) -------------------------------------------
+
+export interface PerClassAP {
+  name: string
+  ap: number | null
+}
+
+export interface EvaluationJob {
+  id: number
+  project_id: number
+  training_job_id: number
+  dataset_version_id: number
+  split: string
+  status: 'queued' | 'running' | 'done' | 'failed'
+  num_images: number
+  map_50_95: number | null
+  map_50: number | null
+  map_75: number | null
+  per_class: PerClassAP[]
+  error: string | null
+  created_at: string
+  started_at: string | null
+  finished_at: string | null
+}
+
+export const listEvaluations = (projectId: number) =>
+  api.get<EvaluationJob[]>(`/projects/${projectId}/evaluations`)
+
+export const getEvaluation = (jobId: number) =>
+  api.get<EvaluationJob>(`/evaluation-jobs/${jobId}`)
+
+export const startEvaluation = (
+  projectId: number,
+  body: { training_job_id: number; dataset_version_id: number; split?: string },
+) => api.post<EvaluationJob>(`/projects/${projectId}/evaluate`, body)
+
 /** Run a model on one uploaded image. Nothing is stored — this is read-only. */
 export async function predictImage(
   jobId: number,
