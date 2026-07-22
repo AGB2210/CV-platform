@@ -130,3 +130,29 @@ def test_cancel_discards_run_proposals_and_row(client, monkeypatch):
         )
     finally:
         db.close()
+
+
+def test_annotator_roster_covers_five_models_in_four_families(client):
+    """Five annotators across four families, each carrying the grouping
+    metadata the picker needs. All keys resolve to classes without importing
+    any heavy framework (this test would hang for minutes if they did)."""
+    from app.ml import registry
+
+    annotators = client.get("/api/annotators").json()
+    by_key = {a["key"]: a for a in annotators}
+
+    expected = {
+        "grounding_dino": "Grounding DINO",
+        "grounding_dino_base": "Grounding DINO",
+        "yolo_world_s": "YOLO-World",
+        "owlv2_base": "OWLv2",
+        "florence2_base": "Florence-2",
+    }
+    for key, family in expected.items():
+        assert key in by_key, f"missing annotator {key}"
+        assert by_key[key]["family"] == family
+        assert by_key[key]["variant"], f"{key} needs a variant for the picker"
+        assert by_key[key]["approx_vram_gb"] > 0
+        assert registry.get_class(key)
+
+    assert len({a["family"] for a in annotators}) == 4

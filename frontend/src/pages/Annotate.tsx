@@ -297,34 +297,61 @@ export function Annotate() {
                 <h2 className="text-sm font-medium text-gray-900">Model</h2>
               </div>
               <div className="space-y-3 p-4">
-                <div>
-                  <label
-                    htmlFor="model"
-                    className="mb-1 block text-xs font-medium text-gray-700"
-                  >
-                    Auto-annotation model
-                  </label>
-                  <select
-                    id="model"
-                    value={modelKey}
-                    onChange={(e) => setModelKey(e.target.value)}
-                    disabled={isRunning}
-                    className="w-full rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-sm focus:border-accent-500 focus:outline-none disabled:bg-gray-50"
-                  >
-                    {annotators.map((a) => (
-                      <option key={a.key} value={a.key}>
-                        {/* Name only. A VRAM figure in the name reads as part of
-                            the model's identity and means nothing without the
-                            machine's own capacity to compare it against — which
-                            the Compute card reports from the actual device. */}
-                        {a.display_name}
-                      </option>
-                    ))}
-                  </select>
-                  {selected && (
-                    <p className="mt-1 text-xs text-gray-500">{selected.description}</p>
-                  )}
+                {/* Model as TWO questions — family, then size — mirroring the
+                    Train page's picker. Five annotators across four families
+                    is already past the point where one flat list reads well. */}
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label
+                      htmlFor="model-family"
+                      className="mb-1 block text-xs font-medium text-gray-700"
+                    >
+                      Model family
+                    </label>
+                    <select
+                      id="model-family"
+                      value={selected?.family ?? ''}
+                      onChange={(e) => {
+                        const first = annotators.find((a) => a.family === e.target.value)
+                        if (first) setModelKey(first.key)
+                      }}
+                      disabled={isRunning}
+                      className="w-full rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-sm focus:border-accent-500 focus:outline-none disabled:bg-gray-50"
+                    >
+                      {[...new Set(annotators.map((a) => a.family))].map((f) => (
+                        <option key={f} value={f}>
+                          {f}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label
+                      htmlFor="model"
+                      className="mb-1 block text-xs font-medium text-gray-700"
+                    >
+                      Size
+                    </label>
+                    <select
+                      id="model"
+                      value={modelKey}
+                      onChange={(e) => setModelKey(e.target.value)}
+                      disabled={isRunning}
+                      className="w-full rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-sm focus:border-accent-500 focus:outline-none disabled:bg-gray-50"
+                    >
+                      {annotators
+                        .filter((a) => a.family === selected?.family)
+                        .map((a) => (
+                          <option key={a.key} value={a.key}>
+                            {a.variant} (~{a.approx_vram_gb} GB)
+                          </option>
+                        ))}
+                    </select>
+                  </div>
                 </div>
+                {selected && (
+                  <p className="text-xs text-gray-500">{selected.description}</p>
+                )}
 
                 {/* Thresholds. Sliders rather than number inputs: these are
                     values you tune by feel against results, not by typing an
@@ -352,7 +379,7 @@ export function Annotate() {
               <div className="border-b border-gray-200 px-4 py-3">
                 <h2 className="text-sm font-medium text-gray-900">Prompts</h2>
                 <p className="text-xs text-gray-500">
-                  Grounding DINO is sensitive to wording. Override a class name with a
+                  These models ground text, and wording matters. Override a class name with a
                   fuller phrase if detection is poor — the stored label stays the class
                   name.
                 </p>

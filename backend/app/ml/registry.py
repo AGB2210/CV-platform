@@ -57,6 +57,10 @@ def available() -> list[dict]:
         {
             "key": cls.key,
             "display_name": cls.display_name,
+            # Fall back to the display name so an annotator that predates the
+            # family/variant fields still groups (as a family of one).
+            "family": cls.family or cls.display_name,
+            "variant": cls.variant or "default",
             "description": cls.description,
             "approx_vram_gb": cls.approx_vram_gb,
         }
@@ -107,18 +111,31 @@ def acquire(key: str) -> "AutoAnnotator":
         return model
 
 
-def release() -> None:
+def release(only: "AutoAnnotator | None" = None) -> None:
     """Unload whatever is resident. Call when a batch finishes.
 
     Without this, a model stays in VRAM indefinitely after a job ends — which is
     fine on a big card and fatal on this one, because the next job (or a
     different model) then has nothing to load into.
+
+    `only`: unload ONLY IF the resident is this exact instance. This is a job
+    runner saying "clean up MY model" — and it closes a real race: with GPU
+    admission, the next queued job is admitted the moment the previous one's
+    terminal status commits, which is BEFORE the previous runner's `finally`
+    executes. An unconditional release there unloaded the NEXT job's
+    freshly-acquired model out from under it, and every predict() after that
+    raised "Model not loaded". (Observed live: three queued annotators, each
+    unloaded by its predecessor's cleanup.) Identity, not key — two jobs using
+    the same model key would still race on a key comparison.
     """
     global _resident
     with _lock:
-        if _resident is not None:
-            _resident.unload()
-            _resident = None
+        if _resident is None:
+            return
+        if only is not None and _resident is not only:
+            return  # someone else's model now — their runner owns its cleanup
+        _resident.unload()
+        _resident = None
 
 
 def resident_key() -> str | None:

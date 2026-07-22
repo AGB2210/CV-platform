@@ -10,6 +10,9 @@ class AnnotatorInfo(BaseModel):
 
     key: str
     display_name: str
+    #: Architecture family and size within it — the picker's two axes.
+    family: str
+    variant: str
     description: str
     approx_vram_gb: float
 

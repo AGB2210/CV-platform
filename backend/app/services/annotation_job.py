@@ -48,6 +48,9 @@ def run_annotation_job(job_id: int) -> None:
     object.
     """
     db = SessionLocal()
+    # The annotator THIS run acquired, if it got that far — set by _run so the
+    # cleanup below can release exactly it and nothing else.
+    owned: list = []
     try:
         job = db.get(AnnotationJob, job_id)
         if job is None:
@@ -55,7 +58,7 @@ def run_annotation_job(job_id: int) -> None:
             return
 
         try:
-            _run(db, job)
+            _run(db, job, owned)
         except Exception as exc:  # noqa: BLE001
             # Catch-all on purpose. This runs in a background thread with no
             # caller to propagate to — an uncaught exception here would be
@@ -64,13 +67,32 @@ def run_annotation_job(job_id: int) -> None:
             # polls. Every exit path must leave a terminal status.
             _fail(db, job, exc)
     finally:
-        # Always release VRAM, even on failure. A crashed job still holding the
-        # model means every subsequent job OOMs — one failure becomes
-        # permanent breakage until restart. Drop a resident predictor too: a
-        # playground can leave one pinned on the card between annotate runs.
-        registry.release()
-        predictor_registry.release()
+        # Release OUR model, even on failure — a crashed job still holding it
+        # means every subsequent job OOMs. `only=` matters: with GPU admission
+        # the next queued job may already be admitted and loading ITS model by
+        # the time this line runs (terminal status commits before the finally),
+        # and an unconditional release here unloaded that model mid-job.
+        registry.release(only=owned[0] if owned else None)
+        # A predictor left resident by an idle playground would also be freed —
+        # but only when no evaluation could own it. Admission blocks this
+        # runner while an evaluation is queued/running, so the check mirrors
+        # the boundary case: an eval started the instant we finished.
+        if not _evaluation_active(db):
+            predictor_registry.release()
         db.close()
+
+
+def _evaluation_active(db: Session) -> bool:
+    """Is an evaluation queued or running? Its predictor must not be evicted."""
+    from app.models import EvaluationJob, JobStatus
+
+    return bool(
+        db.scalar(
+            select(EvaluationJob.id).where(
+                EvaluationJob.status.in_([JobStatus.QUEUED, JobStatus.RUNNING])
+            )
+        )
+    )
 
 
 def _images_in_scope(db: Session, job: AnnotationJob) -> list[Image]:
@@ -100,7 +122,7 @@ def _images_in_scope(db: Session, job: AnnotationJob) -> list[Image]:
     return list(db.scalars(query).all())
 
 
-def _run(db: Session, job: AnnotationJob) -> None:
+def _run(db: Session, job: AnnotationJob, owned: list) -> None:
     # GPU admission first, while still QUEUED: another job (any project) may
     # hold the card. status_detail carries the live waiting reason; False
     # means the user cancelled the wait.
@@ -156,6 +178,9 @@ def _run(db: Session, job: AnnotationJob) -> None:
     # reload 700 MB for the next one — turning a 1-second-per-image job into a
     # 10-second-per-image one.
     annotator = registry.acquire(job.model_key)
+    # Recorded for the caller's cleanup: the finally releases exactly this
+    # instance, so a successor job's freshly-loaded model is never collateral.
+    owned.append(annotator)
 
     total_boxes = 0
     for image in images:

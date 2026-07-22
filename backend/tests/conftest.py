@@ -171,3 +171,4 @@ def plenty_of_gpu(monkeypatch):
     admission itself override this with their own numbers.
     """
     monkeypatch.setattr("app.services.gpu_admission.free_vram_gb", lambda: 999.0)
+    monkeypatch.setattr("app.services.gpu_admission.total_vram_gb", lambda: 999.0)

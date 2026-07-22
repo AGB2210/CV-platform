@@ -572,6 +572,10 @@ export const bulkDeleteImages = (projectId: number, imageIds: number[]) =>
 export interface AnnotatorInfo {
   key: string
   display_name: string
+  /** Architecture family ("Grounding DINO", "YOLO-World") and size within
+   *  it — the picker's two axes, same as trainers. */
+  family: string
+  variant: string
   description: string
   approx_vram_gb: number
 }

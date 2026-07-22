@@ -31,6 +31,7 @@ import shutil
 import traceback
 from pathlib import Path
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.config import from_storage_path, settings, to_storage_path
@@ -108,10 +109,43 @@ def run_training_job(job_id: int) -> None:
         # the driver so the next job (or an annotate run) has room. Also drop any
         # annotator OR predictor that somehow survived. One crashed job holding
         # VRAM would otherwise OOM every job after it until a restart.
-        annotator_registry.release()
-        predictor_registry.release()
+        #
+        # BOTH releases are conditional on the DB, because with GPU admission
+        # the next queued job is admitted the moment OUR terminal status
+        # commits — which is before this finally runs. If that successor is an
+        # annotation job it may already have loaded its model; unloading it
+        # here broke every predict() of its run (observed live). The ordering
+        # guarantee that makes the check sound: a runner always commits RUNNING
+        # before it acquires a model, so "no annotation job running" means
+        # "no annotator worth protecting".
+        if not _annotation_active(db):
+            annotator_registry.release()
+        if not _evaluation_active(db):
+            predictor_registry.release()
         empty_cache()
         db.close()
+
+
+def _annotation_active(db: Session) -> bool:
+    from app.models import AnnotationJob
+
+    return bool(
+        db.scalar(
+            select(AnnotationJob.id).where(AnnotationJob.status == JobStatus.RUNNING)
+        )
+    )
+
+
+def _evaluation_active(db: Session) -> bool:
+    from app.models import EvaluationJob
+
+    return bool(
+        db.scalar(
+            select(EvaluationJob.id).where(
+                EvaluationJob.status.in_([JobStatus.QUEUED, JobStatus.RUNNING])
+            )
+        )
+    )
 
 
 def _discard(db: Session, job: TrainingJob) -> None:

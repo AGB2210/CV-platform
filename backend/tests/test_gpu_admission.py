@@ -326,3 +326,73 @@ def test_startup_fails_orphaned_jobs_and_clears_wait_note(
         assert job["status"] == "failed"
         assert "server stopped" in job["error"]
         assert job["status_detail"] is None
+
+
+def test_annotation_jobs_are_mutually_exclusive(client, monkeypatch, no_train_run, fake_trainer):
+    """Two annotation batches can NEVER run concurrently, whatever the VRAM
+    says: the annotator registry holds one resident model, and a second batch
+    would evict the first's weights mid-run (observed live as every predict
+    of the evicted job failing). Architecture fact, not a memory fact."""
+    from app.models import AnnotationJob, JobStatus
+    from app.services import gpu_admission
+    from tests.conftest import make_project, upload_images
+
+    monkeypatch.setattr(gpu_admission, "free_vram_gb", lambda: 999.0)
+    monkeypatch.setattr(gpu_admission, "total_vram_gb", lambda: 999.0)
+
+    pid = make_project(client, "AnnExcl")
+    upload_images(client, pid, ["a.png"])
+
+    db = client.SessionLocal()  # type: ignore[attr-defined]
+    try:
+        running = AnnotationJob(
+            project_id=pid, model_key="grounding_dino",
+            status=JobStatus.RUNNING, total_images=1,
+        )
+        waiting = AnnotationJob(
+            project_id=pid, model_key="owlv2_base",
+            status=JobStatus.QUEUED, total_images=1,
+        )
+        db.add_all([running, waiting])
+        db.commit()
+
+        admitted, reason = gpu_admission.check(
+            db, "annotation", waiting.id, waiting.created_at, 2.0
+        )
+        assert admitted is False
+        assert "model slot" in reason and f"#{running.id}" in reason
+    finally:
+        db.close()
+
+
+def test_reservation_ledger_covers_the_load_window(
+    client, monkeypatch, no_train_run, fake_trainer
+):
+    """A just-admitted job takes seconds to allocate; measured free VRAM still
+    shows the old world in that window, which is how two jobs got admitted
+    into space that existed once. Running jobs therefore RESERVE their
+    declared need: with 8 GB total, a running 3 GB trainer and a MEASURED
+    free of 7.5 (the lie), effective free is min(7.5, 8-3)=5 — enough for a
+    3 GB job (5 >= 3.5) but not a 5 GB one."""
+    from app.services import gpu_admission
+
+    monkeypatch.setattr(gpu_admission, "free_vram_gb", lambda: 7.5)
+    monkeypatch.setattr(gpu_admission, "total_vram_gb", lambda: 8.0)
+
+    pid, _ = make_trainable_project(client, "Ledger")
+    runner_id = _queued_training_job(client, pid)  # fake trainer declares 3.0
+    _mark_running(client, runner_id)
+    waiting = _queued_training_job(client, pid)
+
+    db = client.SessionLocal()  # type: ignore[attr-defined]
+    try:
+        from app.models import TrainingJob
+
+        w = db.get(TrainingJob, waiting)
+        ok_small, _ = gpu_admission.check(db, "training", w.id, w.created_at, 3.0)
+        ok_big, reason = gpu_admission.check(db, "training", w.id, w.created_at, 5.0)
+        assert ok_small is True, "fits the ledger AND the measurement"
+        assert ok_big is False
+        assert "5.0 GB free" in reason, "message uses the ledger-corrected number"
+    finally:
+        db.close()

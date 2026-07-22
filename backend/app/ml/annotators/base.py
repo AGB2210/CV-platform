@@ -63,7 +63,10 @@ class Box:
     x2: float
     y2: float
     label: str  # the class name this box was matched to
-    confidence: float
+    #: None = the model genuinely reports no score (Florence-2 generates boxes
+    #: as text, scoreless). Storing a fabricated 1.0 would poison any later
+    #: look at calibration — same reasoning as human-drawn boxes storing NULL.
+    confidence: float | None
 
     @property
     def width(self) -> float:
@@ -157,6 +160,10 @@ class AutoAnnotator(ABC):
     key: str = ""
     #: Shown in the UI's model dropdown.
     display_name: str = ""
+    #: Grouping for the picker, same two axes as trainers: models come in
+    #: FAMILIES (Grounding DINO, YOLO-World) whose members differ in size.
+    family: str = ""
+    variant: str = ""
     description: str = ""
     #: Rough VRAM cost, surfaced in the UI so the user can tell what will fit.
     approx_vram_gb: float = 0.0

@@ -19,6 +19,7 @@ import time
 
 from PIL import Image as PILImage
 
+from app.ml.annotators._hf import from_pretrained_with_fallback
 from app.ml.annotators.base import (
     AnnotationRequest,
     AnnotationResult,
@@ -30,28 +31,26 @@ from app.ml.registry import register
 
 logger = logging.getLogger(__name__)
 
-# Swin-T backbone, ~700 MB. The "base" variant (Swin-B) is ~1.8 GB and needs
-# roughly 5-6 GB to run, which rules it out on the consumer GPUs this tool
-# targets. Tiny is the correct choice here, not a compromise we're apologising
-# for: on common object categories the gap is small, and the review UI exists
-# to fix what it misses.
-MODEL_ID = "IDEA-Research/grounding-dino-tiny"
-
 
 @register
 class GroundingDinoAnnotator(AutoAnnotator):
     key = "grounding_dino"
+    family = "Grounding DINO"
     # The variant is named, not just the family: Grounding DINO ships tiny
     # (Swin-T) and base (Swin-B) checkpoints that differ several-fold in size and
     # accuracy, and which one is running is exactly what a user picking from a
     # list needs to know.
-    display_name = "Grounding DINO tiny (Swin-T)"
+    variant = "tiny (Swin-T)"
+    display_name = "Grounding DINO tiny"
     description = (
         "Zero-shot detection from text prompts, using the grounding-dino-tiny "
         "checkpoint. Best default for open-vocabulary bounding boxes — no "
         "training needed."
     )
     approx_vram_gb = 2.5
+    #: HF checkpoint. Subclasses swap this to register the bigger sibling.
+    model_id = "IDEA-Research/grounding-dino-tiny"
+    download_size = "~700 MB"
 
     def __init__(self) -> None:
         super().__init__()
@@ -68,52 +67,15 @@ class GroundingDinoAnnotator(AutoAnnotator):
         # Serving /api/projects must not pay for that.
         from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
 
-        # First call downloads ~700 MB to the HuggingFace cache; later calls
-        # should be local. The cache lives outside the repo and is gitignored.
-        #
-        # ONCE CACHED, THIS MUST NOT NEED THE NETWORK.
-        #
-        # from_pretrained() still phones home to check for updates even when
-        # every byte is already on disk, so anything that upsets that call —
-        # offline, HF down, rate limiting, or a stale auth token — fails a job
-        # whose weights are sitting right there. That happened here: an expired
-        # token in ~/.cache/huggingface/token got a 401, which transformers
-        # reports as the deeply misleading "not a valid model identifier".
-        #
-        # For a tool whose whole premise is that it runs locally, depending on
-        # huggingface.co at inference time is a bug. So: try online (needed for
-        # the genuine first download), and on ANY failure fall back to the
-        # cache. Broad except on purpose — the failure modes are network errors,
-        # HTTP errors, and OSError depending on how deep it got, and the
-        # response is identical for all of them.
-        try:
-            self._processor = AutoProcessor.from_pretrained(MODEL_ID)
-            model = AutoModelForZeroShotObjectDetection.from_pretrained(MODEL_ID)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "Could not reach HuggingFace for %s (%s). Falling back to the "
-                "local cache.",
-                MODEL_ID,
-                exc,
-            )
-            try:
-                self._processor = AutoProcessor.from_pretrained(
-                    MODEL_ID, local_files_only=True
-                )
-                model = AutoModelForZeroShotObjectDetection.from_pretrained(
-                    MODEL_ID, local_files_only=True
-                )
-            except Exception:
-                # Genuinely not cached: the first run does need a download, and
-                # saying so beats re-raising a 401 that blames the model id.
-                raise RuntimeError(
-                    f"{MODEL_ID} is not in the local cache and HuggingFace could "
-                    f"not be reached. The first run needs to download ~700 MB. "
-                    f"If you have an expired HuggingFace token, remove "
-                    f"~/.cache/huggingface/token — a stale token is rejected with "
-                    f"401 even for public models, while anonymous access works."
-                ) from exc
-            logger.info("Loaded %s from the local cache", MODEL_ID)
+        # First call downloads the weights to the HuggingFace cache; later
+        # calls must work offline — the fallback policy lives in _hf.py, shared
+        # by every transformers-backed annotator.
+        self._processor = from_pretrained_with_fallback(
+            AutoProcessor, self.model_id, self.download_size
+        )
+        model = from_pretrained_with_fallback(
+            AutoModelForZeroShotObjectDetection, self.model_id, self.download_size
+        )
 
         self._model = model.to(self._device)
         # eval() disables dropout and batchnorm updates. Mandatory for
@@ -298,3 +260,24 @@ class GroundingDinoAnnotator(AutoAnnotator):
             image_height=height,
             inference_ms=elapsed_ms,
         )
+
+
+@register
+class GroundingDinoBaseAnnotator(GroundingDinoAnnotator):
+    """The Swin-B sibling: noticeably better boxes for ~2x the memory and time.
+
+    Same code path end to end — only the checkpoint differs. Tiny remains the
+    default recommendation on small cards; base is the incremental upgrade for
+    anyone with the VRAM to spend on fewer review corrections.
+    """
+
+    key = "grounding_dino_base"
+    variant = "base (Swin-B)"
+    display_name = "Grounding DINO base"
+    description = (
+        "The bigger Grounding DINO — better boxes than tiny, roughly twice the "
+        "memory and inference time. Worth it on 8 GB+ cards."
+    )
+    approx_vram_gb = 5.5
+    model_id = "IDEA-Research/grounding-dino-base"
+    download_size = "~1.8 GB"

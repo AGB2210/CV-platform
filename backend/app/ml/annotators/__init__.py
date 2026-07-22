@@ -15,12 +15,22 @@ from app.ml.annotators.base import (
     AutoAnnotator,
     Box,
 )
-from app.ml.annotators.grounding_dino import GroundingDinoAnnotator
+from app.ml.annotators.florence2 import Florence2Annotator
+from app.ml.annotators.grounding_dino import (
+    GroundingDinoAnnotator,
+    GroundingDinoBaseAnnotator,
+)
+from app.ml.annotators.owlv2 import Owlv2Annotator
+from app.ml.annotators.yolo_world import YoloWorldAnnotator
 
 __all__ = [
     "AnnotationRequest",
     "AnnotationResult",
     "AutoAnnotator",
     "Box",
+    "Florence2Annotator",
     "GroundingDinoAnnotator",
+    "GroundingDinoBaseAnnotator",
+    "Owlv2Annotator",
+    "YoloWorldAnnotator",
 ]
