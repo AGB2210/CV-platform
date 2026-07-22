@@ -154,7 +154,16 @@ export function Deploy() {
                     className="flex w-full flex-col items-center gap-1.5 rounded border border-dashed border-gray-300 px-3 py-6 text-sm text-gray-500 hover:border-accent-400 hover:text-accent-700"
                   >
                     <Upload size={18} />
-                    {file ? file.name : 'Choose an image'}
+                    {/* Truncated, not wrapped: camera exports have 60-char
+                        names, and letting one grow the button three lines
+                        tall pushes Run detection off screen. The full name
+                        stays available as a tooltip. */}
+                    <span
+                      className="max-w-full truncate"
+                      title={file ? file.name : undefined}
+                    >
+                      {file ? file.name : 'Choose an image'}
+                    </span>
                   </button>
                   <input
                     ref={fileRef}
@@ -173,6 +182,11 @@ export function Deploy() {
                     {running ? 'Running…' : 'Run detection'}
                   </button>
                 </div>
+
+                {/* The playground, scriptable. Same endpoint the Run button
+                    calls — documenting it makes every trained model a local
+                    REST service with zero extra setup. */}
+                {modelId != null && <ApiUsageCard modelId={modelId} threshold={threshold} />}
               </div>
 
               {/* --- Right: image + overlay --- */}
@@ -195,6 +209,120 @@ export function Deploy() {
         </MlSetupGate>
       </PageBody>
     </>
+  )
+}
+
+/**
+ * "Use via API" — the selected model as a documented local REST endpoint.
+ *
+ * Nothing here adds a server: the snippets call the SAME endpoint the Run
+ * button uses, so anything that can POST multipart — a script, another app on
+ * the LAN, a cron job — can use the trained model while this app is running.
+ * Snippets are generated for the selected model and current threshold, so
+ * copy-paste works without editing placeholders.
+ */
+function ApiUsageCard({ modelId, threshold }: { modelId: number; threshold: number }) {
+  const [open, setOpen] = useState(false)
+  const [copied, setCopied] = useState<string | null>(null)
+
+  // The address the BROWSER reached the app on — right for localhost and for
+  // a LAN machine, where a hardcoded localhost would be wrong for callers.
+  const base = window.location.origin
+  const url = `${base}/api/models/${modelId}/predict`
+
+  const curl = `curl -X POST "${url}" \\
+  -F "file=@your_image.jpg" \\
+  -F "conf_threshold=${threshold}"`
+
+  const python = `import requests
+
+with open("your_image.jpg", "rb") as f:
+    r = requests.post(
+        "${url}",
+        files={"file": f},
+        data={"conf_threshold": ${threshold}},
+    )
+r.raise_for_status()
+for box in r.json()["boxes"]:
+    print(box["label"], box["confidence"], box["x"], box["y"], box["width"], box["height"])`
+
+  const copy = async (label: string, text: string) => {
+    try {
+      await navigator.clipboard.writeText(text)
+      setCopied(label)
+      window.setTimeout(() => setCopied(null), 1500)
+    } catch {
+      /* clipboard can be denied; the text is still selectable */
+    }
+  }
+
+  return (
+    <div className="card">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center justify-between px-4 py-3 text-sm font-medium text-gray-900 hover:bg-gray-50"
+      >
+        Use via API
+        <span className="text-xs font-normal text-gray-400">{open ? 'hide' : 'show'}</span>
+      </button>
+      {open && (
+        <div className="space-y-3 border-t border-gray-200 p-4">
+          <p className="text-xs text-gray-500">
+            While this app is running, the selected model answers HTTP on this
+            machine — no extra server. POST an image, get boxes back as JSON
+            (pixel coordinates, top-left origin). Nothing is stored.
+          </p>
+          <Snippet
+            label="curl"
+            text={curl}
+            copied={copied === 'curl'}
+            onCopy={() => void copy('curl', curl)}
+          />
+          <Snippet
+            label="Python"
+            text={python}
+            copied={copied === 'Python'}
+            onCopy={() => void copy('Python', python)}
+          />
+          <p className="text-xs text-gray-400">
+            Response: {'{'} image_width, image_height, boxes: [{'{'} label,
+            confidence, x, y, width, height {'}'}] {'}'}. One request at a time —
+            the GPU is shared with training.
+          </p>
+        </div>
+      )}
+    </div>
+  )
+}
+
+function Snippet({
+  label,
+  text,
+  copied,
+  onCopy,
+}: {
+  label: string
+  text: string
+  copied: boolean
+  onCopy: () => void
+}) {
+  return (
+    <div>
+      <div className="mb-1 flex items-center justify-between">
+        <span className="label-eyebrow">{label}</span>
+        <button
+          type="button"
+          onClick={onCopy}
+          className="text-[11px] font-medium text-accent-700 hover:underline"
+        >
+          {copied ? 'Copied' : 'Copy'}
+        </button>
+      </div>
+      <pre className="overflow-x-auto rounded border border-gray-200 bg-gray-950 p-2.5 text-[11px] leading-relaxed text-gray-200">
+        {text}
+      </pre>
+    </div>
   )
 }
 
