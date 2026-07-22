@@ -437,3 +437,48 @@ def test_thumbnail_generated_cached_and_cleaned_up(client):
 
     assert client.delete(f"/api/images/{img_id}").status_code == 204
     assert not cached.exists(), "deleting the image must drop its cached thumb"
+
+
+# --- dataset health -----------------------------------------------------------
+
+
+def test_dataset_health_distributions_and_warnings(client):
+    """Class balance, size buckets and the named warnings that make low mAP
+    explainable: unused class, imbalance, tiny boxes."""
+    pid = make_project(client, "Health", classes=("common", "rare", "unused"))
+    imgs = upload_images(client, pid, [f"h{i}.png" for i in range(4)])  # 64x48 images
+    classes = {c["name"]: c["id"] for c in client.get(f"/api/projects/{pid}/classes").json()}
+
+    def box(img, cid, w, h):
+        r = client.post(
+            f"/api/images/{img}/annotations",
+            json={"category_id": cid, "x": 1, "y": 1, "width": w, "height": h},
+        )
+        assert r.status_code == 201, r.text
+
+    # 22 'common' boxes vs 2 'rare' -> 11x imbalance. All tiny (1x1 on 64x48 ->
+    # rel ~0.018 < 0.03) except two large ones.
+    for i in range(20):
+        box(imgs[i % 2]["id"], classes["common"], 1, 1)
+    box(imgs[0]["id"], classes["common"], 40, 40)
+    box(imgs[1]["id"], classes["common"], 40, 40)
+    box(imgs[2]["id"], classes["rare"], 1, 1)
+    box(imgs[2]["id"], classes["rare"], 1, 1)
+
+    h = client.get(f"/api/projects/{pid}/dataset/health").json()
+
+    by_name = {c["name"]: c for c in h["classes"]}
+    assert by_name["common"]["boxes"] == 22 and by_name["common"]["images"] == 2
+    assert by_name["rare"]["boxes"] == 2 and by_name["rare"]["images"] == 1
+    assert by_name["unused"]["boxes"] == 0
+
+    sizes = h["box_sizes"]
+    assert sizes["small"] == 22, "1x1 boxes are COCO-small"
+    assert sizes["medium"] == 2, "40x40 boxes are COCO-medium"
+    assert sizes["tiny"] == 22
+    assert sum(sizes["relative_hist"]) == 24
+
+    text = " ".join(h["warnings"])
+    assert "unused" in text, "unused class must be named"
+    assert "imbalance" in text.lower(), f"11x imbalance must warn: {h['warnings']}"
+    assert "3%" in text, "tiny-box warning must fire (22/24 tiny)"

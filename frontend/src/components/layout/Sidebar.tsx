@@ -8,6 +8,7 @@ import {
   Cpu,
   ChevronDown,
   ChevronRight,
+  HeartPulse,
   PlayCircle,
   SquarePen,
   Eye,
@@ -59,6 +60,7 @@ interface NavItem {
 const PROJECT_NAV: NavItem[] = [
   { suffix: '', label: 'Dataset', icon: Boxes },
   { suffix: '/visualize', label: 'Visualize', icon: Eye, nested: true },
+  { suffix: '/health', label: 'Health', icon: HeartPulse, nested: true },
   { suffix: '/annotate', label: 'Auto-annotate', icon: Tags, nested: true },
   { suffix: '/review', label: 'Annotate', icon: SquarePen, nested: true },
   { suffix: '/train', label: 'Train', icon: Cpu },

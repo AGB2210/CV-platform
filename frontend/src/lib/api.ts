@@ -860,6 +860,31 @@ export interface AnnotationBulkItem {
 export const replaceAnnotations = (imageId: number, annotations: AnnotationBulkItem[]) =>
   api.put<Annotation[]>(`/images/${imageId}/annotations`, { annotations })
 
+// --- Dataset health ---------------------------------------------------------
+
+export interface DatasetHealth {
+  total_images: number
+  annotated_images: number
+  total_boxes: number
+  classes: { id: number; name: string; color: string; boxes: number; images: number }[]
+  box_sizes: {
+    /** COCO absolute-area buckets. */
+    small: number
+    medium: number
+    large: number
+    /** Boxes spanning under ~3% of the image's width — hard to learn. */
+    tiny: number
+    /** 10 bins of sqrt(box_area / image_area) in [0, 1]. */
+    relative_hist: number[]
+  }
+  warnings: string[]
+}
+
+/** The dataset's SHAPE — class balance, box sizes, and named warnings.
+ *  The answer to "why is my mAP low?" (it's usually the data). */
+export const getDatasetHealth = (projectId: number) =>
+  api.get<DatasetHealth>(`/projects/${projectId}/dataset/health`)
+
 // --- Dataset stats & splits -----------------------------------------------
 //
 // The staging -> dataset commit is gone: accepting IS the commit, so there's no

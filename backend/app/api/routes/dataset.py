@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session
 
 from app.api.routes.projects import get_project_or_404
 from app.database import get_db
-from app.models import Annotation, DatasetVersion, Image
+from app.models import Annotation, Category, DatasetVersion, Image
 from app.models.image import Split
 from app.schemas.dataset import (
     BulkDeleteVersions,
@@ -258,6 +258,148 @@ def dataset_stats(project_id: int, db: Session = Depends(get_db)) -> DatasetStat
         proposed_boxes=boxes[1] or 0,
         proposed_images=boxes[2] or 0,
     )
+
+
+#: Relative-size histogram bins: sqrt(box_area / image_area) in [0, 1].
+#: sqrt makes the number read as "fraction of image WIDTH the box spans",
+#: which humans reason about far better than raw area ratios.
+_HEALTH_BINS = 10
+
+#: A box whose sqrt-relative-size is below this is genuinely hard for a
+#: detector to learn at ordinary training resolutions: 0.03 of a 640px image
+#: is ~19px on the long side.
+_TINY_RELATIVE = 0.03
+
+
+@router.get("/projects/{project_id}/dataset/health")
+def dataset_health(project_id: int, db: Session = Depends(get_db)) -> dict:
+    """The dataset's SHAPE — the answer to "why is my mAP low?".
+
+    Disappointing training results are usually the data, not the model: one
+    class with 40x the boxes of another, half the boxes too tiny to learn at
+    training resolution, a class defined but never labelled. None of that is
+    visible from counts alone, so this endpoint computes the distributions and
+    turns the pathological ones into named warnings.
+
+    Accepted boxes only, live rows (not a saved version) — health is a
+    property of what you're editing right now.
+    """
+    get_project_or_404(project_id, db)
+
+    categories = list(
+        db.scalars(select(Category).where(Category.project_id == project_id)).all()
+    )
+    total_images = db.scalar(
+        select(func.count(Image.id)).where(Image.project_id == project_id)
+    ) or 0
+
+    # One pull, computed in Python: even a large local project is a few
+    # thousand boxes, and the relative-size maths needs the image dims anyway.
+    rows = db.execute(
+        select(
+            Annotation.category_id,
+            Annotation.image_id,
+            Annotation.width,
+            Annotation.height,
+            Image.width,
+            Image.height,
+        )
+        .join(Image, Image.id == Annotation.image_id)
+        .where(Image.project_id == project_id, Annotation.proposed.is_(False))
+    ).all()
+
+    by_class_boxes: dict[int, int] = {}
+    by_class_images: dict[int, set[int]] = {}
+    hist = [0] * _HEALTH_BINS
+    small = medium = large = tiny = 0
+    annotated_images: set[int] = set()
+
+    for cat_id, image_id, bw, bh, iw, ih in rows:
+        by_class_boxes[cat_id] = by_class_boxes.get(cat_id, 0) + 1
+        by_class_images.setdefault(cat_id, set()).add(image_id)
+        annotated_images.add(image_id)
+
+        # COCO's absolute-area buckets, for cross-paper comparability.
+        area = bw * bh
+        if area < 32 * 32:
+            small += 1
+        elif area < 96 * 96:
+            medium += 1
+        else:
+            large += 1
+
+        # Scale-independent size: fraction of the image's linear extent.
+        rel = (area / (iw * ih)) ** 0.5 if iw and ih else 0.0
+        hist[min(int(rel * _HEALTH_BINS), _HEALTH_BINS - 1)] += 1
+        if rel < _TINY_RELATIVE:
+            tiny += 1
+
+    total_boxes = len(rows)
+
+    classes = [
+        {
+            "id": c.id,
+            "name": c.name,
+            "color": c.color,
+            "boxes": by_class_boxes.get(c.id, 0),
+            "images": len(by_class_images.get(c.id, set())),
+        }
+        for c in categories
+    ]
+
+    # --- Named warnings, each one actionable -------------------------------
+    warnings: list[str] = []
+
+    unused = [c["name"] for c in classes if c["boxes"] == 0]
+    if unused and total_boxes:
+        warnings.append(
+            f"{len(unused)} class(es) have no boxes at all ({', '.join(unused[:4])}"
+            f"{'…' if len(unused) > 4 else ''}). A model can't learn a class it "
+            "never sees — label some, or delete the class."
+        )
+
+    labelled = [c for c in classes if c["boxes"] > 0]
+    if len(labelled) >= 2:
+        top = max(labelled, key=lambda c: c["boxes"])
+        bottom = min(labelled, key=lambda c: c["boxes"])
+        if bottom["boxes"] and top["boxes"] / bottom["boxes"] > 10:
+            warnings.append(
+                f"Severe class imbalance: '{top['name']}' has {top['boxes']} boxes, "
+                f"'{bottom['name']}' only {bottom['boxes']} ({top['boxes'] // bottom['boxes']}x). "
+                f"Expect weak recall on '{bottom['name']}' — add examples of it "
+                "before adding more of anything else."
+            )
+
+    if total_boxes and tiny / total_boxes > 0.2:
+        warnings.append(
+            f"{tiny} of {total_boxes} boxes ({tiny * 100 // total_boxes}%) span less "
+            f"than ~3% of their image's width — around 19px at 640px training "
+            "resolution. Boxes that small are genuinely hard to learn; consider a "
+            "larger image size, or check whether they're annotation noise."
+        )
+
+    unannotated = total_images - len(annotated_images)
+    if total_images and unannotated / total_images > 0.5 and total_boxes:
+        warnings.append(
+            f"{unannotated} of {total_images} images have no boxes. If they truly "
+            "contain nothing, that's useful negative data — but if they're just "
+            "unfinished, the model is training on half a dataset."
+        )
+
+    return {
+        "total_images": total_images,
+        "annotated_images": len(annotated_images),
+        "total_boxes": total_boxes,
+        "classes": classes,
+        "box_sizes": {
+            "small": small,
+            "medium": medium,
+            "large": large,
+            "tiny": tiny,
+            "relative_hist": hist,
+        },
+        "warnings": warnings,
+    }
 
 
 def _assign_splits(
