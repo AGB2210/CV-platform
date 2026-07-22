@@ -42,7 +42,7 @@ from app.ml.trainers import registry as trainer_registry
 from app.ml.trainers.base import EpochMetrics, TrainConfig
 from app.models import JobControl, JobStatus, TrainingJob
 from app.models.image import Split
-from app.services import exporters
+from app.services import exporters, training_logs
 from app.timestamps import utcnow
 
 logger = logging.getLogger(__name__)
@@ -54,6 +54,7 @@ def _fail(db: Session, job: TrainingJob, exc: Exception) -> None:
     job.error = f"{type(exc).__name__}: {exc}\n\n{traceback.format_exc()}"
     job.finished_at = utcnow()
     db.commit()
+    training_logs.append(job.id, f"FAILED: {type(exc).__name__}: {exc}")
     logger.exception("Training job %s failed", job.id)
 
 
@@ -99,6 +100,7 @@ def _discard(db: Session, job: TrainingJob) -> None:
     db.delete(job)
     db.commit()
     shutil.rmtree(run_dir, ignore_errors=True)
+    training_logs.discard(job_id)
     logger.info("Training job %s cancelled and discarded", job_id)
 
 
@@ -184,6 +186,11 @@ def _run(db: Session, job: TrainingJob) -> None:
     # Export in the trainer's format, honouring the per-image split. Proposals
     # are excluded by the exporter itself — only proposed=False rows are written.
     # Each snapshot image carries its own split, so the exporter needs no map.
+    training_logs.append(
+        job.id,
+        f"Exporting dataset ({job.train_images} train / {job.val_images} val images, "
+        f"{len(class_names)} classes) in {trainer.export_format} format…",
+    )
     exporter = exporters.get(trainer.export_format)
     exporter.export(
         snapshot,
@@ -192,6 +199,11 @@ def _run(db: Session, job: TrainingJob) -> None:
             include_unreviewed=True,
             copy_images=True,
         ),
+    )
+    training_logs.append(
+        job.id,
+        f"Starting {job.trainer_key}: {job.epochs} epochs, batch {job.batch_size}, "
+        f"{job.image_size}px on {get_device()}.",
     )
 
     config = TrainConfig(
@@ -251,9 +263,21 @@ def _run(db: Session, job: TrainingJob) -> None:
         job.metrics_json = json.dumps(history)
         db.commit()
 
+        # One human-readable line per epoch, whatever the framework narrates —
+        # the log stays useful even for a trainer whose logger we don't capture.
+        loss = f"{m.train_loss:.4f}" if m.train_loss is not None else "—"
+        vmap = f"{m.val_map:.4f}" if m.val_map is not None else "—"
+        training_logs.append(
+            job.id,
+            f"Epoch {m.epoch}/{m.total_epochs} — loss {loss}, val mAP {vmap}",
+        )
+
         return job.control in (JobControl.STOP, JobControl.CANCEL)
 
-    result = trainer.train(config, on_epoch)
+    # The framework's own narration (dataset scans, warnings, epoch tables)
+    # streams into the job's log buffer for the duration of the run.
+    with training_logs.capture_framework_logs(job.id):
+        result = trainer.train(config, on_epoch)
 
     # Cancel: throw the run away entirely. No version is kept, and the weights
     # and run directory go with it — the user asked for this training not to
@@ -280,6 +304,12 @@ def _run(db: Session, job: TrainingJob) -> None:
     job.status = JobStatus.DONE
     job.finished_at = utcnow()
     db.commit()
+
+    training_logs.append(
+        job.id,
+        f"Done: {result.epochs_completed} epochs, best mAP "
+        f"{result.best_map if result.best_map is not None else '—'}. Checkpoint saved.",
+    )
 
     _reclaim_space(run_dir, job)
 

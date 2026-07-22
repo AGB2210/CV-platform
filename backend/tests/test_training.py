@@ -751,3 +751,45 @@ def test_finetune_continues_from_prior_checkpoint(client, monkeypatch, fake_trai
     assert last_config.init_weights is not None
     # The runner resolves the stored relative path back to a real one.
     assert last_config.init_weights == ckpt
+
+
+# --- live logs ---------------------------------------------------------------
+
+
+def test_training_logs_capture_and_endpoint(client, monkeypatch, fake_trainer):
+    """A run's narration is tailable while it runs and after it finishes;
+    framework logger records are captured; a missing job 404s."""
+    import logging
+
+    from app.services import training_logs
+
+    monkeypatch.setattr(
+        "app.services.training_job.SessionLocal",
+        client.SessionLocal,  # type: ignore[attr-defined]
+    )
+    pid, _ = make_trainable_project(client, "Logs")
+    r = client.post(
+        f"/api/projects/{pid}/train",
+        json={"trainer_key": "fake", "epochs": 2, "batch_size": 2, "image_size": 64},
+    )
+    assert r.status_code == 202, r.text
+    job_id = r.json()["id"]
+
+    lines = client.get(f"/api/training-jobs/{job_id}/logs").json()["lines"]
+    text = "\n".join(lines)
+    assert "Exporting dataset" in text
+    assert "Epoch 1/" in text, f"per-epoch line missing from: {lines}"
+    assert "Done:" in text
+
+    # Framework narration: anything logged on the captured logger during a run
+    # lands in the buffer. Simulate directly against the context manager.
+    with training_logs.capture_framework_logs(999001):
+        logging.getLogger("ultralytics").info("train: Scanning labels... 8 found")
+    assert any("Scanning labels" in ln for ln in training_logs.tail(999001))
+    # After the capture window, the same logger no longer reaches the buffer.
+    logging.getLogger("ultralytics").info("stray line after run")
+    assert not any("stray line" in ln for ln in training_logs.tail(999001))
+    training_logs.discard(999001)
+    assert training_logs.tail(999001) == []
+
+    assert client.get("/api/training-jobs/999999/logs").status_code == 404

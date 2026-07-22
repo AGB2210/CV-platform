@@ -203,8 +203,11 @@ class YoloTrainer(Trainer):
             # Windows + a background thread: the multiprocessing dataloader can
             # deadlock. Single-process loading is slower but reliable here.
             workers=0,
-            # Keep the run self-contained and quiet; we render progress ourselves.
-            verbose=False,
+            # Verbose so ultralytics narrates through its logger — the runner
+            # captures that narration into the job's live log for the UI
+            # (services/training_logs.py). The console cost is a few lines in
+            # the server log.
+            verbose=True,
             plots=False,
         )
         if config.learning_rate is not None:

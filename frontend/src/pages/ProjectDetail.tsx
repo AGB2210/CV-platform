@@ -486,7 +486,12 @@ function VersionPanel({
             Not saved yet — save to create v1. Training needs a saved version.
           </p>
         ) : (
-          <Link to={`/projects/${projectId}/train`} className="btn-secondary w-full">
+          <Link
+            // Carries the version id, so the Train page preselects THIS
+            // version — the button names v3, it must not quietly train v4.
+            to={`/projects/${projectId}/train?dataset_version=${latest.id}`}
+            className="btn-secondary w-full"
+          >
             <Cpu size={13} />
             Train v{latest.version}
           </Link>
@@ -543,13 +548,24 @@ function VersionPanel({
                       newest save doesn't mean the live dataset still matches it —
                       delete some images and the two diverge immediately, and
                       restoring the latest save is exactly the recovery you want. */}
-                  <button
-                    onClick={() => setTarget(v)}
-                    className="flex items-center gap-1 rounded text-[11px] text-accent-700 hover:underline"
-                  >
-                    <RotateCcw size={10} />
-                    Restore
-                  </button>
+                  <span className="flex items-center gap-3">
+                    <button
+                      onClick={() => setTarget(v)}
+                      className="flex items-center gap-1 rounded text-[11px] text-accent-700 hover:underline"
+                    >
+                      <RotateCcw size={10} />
+                      Restore
+                    </button>
+                    {/* Train exactly this save point — the Train page opens
+                        with it preselected. */}
+                    <Link
+                      to={`/projects/${projectId}/train?dataset_version=${v.id}`}
+                      className="flex items-center gap-1 rounded text-[11px] text-accent-700 hover:underline"
+                    >
+                      <Cpu size={10} />
+                      Train
+                    </Link>
+                  </span>
                   <p className="tabular-nums text-gray-500">
                     {v.total_images} imgs · {v.total_boxes} boxes ·{' '}
                     {new Date(v.created_at).toLocaleString()}

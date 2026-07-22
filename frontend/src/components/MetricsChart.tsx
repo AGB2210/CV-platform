@@ -154,13 +154,26 @@ export function MetricsChart({ points }: { points: EpochPoint[] }) {
     return () => svg.removeEventListener('wheel', onWheel)
   }, [view, fullDomain, plotW, plotH])
 
+  /** Pointer position relative to the SVG. NOT offsetX/offsetY: those are
+   *  relative to whichever element the pointer is over, so a drag that starts
+   *  on a data marker (or crosses one) measures against the 5px rect instead
+   *  of the chart and the pan leaps wildly. clientX minus the SVG's rect is
+   *  stable whatever's under the cursor. */
+  const svgPos = (e: React.PointerEvent<SVGSVGElement>) => {
+    const rect = svgRef.current!.getBoundingClientRect()
+    return { x: e.clientX - rect.left, y: e.clientY - rect.top }
+  }
+
   function onPointerDown(e: React.PointerEvent<SVGSVGElement>) {
-    ;(e.target as Element).setPointerCapture?.(e.pointerId)
-    drag.current = { px: e.nativeEvent.offsetX, py: e.nativeEvent.offsetY, dom }
+    // Capture on the SVG, not e.target: capturing on a child marker means
+    // later pointerups can fire on an element that re-rendered away, leaving
+    // the drag stuck on.
+    svgRef.current?.setPointerCapture?.(e.pointerId)
+    const p = svgPos(e)
+    drag.current = { px: p.x, py: p.y, dom }
   }
   function onPointerMove(e: React.PointerEvent<SVGSVGElement>) {
-    const ox = e.nativeEvent.offsetX
-    const oy = e.nativeEvent.offsetY
+    const { x: ox, y: oy } = svgPos(e)
     if (drag.current) {
       const d = drag.current
       const dxData = ((ox - d.px) / plotW) * (d.dom.x1 - d.dom.x0)
@@ -189,7 +202,7 @@ export function MetricsChart({ points }: { points: EpochPoint[] }) {
   }
   function onPointerUp(e: React.PointerEvent<SVGSVGElement>) {
     drag.current = null
-    ;(e.target as Element).releasePointerCapture?.(e.pointerId)
+    svgRef.current?.releasePointerCapture?.(e.pointerId)
   }
 
   // NOTE: no early return for the empty case. Bailing out before the container

@@ -181,6 +181,21 @@ def get_training_job(job_id: int, db: Session = Depends(get_db)) -> TrainingJob:
     return db.get(TrainingJob, job_id)
 
 
+@router.get("/training-jobs/{job_id}/logs")
+def training_job_logs(job_id: int, db: Session = Depends(get_db)) -> dict:
+    """Tail of the run's live log — the framework's narration plus one line
+    per epoch. In-memory only (see services/training_logs.py): after a server
+    restart an old run's log is gone, but its metrics and any error live on
+    in the job row, which is the durable record.
+    """
+    from app.services import training_logs
+
+    job = db.get(TrainingJob, job_id)
+    if job is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Training job {job_id} not found")
+    return {"lines": training_logs.tail(job_id)}
+
+
 @router.get(
     "/projects/{project_id}/training-jobs", response_model=list[TrainingJobRead]
 )

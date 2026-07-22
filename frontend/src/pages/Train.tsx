@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
+import { Link, useParams, useSearchParams } from 'react-router-dom'
 import {
   ArrowLeft,
   ChevronDown,
@@ -33,6 +33,7 @@ import {
   cancelTrainingJob,
   deleteTrainingJob,
   getDevice,
+  getTrainingLogs,
   getTrainPreview,
   listDatasetVersions,
   listTrainers,
@@ -57,13 +58,21 @@ export function Train() {
   const { id } = useParams<{ id: string }>()
   const projectId = Number(id)
 
+  // ?dataset_version=N arrives from the Dataset page's per-version "Train"
+  // links — the version you were looking at is the version that gets trained,
+  // not silently the latest one.
+  const [searchParams] = useSearchParams()
+  const preselectedVersion = Number(searchParams.get('dataset_version')) || null
+
   const [trainers, setTrainers] = useState<TrainerInfo[]>([])
   const [device, setDevice] = useState<DeviceInfo | null>(null)
   const [preview, setPreview] = useState<TrainPreview | null>(null)
   const [jobs, setJobs] = useState<TrainingJob[]>([])
   const [datasetVersions, setDatasetVersions] = useState<DatasetVersion[]>([])
   // Which saved dataset version to train. null = the latest save.
-  const [datasetVersionId, setDatasetVersionId] = useState<number | null>(null)
+  const [datasetVersionId, setDatasetVersionId] = useState<number | null>(
+    preselectedVersion,
+  )
 
   const [trainerKey, setTrainerKey] = useState('')
   const [epochs, setEpochs] = useState(50)
@@ -145,7 +154,7 @@ export function Train() {
         if (t.length) {
           setTrainerKey((k) => k || t[0].key)
           setEpochs(t[0].default_epochs)
-          setBatchSize(t[0].default_batch_size)
+          setBatchSize(adaptiveBatch(d, t[0]))
           setImageSize(t[0].default_image_size)
         }
         const running = j.find((x) => x.status === 'running' || x.status === 'queued')
@@ -163,11 +172,12 @@ export function Train() {
     }
   }, [projectId])
 
-  /** Apply a backend's recommended settings — what a run uses unless overridden. */
+  /** Apply a backend's recommended settings — what a run uses unless overridden.
+   *  Batch is ADAPTIVE: sized to the detected GPU, not one hardcoded number. */
   function applyDefaults(t: TrainerInfo | undefined) {
     if (!t) return
     setEpochs(t.default_epochs)
-    setBatchSize(t.default_batch_size)
+    setBatchSize(adaptiveBatch(device, t))
     setImageSize(t.default_image_size)
     setLr('')
   }
@@ -350,8 +360,22 @@ export function Train() {
                   <h2 className="text-sm font-medium text-gray-900">
                     {isRunning ? 'Configuration' : 'New run'}
                   </h2>
+                  {/* Say WHY it's grey, on the card itself. Individually
+                      disabled fields already refuse input, but a whole form
+                      that just went pale with no explanation reads as broken. */}
+                  {isRunning && (
+                    <p className="text-xs text-gray-500">
+                      Locked while a run is in progress — these are the live run's
+                      settings.
+                    </p>
+                  )}
                 </div>
-                <div className="space-y-3 p-4">
+                <div
+                  className={`space-y-3 p-4 ${
+                    isRunning ? 'pointer-events-none select-none opacity-60' : ''
+                  }`}
+                  aria-disabled={isRunning}
+                >
                   <div>
                     <label htmlFor="trainer" className="mb-1 block text-xs font-medium text-gray-700">
                       Training backend
@@ -548,8 +572,10 @@ export function Train() {
                 ) : (
                   <>
                     <Play size={14} />
+                    {/* Words, not glyphs: "v1 → v2" read as an arrow soup in
+                        a button. "as" says the same thing in English. */}
                     {initFromId
-                      ? `Continue ${labelOf(initFromId)} → v${latestVersion + 1}`
+                      ? `Continue ${labelOf(initFromId)} as v${latestVersion + 1}`
                       : `Train v${latestVersion + 1}`}
                   </>
                 )}
@@ -606,6 +632,32 @@ export function Train() {
       </PageBody>
     </>
   )
+}
+
+/**
+ * Batch size sized to the DETECTED GPU, not one number for every machine.
+ *
+ * The trainer states its default batch and roughly how much VRAM that costs
+ * (approx_vram_gb). Scaling the batch by have/need and snapping to a power of
+ * two gives a 2 GB laptop batch 2 where an 8 GB card gets 16 — instead of both
+ * getting 8, which OOMs the laptop and under-uses the card. Snapped DOWN, not
+ * to nearest: an optimistic batch fails with an OOM mid-run, a conservative
+ * one merely trains a little slower. CPU (or unknown VRAM) keeps the trainer's
+ * own default.
+ */
+function adaptiveBatch(device: DeviceInfo | null, t: TrainerInfo): number {
+  if (
+    !device ||
+    device.device !== 'cuda' ||
+    !device.total_vram_gb ||
+    !t.approx_vram_gb
+  ) {
+    return t.default_batch_size
+  }
+  const target = t.default_batch_size * (device.total_vram_gb / t.approx_vram_gb)
+  let snapped = 1
+  while (snapped * 2 <= target && snapped < 32) snapped *= 2
+  return snapped
 }
 
 /**
@@ -743,6 +795,12 @@ function RunDetail({
           <MetricsChart points={job.metrics} />
         </div>
 
+        {/* The run's narration, on demand. Collapsed by default: the chart and
+            counters are the primary story, the log is for "what is it actually
+            doing right now" — dataset scans, warnings, per-epoch lines. */}
+        <LiveLogs jobId={job.id} live={live} />
+
+
         {/* How this run was configured — the "how it did it" for history. */}
         <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1 text-xs sm:grid-cols-4">
           <Detail label="Backend" value={job.trainer_key} />
@@ -773,6 +831,79 @@ function RunDetail({
           </pre>
         )}
       </div>
+    </div>
+  )
+}
+
+/**
+ * Live log tail for a run — a terminal-style dropdown under the chart.
+ *
+ * Polls only while OPEN and only while the run is LIVE: an unopened panel
+ * costs nothing, and a finished run's log is static (and gone entirely after
+ * a server restart, in which case the panel says so rather than showing an
+ * empty black box). Sticks to the bottom like a terminal unless the user has
+ * scrolled up to read something.
+ */
+function LiveLogs({ jobId, live }: { jobId: number; live: boolean }) {
+  const [open, setOpen] = useState(false)
+  const [lines, setLines] = useState<string[] | null>(null)
+  const scrollRef = useRef<HTMLPreElement>(null)
+  const pinnedToBottom = useRef(true)
+
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    const load = () =>
+      getTrainingLogs(jobId)
+        .then((r) => !cancelled && setLines(r.lines))
+        .catch(() => {})
+    void load()
+    if (!live) return
+    const t = window.setInterval(load, 2000)
+    return () => {
+      cancelled = true
+      clearInterval(t)
+    }
+  }, [open, live, jobId])
+
+  // Autoscroll on new lines — unless the user scrolled up on purpose.
+  useEffect(() => {
+    const el = scrollRef.current
+    if (el && pinnedToBottom.current) el.scrollTop = el.scrollHeight
+  }, [lines])
+
+  return (
+    <div className="mt-3 rounded-md border border-gray-200">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="flex w-full items-center justify-between px-2.5 py-1.5 text-xs text-gray-600 hover:bg-gray-50"
+      >
+        <span className="flex items-center gap-1.5 font-medium">
+          {open ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+          {live ? 'Live logs' : 'Logs'}
+        </span>
+        {live && !open && (
+          <span className="text-[10px] text-gray-400">watch what the run is doing</span>
+        )}
+      </button>
+      {open && (
+        <pre
+          ref={scrollRef}
+          onScroll={(e) => {
+            const el = e.currentTarget
+            pinnedToBottom.current =
+              el.scrollHeight - el.scrollTop - el.clientHeight < 24
+          }}
+          className="max-h-56 overflow-auto border-t border-gray-200 bg-gray-950 p-2.5 text-[11px] leading-relaxed text-gray-200"
+        >
+          {lines === null
+            ? 'Loading…'
+            : lines.length
+              ? lines.join('\n')
+              : 'No log captured for this run. Logs live in memory while the server runs — a run from before the last restart has none.'}
+        </pre>
+      )}
     </div>
   )
 }

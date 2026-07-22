@@ -1001,6 +1001,10 @@ export const getTrainingJob = (jobId: number) =>
   api.get<TrainingJob>(`/training-jobs/${jobId}`)
 export const listTrainingJobs = (projectId: number) =>
   api.get<TrainingJob[]>(`/projects/${projectId}/training-jobs`)
+/** Live log tail for a run — the framework's narration plus one line per
+ *  epoch. In-memory on the server: gone after a restart, unlike metrics. */
+export const getTrainingLogs = (jobId: number) =>
+  api.get<{ lines: string[] }>(`/training-jobs/${jobId}/logs`)
 
 // --- Dataset versions -----------------------------------------------------
 // Save points for the dataset. Created only by "Save dataset", which is also the
