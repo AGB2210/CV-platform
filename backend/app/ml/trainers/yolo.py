@@ -62,6 +62,12 @@ class YoloTrainer(Trainer):
     #: once by ultralytics from its own release assets and then cached.
     base_weights = "yolo11n.pt"
 
+    def load_predictor(self, checkpoint_path, class_names: list[str]):
+        """A runnable predictor over one of this trainer's `best.pt` checkpoints."""
+        from app.ml.predictors.yolo import YoloPredictor
+
+        return YoloPredictor(checkpoint_path, class_names)
+
     def train(self, config: TrainConfig, on_epoch: EpochCallback) -> TrainResult:
         # Lazy, and inside a function: importing ultralytics pulls torch and
         # costs seconds + hundreds of MB, which must not happen just to list

@@ -170,3 +170,19 @@ class Trainer(ABC):
         it, records the traceback, and marks the job failed. An OOM should be
         allowed to propagate with its original message intact.
         """
+
+    def load_predictor(self, checkpoint_path, class_names: list[str]):
+        """Load a checkpoint this trainer produced into a runnable Predictor.
+
+        The trainer owns this — not a separate registry keyed by architecture —
+        because the framework that WROTE the weights is the only thing that knows
+        how to read them. Pairing them structurally means the two can't drift
+        apart. Returns a Predictor (app/ml/predictors/base.py); the predictor
+        registry keeps at most one resident.
+
+        Not abstract only so a trainer without inference yet still imports; a
+        trainer that can't predict raises here rather than at class definition.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support inference yet."
+        )

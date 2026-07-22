@@ -22,6 +22,7 @@ from sqlalchemy.orm import Session
 from app.database import SessionLocal
 from app.timestamps import utcnow
 from app.ml import registry
+from app.ml.predictors import registry as predictor_registry
 from app.ml.annotators.base import AnnotationRequest
 from app.models import Annotation, AnnotationJob, Category, Image, JobStatus
 from app.services import storage
@@ -65,8 +66,10 @@ def run_annotation_job(job_id: int) -> None:
     finally:
         # Always release VRAM, even on failure. A crashed job still holding the
         # model means every subsequent job OOMs — one failure becomes
-        # permanent breakage until restart.
+        # permanent breakage until restart. Drop a resident predictor too: a
+        # playground can leave one pinned on the card between annotate runs.
         registry.release()
+        predictor_registry.release()
         db.close()
 
 
@@ -125,6 +128,10 @@ def _run(db: Session, job: AnnotationJob) -> None:
         job.finished_at = utcnow()
         db.commit()
         return
+
+    # Free the card before loading the annotator: a playground can leave a
+    # predictor resident, and DINO + a detector will not both fit on a small GPU.
+    predictor_registry.release()
 
     # acquire() loads the model ONCE and keeps it resident for the batch. Using
     # the annotator as a context manager here would unload after each image and

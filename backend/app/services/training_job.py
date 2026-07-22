@@ -36,6 +36,7 @@ from sqlalchemy.orm import Session
 from app.config import from_storage_path, settings, to_storage_path
 from app.database import SessionLocal
 from app.ml import registry as annotator_registry
+from app.ml.predictors import registry as predictor_registry
 from app.ml.device import empty_cache, get_device
 from app.ml.trainers import registry as trainer_registry
 from app.ml.trainers.base import EpochMetrics, TrainConfig
@@ -83,9 +84,10 @@ def run_training_job(job_id: int) -> None:
         # A trainer should free its own VRAM when train() returns, but "should"
         # isn't good enough when memory is tight — hand the cached blocks back to
         # the driver so the next job (or an annotate run) has room. Also drop any
-        # annotator that somehow survived. One crashed job holding VRAM would
-        # otherwise OOM every job after it until a restart.
+        # annotator OR predictor that somehow survived. One crashed job holding
+        # VRAM would otherwise OOM every job after it until a restart.
         annotator_registry.release()
+        predictor_registry.release()
         empty_cache()
         db.close()
 
@@ -164,9 +166,11 @@ def _run(db: Session, job: TrainingJob) -> None:
 
     trainer = trainer_registry.get_class(job.trainer_key)()
 
-    # Evict any annotator BEFORE exporting/loading, so the peak-memory window
-    # (training) never overlaps a resident annotation model.
+    # Evict any annotator OR predictor BEFORE exporting/loading, so the
+    # peak-memory window (training) never overlaps another resident model — a
+    # playground can leave a predictor pinned on the card indefinitely.
     annotator_registry.release()
+    predictor_registry.release()
     empty_cache()
 
     # Everything this run produces lives under storage/runs/<job_id>/ — the
