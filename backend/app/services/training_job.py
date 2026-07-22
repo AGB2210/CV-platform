@@ -48,13 +48,34 @@ from app.timestamps import utcnow
 logger = logging.getLogger(__name__)
 
 
+def _is_oom(exc: Exception) -> bool:
+    """Did this run die of GPU memory? Checked by type name AND message,
+    because torch raises torch.cuda.OutOfMemoryError but frameworks sometimes
+    re-wrap it in a RuntimeError whose text is all that survives."""
+    return type(exc).__name__ == "OutOfMemoryError" or "out of memory" in str(exc).lower()
+
+
 def _fail(db: Session, job: TrainingJob, exc: Exception) -> None:
     """Record a job failure with its traceback."""
     job.status = JobStatus.FAILED
-    job.error = f"{type(exc).__name__}: {exc}\n\n{traceback.format_exc()}"
+    # OOM gets translated before the traceback: it's the one failure whose fix
+    # is settings, not code, and the person who hits it shouldn't have to
+    # diagnose CUDA allocator output to learn "the model didn't fit". The run
+    # stops — no silent auto-retry at a smaller batch, which would train
+    # something other than what was asked for.
+    if _is_oom(exc):
+        job.error = (
+            f"Out of GPU memory: this configuration doesn't fit on your card.\n"
+            f"Lower the batch size (currently {job.batch_size}) or the image "
+            f"size (currently {job.image_size}px), or pick a smaller model "
+            f"variant, and train again.\n\n"
+            f"--- original error ---\n{type(exc).__name__}: {exc}"
+        )
+    else:
+        job.error = f"{type(exc).__name__}: {exc}\n\n{traceback.format_exc()}"
     job.finished_at = utcnow()
     db.commit()
-    training_logs.append(job.id, f"FAILED: {type(exc).__name__}: {exc}")
+    training_logs.append(job.id, f"FAILED: {job.error.splitlines()[0]}")
     logger.exception("Training job %s failed", job.id)
 
 

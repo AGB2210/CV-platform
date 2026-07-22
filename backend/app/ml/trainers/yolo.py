@@ -1,19 +1,27 @@
 """
-YOLO trainer (Ultralytics) — the first concrete training backend.
+Ultralytics trainers — the YOLO11 family and RT-DETR, one adapter.
 
-Chosen to go first because it is the most forgiving path to a real run on a
-modest GPU: the nano model fits comfortably, the install is robust on Windows,
-and it consumes the YOLO export we already build and round-trip test. RF-DETR / RT-DETR
-(COCO-based) follow behind the same interface.
+One shared train() implementation because ultralytics gives every model the
+same API (train(data=...), callbacks, best.pt); the variants differ only in
+which pretrained checkpoint they start from and how much VRAM they want. Each
+is registered as its own key so a job's provenance names the actual
+architecture it trained — "yolo11l", not "some YOLO".
+
+THE VARIANTS ARE A LADDER, NOT A MENU OF EQUALS
+-----------------------------------------------
+nano..xlarge trade accuracy for memory/speed in order; RT-DETR is a different
+architecture (a DETR — transformer detection head, NMS-free) that competes
+with the upper YOLOs. The UI groups by family so "which architecture" and
+"which size" read as the two separate questions they are.
 
 HOW IT ADAPTS THE FRAMEWORK
 ---------------------------
-Ultralytics owns the whole training loop — we don't step inside it. Two seams let
+Ultralytics owns the whole training loop — we don't step inside. Two seams let
 us report progress without doing so:
 
   - a per-epoch CALLBACK ("on_fit_epoch_end") it invokes with its own trainer
-    object, from which we pull the epoch's loss and validation mAP and forward an
-    EpochMetrics to the runner's callback;
+    object, from which we pull the epoch's loss and validation mAP and forward
+    an EpochMetrics to the runner's callback;
   - the return value of model.train(), plus the best.pt it writes under our
     output dir, for the final result.
 
@@ -33,54 +41,42 @@ from app.ml.trainers.registry import register
 logger = logging.getLogger(__name__)
 
 
-@register
-class YoloTrainer(Trainer):
-    key = "yolo"
-    # Name the ACTUAL variant, not the family. "YOLO11" could be any of n/s/m/l/x
-    # — sizes that differ by an order of magnitude in memory and speed — so a
-    # user picking from a list deserves to know which one they're getting.
-    display_name = "YOLO11n (nano) · Ultralytics"
-    description = (
-        "Fine-tunes the pretrained YOLO11 nano checkpoint (yolo11n.pt) — the "
-        "smallest of the YOLO11 family, so it trains on modest GPUs. Consumes "
-        "the YOLO export format."
-    )
-    # Rough peak VRAM for nano at 640px / batch 8; batch and image size move it.
-    # Surfaced as a NUMBER rather than baked into prose, so the UI can compare it
-    # against whatever GPU the app is actually running on — this ships to other
-    # machines, and hardcoding one developer's card into user-facing text would
-    # be wrong everywhere else.
-    approx_vram_gb = 3.0
-    export_format = "yolo"
+class UltralyticsTrainer(Trainer):
+    """Shared adapter over ultralytics' Model API. Subclasses only declare
+    metadata: which checkpoint to start from and what it costs."""
 
+    export_format = "yolo"
     default_epochs = 50
-    default_batch_size = 8
     default_image_size = 640
 
-    #: Pretrained checkpoint to fine-tune from. Nano is the safe default: the
-    #: larger variants OOM at any useful batch size on a small card. Downloaded
-    #: once by ultralytics from its own release assets and then cached.
-    base_weights = "yolo11n.pt"
+    #: Pretrained checkpoint to fine-tune from. Downloaded once by ultralytics
+    #: from its own release assets and then cached.
+    base_weights = ""
+    #: Which ultralytics class loads this architecture: "YOLO" or "RTDETR".
+    #: They share the training API but not the inference pipeline — RT-DETR
+    #: has its own predictor (no NMS), and loading its checkpoint through the
+    #: YOLO class can route postprocessing wrongly. The trainer knows what it
+    #: trained, so it says.
+    model_class = "YOLO"
 
-    def load_predictor(self, checkpoint_path, class_names: list[str]):
-        """A runnable predictor over one of this trainer's `best.pt` checkpoints."""
-        from app.ml.predictors.yolo import YoloPredictor
-
-        return YoloPredictor(checkpoint_path, class_names)
-
-    def train(self, config: TrainConfig, on_epoch: EpochCallback) -> TrainResult:
-        # Lazy, and inside a function: importing ultralytics pulls torch and
-        # costs seconds + hundreds of MB, which must not happen just to list
-        # trainers. A clear error here (rather than at import) is also what lets
-        # the page report "backend not installed" instead of crashing.
+    def _load_model(self, weights: str):
         try:
-            from ultralytics import YOLO
+            import ultralytics
         except ImportError as exc:
             raise RuntimeError(
                 "ultralytics is not installed. Run `pip install ultralytics` in "
                 "the backend venv and restart the server."
             ) from exc
+        cls = getattr(ultralytics, self.model_class)
+        return cls(weights)
 
+    def load_predictor(self, checkpoint_path, class_names: list[str]):
+        """A runnable predictor over one of this trainer's `best.pt` checkpoints."""
+        from app.ml.predictors.yolo import YoloPredictor
+
+        return YoloPredictor(checkpoint_path, class_names, model_class=self.model_class)
+
+    def train(self, config: TrainConfig, on_epoch: EpochCallback) -> TrainResult:
         # Turn off ultralytics' anonymous analytics/telemetry — this is a local,
         # no-cloud tool, and a training run shouldn't phone home. Best-effort:
         # the settings API has shifted across versions, so never let it fail the
@@ -98,10 +94,10 @@ class YoloTrainer(Trainer):
 
         # Finetune from a prior run's checkpoint when asked, else the pretrained
         # base. Loading a .pt trained on the same classes continues improving it;
-        # YOLO reads the architecture + weights (including the trained detection
-        # head) straight from the file.
+        # ultralytics reads the architecture + weights (including the trained
+        # detection head) straight from the file.
         start_weights = str(config.init_weights) if config.init_weights else self.base_weights
-        model = YOLO(start_weights)
+        model = self._load_model(start_weights)
 
         # Ultralytics fires on_fit_epoch_end ONE EXTRA TIME after the training
         # loop ends — its final validation pass — and by then `trainer.epoch`
@@ -236,3 +232,93 @@ class YoloTrainer(Trainer):
             best_map=best_map,
             epochs_completed=epochs_completed,
         )
+
+
+# --- The roster --------------------------------------------------------------
+# approx_vram_gb is rough peak at 640px and that variant's default batch —
+# batch and image size move it. The numbers are deliberately conservative: the
+# UI compares them against the detected GPU to size the default batch, and an
+# optimistic figure turns into an OOM mid-run where a cautious one merely
+# trains slightly slower.
+
+
+@register
+class Yolo11NanoTrainer(UltralyticsTrainer):
+    # HISTORIC KEY: this was the first (only) trainer, registered as "yolo".
+    # Existing job rows and checkpoints reference it, so the key stays even
+    # though its siblings follow the "yolo11s" pattern.
+    key = "yolo"
+    family = "YOLO11"
+    variant = "nano"
+    display_name = "YOLO11 nano"
+    description = (
+        "The smallest YOLO11 — trains on modest GPUs and predicts fastest. "
+        "The right starting point on most machines."
+    )
+    approx_vram_gb = 3.0
+    default_batch_size = 8
+    base_weights = "yolo11n.pt"
+
+
+@register
+class Yolo11SmallTrainer(UltralyticsTrainer):
+    key = "yolo11s"
+    family = "YOLO11"
+    variant = "small"
+    display_name = "YOLO11 small"
+    description = "A step up in accuracy from nano for roughly half again the memory."
+    approx_vram_gb = 4.5
+    default_batch_size = 8
+    base_weights = "yolo11s.pt"
+
+
+@register
+class Yolo11MediumTrainer(UltralyticsTrainer):
+    key = "yolo11m"
+    family = "YOLO11"
+    variant = "medium"
+    display_name = "YOLO11 medium"
+    description = "The middle of the family — needs a mid-range GPU (6 GB+)."
+    approx_vram_gb = 6.5
+    default_batch_size = 4
+    base_weights = "yolo11m.pt"
+
+
+@register
+class Yolo11LargeTrainer(UltralyticsTrainer):
+    key = "yolo11l"
+    family = "YOLO11"
+    variant = "large"
+    display_name = "YOLO11 large"
+    description = "High accuracy, slower — wants 8 GB+ of VRAM."
+    approx_vram_gb = 8.5
+    default_batch_size = 4
+    base_weights = "yolo11l.pt"
+
+
+@register
+class Yolo11XLargeTrainer(UltralyticsTrainer):
+    key = "yolo11x"
+    family = "YOLO11"
+    variant = "xlarge"
+    display_name = "YOLO11 xlarge"
+    description = "The biggest YOLO11. Best accuracy in the family; wants 10 GB+."
+    approx_vram_gb = 11.0
+    default_batch_size = 2
+    base_weights = "yolo11x.pt"
+
+
+@register
+class RtDetrLTrainer(UltralyticsTrainer):
+    key = "rtdetr_l"
+    family = "RT-DETR"
+    variant = "L"
+    display_name = "RT-DETR L"
+    description = (
+        "Baidu's real-time detection transformer (via ultralytics). NMS-free, "
+        "competitive with the larger YOLOs; heavier to train — wants 10 GB+."
+    )
+    approx_vram_gb = 10.0
+    default_batch_size = 4
+    base_weights = "rtdetr-l.pt"
+    model_class = "RTDETR"

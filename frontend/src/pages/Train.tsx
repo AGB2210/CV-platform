@@ -376,29 +376,73 @@ export function Train() {
                   }`}
                   aria-disabled={isRunning}
                 >
-                  <div>
-                    <label htmlFor="trainer" className="mb-1 block text-xs font-medium text-gray-700">
-                      Training backend
-                    </label>
-                    <select
-                      id="trainer"
-                      value={trainerKey}
-                      onChange={(e) => selectTrainer(e.target.value)}
-                      disabled={isRunning}
-                      className="w-full rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-sm focus:border-accent-500 focus:outline-none disabled:bg-gray-50"
-                    >
-                      {trainers.map((t) => (
-                        <option key={t.key} value={t.key}>
-                          {/* Just the name. A "~3 GB VRAM" suffix reads as a
-                              property of the model, but what matters is whether
-                              it fits THIS machine — which the memory hint below
-                              works out from the detected device instead. */}
-                          {t.display_name}
-                        </option>
-                      ))}
-                    </select>
-                    {selected && <p className="mt-1 text-xs text-gray-500">{selected.description}</p>}
+                  {/* --- Model, as TWO questions ---
+                      "Which architecture" (family) and "which size" (variant)
+                      are separate decisions with separate trade-offs, and a
+                      flat list of six entries buries that structure. The
+                      variant list shows each size's rough VRAM ask so the
+                      ladder is visible where the choice is made. */}
+                  <div className="grid grid-cols-2 gap-3">
+                    <div>
+                      <label htmlFor="family" className="mb-1 block text-xs font-medium text-gray-700">
+                        Model family
+                      </label>
+                      <select
+                        id="family"
+                        value={selected?.family ?? ''}
+                        onChange={(e) => {
+                          // Switching family lands on its first variant — the
+                          // smallest, which is the safe default everywhere.
+                          const first = trainers.find((t) => t.family === e.target.value)
+                          if (first) selectTrainer(first.key)
+                        }}
+                        disabled={isRunning}
+                        className="w-full rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-sm focus:border-accent-500 focus:outline-none disabled:bg-gray-50"
+                      >
+                        {[...new Set(trainers.map((t) => t.family))].map((f) => (
+                          <option key={f} value={f}>
+                            {f}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div>
+                      <label htmlFor="trainer" className="mb-1 block text-xs font-medium text-gray-700">
+                        Size
+                      </label>
+                      <select
+                        id="trainer"
+                        value={trainerKey}
+                        onChange={(e) => selectTrainer(e.target.value)}
+                        disabled={isRunning}
+                        className="w-full rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-sm focus:border-accent-500 focus:outline-none disabled:bg-gray-50"
+                      >
+                        {trainers
+                          .filter((t) => t.family === selected?.family)
+                          .map((t) => (
+                            <option key={t.key} value={t.key}>
+                              {t.variant} (~{t.approx_vram_gb} GB)
+                            </option>
+                          ))}
+                      </select>
+                    </div>
                   </div>
+                  {selected && <p className="text-xs text-gray-500">{selected.description}</p>}
+                  {/* Warn AT the picker, not only inside the collapsed
+                      advanced box: a size that exceeds this GPU should be
+                      flagged where it's being chosen. It's a warning, not a
+                      block — batch/image-size tweaks can still make it fit,
+                      and if not, the run stops with an actionable OOM message. */}
+                  {selected &&
+                    device?.device === 'cuda' &&
+                    device.total_vram_gb != null &&
+                    selected.approx_vram_gb > device.total_vram_gb && (
+                      <p className="rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs text-amber-900">
+                        {selected.display_name} wants roughly {selected.approx_vram_gb} GB
+                        and this GPU has {device.total_vram_gb} GB. It will likely run out
+                        of memory — if it does, the run stops and says so.
+                      </p>
+                    )}
 
                   {/* --- Which saved dataset to train ---
                       Training always runs against a SAVED version, never the

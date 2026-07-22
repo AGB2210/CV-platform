@@ -141,6 +141,13 @@ class Trainer(ABC):
     key: str = ""
     #: Shown in the UI's trainer dropdown.
     display_name: str = ""
+    #: Grouping for the UI's picker: models come in FAMILIES (YOLO11, RT-DETR)
+    #: whose members differ only in size/speed. A flat list of six entries
+    #: hides that structure; family + variant lets the UI offer "which
+    #: architecture" and "which size" as the two separate questions they are.
+    family: str = ""
+    #: The size/flavour within the family, e.g. "nano" or "L".
+    variant: str = ""
     description: str = ""
     #: Rough peak VRAM at the DEFAULT settings, surfaced so the user can tell
     #: what will fit before they wait for an OOM. Batch/image size move it.

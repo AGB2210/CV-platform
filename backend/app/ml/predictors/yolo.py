@@ -1,7 +1,7 @@
 """
 YOLO predictor — run a trained YOLO11 checkpoint on an image.
 
-The inference counterpart to YoloTrainer. Loads a `best.pt` and runs
+The inference counterpart to the ultralytics trainers. Loads a `best.pt` and runs
 `model.predict()`, converting ultralytics' output into the project's canonical
 `Box` (absolute xyxy). Everything heavy (ultralytics, torch) imports lazily
 inside methods — importing this module must stay free.
@@ -21,7 +21,12 @@ logger = logging.getLogger(__name__)
 class YoloPredictor(Predictor):
     key = "yolo"
 
-    def __init__(self, checkpoint_path: str | Path, class_names: list[str]) -> None:
+    def __init__(
+        self,
+        checkpoint_path: str | Path,
+        class_names: list[str],
+        model_class: str = "YOLO",
+    ) -> None:
         super().__init__()
         self._checkpoint = str(checkpoint_path)
         # The class list the checkpoint was trained on, in the order that fixes
@@ -29,17 +34,23 @@ class YoloPredictor(Predictor):
         # but we pass ours so the labels match the project exactly, and so a
         # future re-export can't silently reorder them underneath us.
         self._class_names = class_names
+        # Which ultralytics class reads this checkpoint — "YOLO" or "RTDETR".
+        # The trainer that WROTE the weights passes it (see
+        # UltralyticsTrainer.load_predictor): RT-DETR has its own inference
+        # pipeline (NMS-free), and a trained best.pt carries no "rtdetr" in its
+        # filename for ultralytics' own auto-detection to key on.
+        self._model_class = model_class
         self._model = None
 
     def _load_impl(self) -> None:
         try:
-            from ultralytics import YOLO
+            import ultralytics
         except ImportError as exc:
             raise RuntimeError(
                 "ultralytics is not installed. Open Auto-annotate or Train once "
                 "to install the ML dependencies, then retry."
             ) from exc
-        self._model = YOLO(self._checkpoint)
+        self._model = getattr(ultralytics, self._model_class)(self._checkpoint)
 
     def _unload_impl(self) -> None:
         self._model = None

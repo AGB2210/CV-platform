@@ -60,6 +60,10 @@ def available() -> list[dict]:
         {
             "key": cls.key,
             "display_name": cls.display_name,
+            # Fall back to the display name so a trainer that predates the
+            # family/variant fields still groups (as a family of one).
+            "family": cls.family or cls.display_name,
+            "variant": cls.variant or "default",
             "description": cls.description,
             "approx_vram_gb": cls.approx_vram_gb,
             "export_format": cls.export_format,

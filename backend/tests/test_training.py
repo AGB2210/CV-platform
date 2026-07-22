@@ -793,3 +793,65 @@ def test_training_logs_capture_and_endpoint(client, monkeypatch, fake_trainer):
     assert training_logs.tail(999001) == []
 
     assert client.get("/api/training-jobs/999999/logs").status_code == 404
+
+
+# --- the model roster --------------------------------------------------------
+
+
+def test_roster_covers_yolo_family_and_rtdetr(client):
+    """Six ultralytics trainers, grouped by family, with 'yolo' keeping its
+    historic key (existing job rows reference it)."""
+    trainers = client.get("/api/trainers").json()
+    by_key = {t["key"]: t for t in trainers}
+
+    for key in ("yolo", "yolo11s", "yolo11m", "yolo11l", "yolo11x", "rtdetr_l"):
+        assert key in by_key, f"missing trainer {key}"
+
+    assert by_key["yolo"]["family"] == "YOLO11" and by_key["yolo"]["variant"] == "nano"
+    assert by_key["rtdetr_l"]["family"] == "RT-DETR"
+    # The ladder is ordered: VRAM demand grows with size within the family.
+    yolo_family = [t for t in trainers if t["family"] == "YOLO11"]
+    assert len(yolo_family) == 5
+    vrams = [by_key[k]["approx_vram_gb"] for k in ("yolo", "yolo11s", "yolo11m", "yolo11l", "yolo11x")]
+    assert vrams == sorted(vrams)
+
+
+def test_oom_failure_gets_actionable_message(client, monkeypatch):
+    """A CUDA OOM ends the run FAILED with settings advice up front — not a
+    raw allocator traceback, and no silent retry at a smaller batch."""
+    from app.ml.trainers import registry
+    from app.ml.trainers.base import TrainResult, Trainer
+
+    class OomTrainer(Trainer):
+        key = "oomer"
+        display_name = "OOM Trainer"
+        description = "dies of memory"
+        export_format = "yolo"
+        default_epochs = 1
+        default_batch_size = 4
+        default_image_size = 64
+
+        def train(self, config, on_epoch) -> TrainResult:
+            # torch re-wraps OOM in RuntimeError often enough that the message
+            # is the reliable signal — that's what the guard keys on.
+            raise RuntimeError("CUDA out of memory. Tried to allocate 512.00 MiB")
+
+    registry.register(OomTrainer)
+    try:
+        monkeypatch.setattr(
+            "app.services.training_job.SessionLocal",
+            client.SessionLocal,  # type: ignore[attr-defined]
+        )
+        pid, _ = make_trainable_project(client, "OomProj")
+        r = client.post(
+            f"/api/projects/{pid}/train",
+            json={"trainer_key": "oomer", "epochs": 1, "batch_size": 4, "image_size": 64},
+        )
+        assert r.status_code == 202, r.text
+        job = client.get(f"/api/training-jobs/{r.json()['id']}").json()
+        assert job["status"] == "failed"
+        assert job["error"].startswith("Out of GPU memory"), job["error"]
+        assert "batch size (currently 4)" in job["error"]
+        assert "original error" in job["error"]
+    finally:
+        registry._REGISTRY.pop("oomer", None)
