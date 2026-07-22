@@ -151,3 +151,18 @@
 @utility label-eyebrow {
   @apply text-xs font-medium uppercase tracking-wide text-gray-500;
 }
+
+/* Indeterminate progress bar for the on-demand ML install (MlSetupGate). pip
+   gives no reliable percentage, so the bar shows motion — honest "working" —
+   rather than a fabricated number. A sliding highlight across the track. */
+@keyframes ml-setup-slide {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(420%);
+  }
+}
+.ml-setup-bar {
+  animation: ml-setup-slide 1.4s ease-in-out infinite;
+}

@@ -16,6 +16,7 @@ import {
   X,
 } from 'lucide-react'
 import { PageBody, PageHeader } from '@/components/layout/AppShell'
+import { MlSetupGate } from '@/components/MlSetupGate'
 import { StatusBadge, type Status } from '@/components/StatusBadge'
 import { MetricsChart } from '@/components/MetricsChart'
 import { ConfirmDialog } from '@/components/ui/Modal'
@@ -305,6 +306,7 @@ export function Train() {
         }
       />
       <PageBody>
+        <MlSetupGate feature="Training">
         {error && (
           <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
             {error}
@@ -600,6 +602,7 @@ export function Train() {
             )}
           </aside>
         </div>
+        </MlSetupGate>
       </PageBody>
     </>
   )

@@ -655,6 +655,30 @@ export const listAnnotators = () => api.get<AnnotatorInfo[]>('/annotators')
 export const getDevice = () => api.get<DeviceInfo>('/device')
 export const listExportFormats = () => api.get<ExportFormatInfo[]>('/export-formats')
 
+// --- ML setup (installing torch/transformers/ultralytics on demand) --------
+
+export interface MlStatus {
+  /** Whether the heavy ML stack is importable right now. */
+  installed: boolean
+  install: {
+    status: 'idle' | 'running' | 'done' | 'failed'
+    phase: string
+    error: string | null
+    /** Tail of pip's output, so a stuck install is visible. */
+    log_tail: string[]
+  }
+  /** What an install WOULD download for this machine — the GPU-detected build. */
+  plan: {
+    gpu_detected: boolean
+    driver_cuda: string | null
+    torch_build: string
+    torch_index_url: string
+  }
+}
+
+export const getMlStatus = () => api.get<MlStatus>('/ml/status')
+export const startMlInstall = () => api.post<MlStatus>('/ml/install')
+
 /** Used only when no explicit image selection is given. */
 export type JobScope = 'unannotated' | 'all'
 

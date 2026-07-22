@@ -10,6 +10,7 @@ import {
   SquarePen,
 } from 'lucide-react'
 import { PageBody, PageHeader } from '@/components/layout/AppShell'
+import { MlSetupGate } from '@/components/MlSetupGate'
 import { StatusBadge, type Status } from '@/components/StatusBadge'
 import {
   exportUrl,
@@ -237,6 +238,7 @@ export function Annotate() {
         }
       />
       <PageBody>
+        <MlSetupGate feature="Auto-annotate">
         {error && (
           <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
             {error}
@@ -545,6 +547,7 @@ export function Annotate() {
             {jobs.length > 0 && <JobHistory jobs={jobs} />}
           </aside>
         </div>
+        </MlSetupGate>
       </PageBody>
     </>
   )
