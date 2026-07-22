@@ -175,8 +175,8 @@ async def predict(
     if _gpu_busy(db):
         raise HTTPException(
             status.HTTP_409_CONFLICT,
-            "A training or annotation job is running for this project. "
-            "Inference shares the GPU — wait for it to finish, then try again.",
+            "A training or annotation job is running (there is one GPU, shared "
+            "across all projects). Wait for it to finish, then try again.",
         )
 
     data = await file.read()
