@@ -287,8 +287,10 @@ for box in r.json()["boxes"]:
           />
           <p className="text-xs text-gray-400">
             Response: {'{'} image_width, image_height, boxes: [{'{'} label,
-            confidence, x, y, width, height {'}'}] {'}'}. One request at a time —
-            the GPU is shared with training.
+            confidence, x, y, width, height {'}'}] {'}'}. Everything in this app
+            shares one GPU, so if a training or auto-annotation job happens to be
+            running when a request arrives, the API answers 409 (busy) instead of
+            fighting it for memory — retry once the job finishes.
           </p>
         </div>
       )}

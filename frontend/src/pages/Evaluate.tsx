@@ -84,9 +84,14 @@ export function Evaluate() {
     }
   }, [active, projectId])
 
+  // Between click and the job row existing — greys the button so the click
+  // visibly registered and a double-click can't queue two evaluations.
+  const [starting, setStarting] = useState(false)
+
   const run = async () => {
-    if (modelId == null || versionId == null) return
+    if (modelId == null || versionId == null || starting) return
     setError(null)
+    setStarting(true)
     try {
       setActive(await startEvaluation(projectId, {
         training_job_id: modelId,
@@ -95,10 +100,12 @@ export function Evaluate() {
       }))
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setStarting(false)
     }
   }
 
-  const running = active?.status === 'running' || active?.status === 'queued'
+  const running = starting || active?.status === 'running' || active?.status === 'queued'
 
   return (
     <>

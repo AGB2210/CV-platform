@@ -279,11 +279,16 @@ export function Review() {
     setSelectedId(null)
   }, [serverAccepted])
 
+  // An accept/reject is in flight — both buttons grey out so the click
+  // visibly registered, and a double-press can't fire the decision twice.
+  const [deciding, setDeciding] = useState(false)
+
   /** Accept THIS image's proposals: the model's boxes replace this image's.
    *  Rebuilds the draft too — accepting IS a save-equivalent statement about
    *  what this image's boxes should be, so any stale buffer yields to it. */
   async function handleAcceptImage() {
-    if (!current) return
+    if (!current || deciding) return
+    setDeciding(true)
     try {
       await acceptImageProposals(current.id)
       const a = await listAnnotations(current.id)
@@ -293,12 +298,15 @@ export function Review() {
       advanceIfMoreProposals()
     } catch (e) {
       setError((e as Error).message)
+    } finally {
+      setDeciding(false)
     }
   }
 
   /** Reject THIS image's proposals: its own boxes stay exactly as they were. */
   async function handleRejectImage() {
-    if (!current) return
+    if (!current || deciding) return
+    setDeciding(true)
     try {
       await rejectImageProposals(current.id)
       const a = await listAnnotations(current.id)
@@ -308,6 +316,8 @@ export function Review() {
       advanceIfMoreProposals()
     } catch (e) {
       setError((e as Error).message)
+    } finally {
+      setDeciding(false)
     }
   }
 
@@ -585,6 +595,7 @@ export function Review() {
                 <button
                   className="btn-reject"
                   onClick={() => void handleRejectImage()}
+                  disabled={deciding}
                   title="Discard THIS image's model boxes and keep your own. Other images are unaffected."
                 >
                   <X size={14} />
@@ -593,10 +604,15 @@ export function Review() {
                 <button
                   className="btn-accept"
                   onClick={() => void handleAcceptImage()}
+                  disabled={deciding}
                   title="Keep THIS image's model boxes, replacing your own. Other images are unaffected."
                 >
                   <Check size={14} />
-                  Accept<span className="hidden xl:inline">&nbsp;image</span> ({proposals.length})
+                  {deciding ? 'Working…' : (
+                    <>
+                      Accept<span className="hidden xl:inline">&nbsp;image</span> ({proposals.length})
+                    </>
+                  )}
                 </button>
               </>
             ) : null}

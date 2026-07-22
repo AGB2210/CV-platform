@@ -193,8 +193,13 @@ export function Annotate() {
     }
   }, [activeJob, refreshSummary])
 
+  // True from click until the job row exists. Without it a slow POST leaves
+  // the Run button clickable, and a double-click queues two identical runs.
+  const [starting, setStarting] = useState(false)
+
   async function run() {
     setError(null)
+    setStarting(true)
     try {
       const job = await startAnnotation(projectId, {
         model_key: modelKey,
@@ -210,6 +215,8 @@ export function Annotate() {
       setActiveJob(job)
     } catch (e) {
       setError((e as Error).message)
+    } finally {
+      setStarting(false)
     }
   }
 
@@ -221,7 +228,7 @@ export function Annotate() {
   // otherwise the chosen bucket's count. Using the project total would offer a
   // run that immediately 400s because the bucket is empty.
   const scopeCount = effectiveIds ? effectiveIds.length : (pre?.scope_counts?.[scope] ?? 0)
-  const canRun = !isRunning && classes.length > 0 && scopeCount > 0
+  const canRun = !isRunning && !starting && classes.length > 0 && scopeCount > 0
 
   if (loading) {
     return (
@@ -275,6 +282,8 @@ export function Annotate() {
                             // the card. Nothing else to do here.
                           } catch (e) {
                             setError((e as Error).message)
+                            // Rethrow so the button knows to re-enable itself.
+                            throw e
                           }
                         }
                       : undefined
@@ -542,6 +551,8 @@ export function Annotate() {
               <button className="btn-primary" onClick={() => void run()} disabled={!canRun}>
                 {isRunning ? (
                   <>Running…</>
+                ) : starting ? (
+                  <>Starting…</>
                 ) : (
                   <>
                     <Play size={14} />
@@ -645,8 +656,14 @@ function JobProgress({
   onCancel,
 }: {
   job: AnnotationJob
-  onCancel?: () => void
+  onCancel?: () => Promise<void> | void
 }) {
+  // Feedback that the click REGISTERED. Cancel takes effect between images
+  // (up to ~a second later), and a button that stays clickable in that window
+  // reads as a button that didn't work — so it greys out and says what it's
+  // doing. Stays disabled after success on purpose: the card closes when the
+  // poller sees the 404, and re-enabling just invites a second, doomed click.
+  const [cancelling, setCancelling] = useState(false)
   const status: Status =
     job.status === 'done'
       ? 'done'
@@ -678,10 +695,20 @@ function JobProgress({
             // colour rule this page has.
             <button
               type="button"
-              onClick={onCancel}
-              className="text-xs font-medium text-red-700 underline underline-offset-2 hover:text-red-800"
+              disabled={cancelling}
+              onClick={async () => {
+                setCancelling(true)
+                try {
+                  await onCancel()
+                } catch {
+                  // The request itself failed — the run is still going, so the
+                  // button must come back.
+                  setCancelling(false)
+                }
+              }}
+              className="text-xs font-medium text-red-700 underline underline-offset-2 hover:text-red-800 disabled:cursor-default disabled:text-gray-400 disabled:no-underline"
             >
-              Cancel run
+              {cancelling ? 'Cancelling…' : 'Cancel run'}
             </button>
           )}
           <StatusBadge status={status} />
@@ -967,6 +994,21 @@ function ImagePicker({
                 loading="lazy"
                 className="aspect-square w-full object-cover"
               />
+              {/* Annotation state, because it's the deciding fact when picking
+                  images for a run: "which ones still need boxes?" Green count
+                  = has accepted boxes; grey = none yet. Proposals don't count
+                  — they aren't annotations until accepted. */}
+              <span
+                className={`absolute bottom-1 left-1 rounded px-1 text-[9px] font-medium leading-4 ${
+                  img.annotation_count > 0
+                    ? 'bg-green-700/90 text-white'
+                    : 'bg-gray-900/60 text-gray-200'
+                }`}
+              >
+                {img.annotation_count > 0
+                  ? `${img.annotation_count} box${img.annotation_count === 1 ? '' : 'es'}`
+                  : 'no boxes'}
+              </span>
               {on && (
                 <span className="absolute right-1 top-1 rounded-full bg-accent-600 px-1.5 text-[10px] font-bold text-white">
                   ✓

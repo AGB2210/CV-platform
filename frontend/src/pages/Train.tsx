@@ -93,18 +93,28 @@ export function Train() {
   const [notice, setNotice] = useState<string | null>(null)
   const [loading, setLoading] = useState(true)
 
+  // True from clicking Stop/Cancel until the response lands. The buttons grey
+  // out immediately so the click visibly registered — a control that stays
+  // clickable while its request is in flight reads as a control that didn't
+  // work, and gets clicked again.
+  const [controlBusy, setControlBusy] = useState(false)
+
   async function requestStop() {
     setError(null)
+    setControlBusy(true)
     try {
       setActiveJob(await stopTrainingJob(activeJob!.id))
       setNotice('Stopping after the current epoch — the model so far will be kept.')
     } catch (e) {
       setError((e as Error).message)
+    } finally {
+      setControlBusy(false)
     }
   }
 
   async function requestCancel() {
     setError(null)
+    setControlBusy(true)
     try {
       await cancelTrainingJob(activeJob!.id)
       // The runner tears the row down at the end of the epoch in flight, so the
@@ -113,6 +123,8 @@ export function Train() {
       setActiveJob((j) => (j ? { ...j, control: 'cancel' } : j))
     } catch (e) {
       setError((e as Error).message)
+    } finally {
+      setControlBusy(false)
     }
   }
 
@@ -238,8 +250,13 @@ export function Train() {
     }
   }, [activeJob, refresh])
 
+  // True from click until the job row exists — a slow POST must not leave the
+  // Run button clickable for a second, identical run.
+  const [startingRun, setStartingRun] = useState(false)
+
   async function run() {
     setError(null)
+    setStartingRun(true)
     try {
       const job = await startTraining(projectId, {
         trainer_key: trainerKey,
@@ -254,13 +271,15 @@ export function Train() {
       setSelectedId(null) // show the live run, not whatever was being inspected
     } catch (e) {
       setError((e as Error).message)
+    } finally {
+      setStartingRun(false)
     }
   }
 
   const selected = trainers.find((t) => t.key === trainerKey)
   const isRunning = activeJob?.status === 'running' || activeJob?.status === 'queued'
   const noTrainers = trainers.length === 0
-  const canRun = !isRunning && !noTrainers && !!preview?.can_train
+  const canRun = !isRunning && !startingRun && !noTrainers && !!preview?.can_train
 
   // Versions are scoped to THIS project (the endpoint) AND this model — a YOLO
   // history shouldn't list RF-DETR versions, and you can't continue one
@@ -348,6 +367,7 @@ export function Train() {
                   datasetVersion={datasetVersionOf(displayedJob.dataset_version_id)}
                   onStop={requestStop}
                   onCancel={requestCancel}
+                  controlBusy={controlBusy}
                 />
               </div>
             )}
@@ -613,6 +633,8 @@ export function Train() {
               <button className="btn-primary" onClick={() => void run()} disabled={!canRun}>
                 {isRunning ? (
                   <>Training…</>
+                ) : startingRun ? (
+                  <>Starting…</>
                 ) : (
                   <>
                     <Play size={14} />
@@ -747,6 +769,7 @@ function RunDetail({
   datasetVersion,
   onStop,
   onCancel,
+  controlBusy = false,
 }: {
   job: TrainingJob
   live: boolean
@@ -754,6 +777,9 @@ function RunDetail({
   datasetVersion: number | null
   onStop: () => void
   onCancel: () => void
+  /** A stop/cancel request is in flight — grey both buttons so the click
+   *  visibly registered. */
+  controlBusy?: boolean
 }) {
   // Once an instruction is in, both buttons go — pressing Cancel after Stop (or
   // twice) has no further meaning and would only invite doubt about what's
@@ -795,7 +821,8 @@ function RunDetail({
                     deliberate. */}
                 <button
                   onClick={onStop}
-                  className="flex items-center gap-1 rounded border border-gray-300 px-1.5 py-0.5 text-[11px] leading-none text-gray-700 hover:bg-gray-50"
+                  disabled={controlBusy}
+                  className="flex items-center gap-1 rounded border border-gray-300 px-1.5 py-0.5 text-[11px] leading-none text-gray-700 hover:bg-gray-50 disabled:cursor-default disabled:border-gray-200 disabled:text-gray-400 disabled:hover:bg-transparent"
                   title="Finish the current epoch, then stop and keep this model"
                 >
                   <Square size={11} />
@@ -803,7 +830,8 @@ function RunDetail({
                 </button>
                 <button
                   onClick={onCancel}
-                  className="flex items-center gap-1 rounded border border-red-300 px-1.5 py-0.5 text-[11px] leading-none text-red-700 hover:bg-red-50"
+                  disabled={controlBusy}
+                  className="flex items-center gap-1 rounded border border-red-300 px-1.5 py-0.5 text-[11px] leading-none text-red-700 hover:bg-red-50 disabled:cursor-default disabled:border-gray-200 disabled:text-gray-400 disabled:hover:bg-transparent"
                   title="Stop and discard this run entirely — no version is kept"
                 >
                   <X size={11} />
@@ -865,7 +893,15 @@ function RunDetail({
 
         {job.status === 'done' && (
           <p className="mt-3 rounded-md border border-status-good/30 bg-status-good/5 px-2.5 py-1.5 text-xs text-gray-700">
-            Best checkpoint saved. Evaluation and a prediction playground arrive in the next phase.
+            Best checkpoint saved.{' '}
+            <Link to={`/projects/${job.project_id}/evaluate`} className="text-accent-700 underline">
+              Evaluate it on the test split
+            </Link>{' '}
+            or{' '}
+            <Link to={`/projects/${job.project_id}/deploy`} className="text-accent-700 underline">
+              try it on a new image
+            </Link>
+            .
           </p>
         )}
 
