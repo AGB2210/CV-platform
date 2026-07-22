@@ -114,6 +114,14 @@ class RfDetrTrainer(Trainer):
         class _EpochBridge(pl.Callback):
             """Forward each epoch's metrics to the runner; honour stop/cancel."""
 
+            def on_train_batch_end(self, trainer, pl_module, *args) -> None:  # noqa: ANN001, ANN002
+                # Batch-level CANCEL: Lightning checks should_stop inside the
+                # batch loop, so the run ends within a batch or two rather than
+                # at the end of a possibly-crawling epoch. The runner discards
+                # the run afterwards (control == cancel), so nothing is kept.
+                if config.check_cancel is not None and config.check_cancel():
+                    trainer.should_stop = True
+
             def on_train_epoch_end(self, trainer, pl_module) -> None:  # noqa: ANN001
                 nonlocal best_map_seen, stop_requested
                 if stop_requested:

@@ -119,7 +119,7 @@ export function Train() {
       await cancelTrainingJob(activeJob!.id)
       // The runner tears the row down at the end of the epoch in flight, so the
       // poller sees a 404 shortly and clears the card.
-      setNotice('Cancelling after the current epoch — this run will be discarded.')
+      setNotice('Cancelling — the run stops within a few seconds and is discarded.')
       setActiveJob((j) => (j ? { ...j, control: 'cancel' } : j))
     } catch (e) {
       setError((e as Error).message)
@@ -808,7 +808,11 @@ function RunDetail({
           {live &&
             (winding ? (
               <span className="text-[11px] text-gray-500">
-                {job.control === 'cancel' ? 'Cancelling…' : 'Stopping…'} after this epoch
+                {/* Different clocks: cancel aborts between batches (seconds);
+                    stop finishes the epoch so a checkpoint is kept. */}
+                {job.control === 'cancel'
+                  ? 'Cancelling — stops in a few seconds…'
+                  : 'Stopping… after this epoch'}
               </span>
             ) : (
               <>

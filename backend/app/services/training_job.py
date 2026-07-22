@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import logging
 import shutil
+import time
 import traceback
 from pathlib import Path
 
@@ -274,6 +275,22 @@ def _run(db: Session, job: TrainingJob) -> None:
         f"{job.image_size}px on {get_device()}.",
     )
 
+    # Batch-level cancel: polled between batches by the trainer, throttled here
+    # so a fast batch loop doesn't turn into a DB benchmark. One second of
+    # staleness is invisible next to "cancel responds in seconds, not epochs" —
+    # the failure mode this exists for is an epoch crawling in spilled GPU
+    # memory, where the old epoch-boundary check left cancel unresponsive for
+    # however long that crawl lasted (observed: minutes, heading for more).
+    _last_cancel_check = [0.0]
+
+    def check_cancel() -> bool:
+        now = time.monotonic()
+        if now - _last_cancel_check[0] < 1.0:
+            return False
+        _last_cancel_check[0] = now
+        db.expire(job)
+        return job.control == JobControl.CANCEL
+
     config = TrainConfig(
         dataset_dir=dataset_dir,
         output_dir=output_dir,
@@ -285,6 +302,7 @@ def _run(db: Session, job: TrainingJob) -> None:
         class_names=class_names,
         device=get_device(),
         init_weights=init_weights,
+        check_cancel=check_cancel,
     )
 
     history: list[dict] = []

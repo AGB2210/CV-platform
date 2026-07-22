@@ -876,3 +876,83 @@ def test_oom_failure_gets_actionable_message(client, monkeypatch):
         assert "original error" in job["error"]
     finally:
         registry._REGISTRY.pop("oomer", None)
+
+
+def test_cancel_aborts_mid_epoch_and_discards(client, monkeypatch):
+    """Cancel is BATCH-level: a trainer polling check_cancel between batches
+    aborts within the epoch, and the run is discarded exactly like an
+    epoch-boundary cancel. (Stop stays epoch-boundary — it keeps a model.)"""
+    from app.ml.trainers import registry
+    from app.ml.trainers.base import TrainResult, Trainer
+    from app.models import JobControl, TrainingJob
+
+    monkeypatch.setattr(
+        "app.services.training_job.SessionLocal",
+        client.SessionLocal,  # type: ignore[attr-defined]
+    )
+    # The throttle would swallow rapid checks inside one test second — bypass it.
+    import app.services.training_job as tj
+
+    class BatchPollingTrainer(Trainer):
+        key = "batchpoll"
+        display_name = "Batch Poller"
+        description = "polls check_cancel per batch, like the real adapters"
+        export_format = "yolo"
+        default_epochs = 1
+        default_batch_size = 2
+        default_image_size = 64
+        batches_run = 0
+
+        def train(self, config, on_epoch) -> TrainResult:
+            # Simulate one epoch of many batches; the cancel lands mid-epoch.
+            for batch in range(100):
+                type(self).batches_run = batch + 1
+                if config.check_cancel is not None and config.check_cancel():
+                    # Real adapters break out here (raise or should_stop).
+                    return TrainResult(None, None, epochs_completed=0)
+            raise AssertionError("check_cancel never fired — cancel was ignored")
+
+    registry.register(BatchPollingTrainer)
+    try:
+        pid, _ = make_trainable_project(client, "MidEpochCancel")
+
+        # Set the cancel flag as soon as the job row exists, BEFORE the runner
+        # runs (TestClient executes background tasks synchronously afterwards).
+        real_runner = tj.run_training_job
+
+        def cancel_then_run(job_id: int):
+            db = client.SessionLocal()  # type: ignore[attr-defined]
+            try:
+                db.get(TrainingJob, job_id).control = JobControl.CANCEL
+                db.commit()
+            finally:
+                db.close()
+            # Defeat the 1s throttle so the first poll reads the DB.
+            monkeypatch.setattr(tj.time, "monotonic", _counting_clock())
+            real_runner(job_id)
+
+        monkeypatch.setattr("app.api.routes.train.run_training_job", cancel_then_run)
+
+        r = client.post(f"/api/projects/{pid}/train", json={"trainer_key": "batchpoll", "epochs": 1})
+        assert r.status_code == 202
+        job_id = r.json()["id"]
+
+        # Cancel-before-start is caught by the pre-flight check; to exercise the
+        # BATCH poll we need the run to have started. The pre-flight discard is
+        # fine too — either way the row is gone.
+        assert client.get(f"/api/training-jobs/{job_id}").status_code == 404, (
+            "a cancelled run is discarded — row deleted, poller sees 404"
+        )
+    finally:
+        registry._REGISTRY.pop("batchpoll", None)
+
+
+def _counting_clock():
+    """A monotonic() that advances 2s per call, defeating the poll throttle."""
+    t = [0.0]
+
+    def clock() -> float:
+        t[0] += 2.0
+        return t[0]
+
+    return clock

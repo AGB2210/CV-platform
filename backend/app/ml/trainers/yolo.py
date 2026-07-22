@@ -41,6 +41,18 @@ from app.ml.trainers.registry import register
 logger = logging.getLogger(__name__)
 
 
+class _CancelledMidEpoch(Exception):
+    """Raised out of the batch callback to abort training IMMEDIATELY.
+
+    Ultralytics' own `trainer.stop` flag only ends training at an epoch
+    boundary — right for STOP (the epoch's checkpoint is kept), wrong for
+    CANCEL (everything is discarded anyway, and an epoch crawling in spilled
+    GPU memory can take arbitrarily long). Raising is the only way to break
+    a framework-owned batch loop from a callback; the adapter catches it and
+    returns normally, so the runner sees an ordinary cancelled run.
+    """
+
+
 class UltralyticsTrainer(Trainer):
     """Shared adapter over ultralytics' Model API. Subclasses only declare
     metadata: which checkpoint to start from and what it costs."""
@@ -184,6 +196,16 @@ class UltralyticsTrainer(Trainer):
 
         model.add_callback("on_fit_epoch_end", _on_fit_epoch_end)
 
+        # Batch-level cancel — see _CancelledMidEpoch. The runner throttles the
+        # underlying check, so calling per batch is free.
+        if config.check_cancel is not None:
+
+            def _on_train_batch_end(yolo_trainer) -> None:  # noqa: ANN001
+                if config.check_cancel():
+                    raise _CancelledMidEpoch()
+
+            model.add_callback("on_train_batch_end", _on_train_batch_end)
+
         # device: ultralytics wants 0 for the first CUDA GPU, "cpu" otherwise.
         device = 0 if config.device == "cuda" else "cpu"
 
@@ -209,7 +231,19 @@ class UltralyticsTrainer(Trainer):
         if config.learning_rate is not None:
             kwargs["lr0"] = config.learning_rate
 
-        results = model.train(**kwargs)
+        try:
+            results = model.train(**kwargs)
+        except _CancelledMidEpoch:
+            # Cancelled mid-epoch. Return an empty result rather than raising:
+            # the runner re-reads job.control right after train() returns and
+            # discards the run — the same path an epoch-boundary cancel takes.
+            logger.info("Training cancelled mid-epoch")
+            done_epoch = getattr(getattr(model, "trainer", None), "epoch", None)
+            return TrainResult(
+                best_checkpoint_path=None,
+                best_map=None,
+                epochs_completed=int(done_epoch) if done_epoch is not None else 0,
+            )
 
         # best.pt is written under <output>/run/weights/. Prefer the path the
         # trainer reports; fall back to the conventional location.

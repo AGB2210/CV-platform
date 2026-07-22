@@ -81,6 +81,16 @@ class TrainConfig:
     #: The class set must match what that checkpoint was trained on.
     init_weights: Path | None = None
 
+    #: Polled BETWEEN BATCHES: returns True when the user has cancelled the run.
+    #: CANCEL only, deliberately — cancel throws the whole run away, so there is
+    #: nothing to protect and it should take effect in seconds, not at the end
+    #: of an epoch that might be crawling in spilled GPU memory. STOP stays an
+    #: epoch-boundary decision (via the on_epoch return value) because stopping
+    #: KEEPS the model, and a checkpoint is worth waiting one epoch for.
+    #: Implementations should call this cheaply (the runner throttles the
+    #: underlying DB read) and abort as soon as it returns True.
+    check_cancel: Callable[[], bool] | None = None
+
 
 @dataclass
 class EpochMetrics:
