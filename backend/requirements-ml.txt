@@ -32,8 +32,11 @@ supervision>=0.25.0
 ultralytics>=8.3.0
 # rfdetr>=1.1.0             # RF-DETR (COCO) — a later trainer, not yet wired
 
-# --- Phase 4/5: metrics ---
-# pycocotools>=2.0.8         # standard COCO mAP evaluation
+# --- Phase 5: evaluation ---
+# COCO mAP on a held-out test split (services/evaluation_job.py). The reference
+# implementation of detection mAP — a prebuilt Windows wheel now exists, so it
+# no longer needs a C toolchain to install.
+pycocotools>=2.0.8
 
 
 # =============================================================================

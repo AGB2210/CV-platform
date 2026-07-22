@@ -11,6 +11,7 @@ from app.api.routes import (
     annotate,
     categories,
     dataset,
+    evaluate,
     health,
     images,
     inference,
@@ -48,3 +49,4 @@ api_router.include_router(proposals.router)
 api_router.include_router(train.router)
 api_router.include_router(ml.router)
 api_router.include_router(inference.router)
+api_router.include_router(evaluate.router)

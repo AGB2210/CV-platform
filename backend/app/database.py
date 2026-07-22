@@ -207,11 +207,11 @@ def _fail_interrupted_jobs() -> None:
     """
     from sqlalchemy import select
 
-    from app.models import AnnotationJob, JobStatus, TrainingJob
+    from app.models import AnnotationJob, EvaluationJob, JobStatus, TrainingJob
 
     with SessionLocal() as db:
         reclaimed = 0
-        for model in (TrainingJob, AnnotationJob):
+        for model in (TrainingJob, AnnotationJob, EvaluationJob):
             for job in db.scalars(
                 select(model).where(
                     model.status.in_([JobStatus.QUEUED, JobStatus.RUNNING])
