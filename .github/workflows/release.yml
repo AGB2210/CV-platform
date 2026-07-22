@@ -56,8 +56,9 @@ jobs:
 
       - name: Tag matches VERSION
         # The number on the download must match the code inside it. Without
-        # this, tagging v0.3.0 against a 0.1.0 tree publishes a build that
-        # reports the wrong version forever, and nothing would catch it.
+        # this, tagging a version against a tree that holds a different one
+        # publishes a build that reports the wrong version forever, and nothing
+        # would catch it.
         run: |
           python scripts/version.py --check
           FILE_VERSION="$(cat VERSION)"

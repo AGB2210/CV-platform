@@ -3,16 +3,18 @@ The version, read from one place.
 
 WHY A FILE AND NOT A LITERAL
 ----------------------------
-There were three versions in this repo and none of them agreed:
-`frontend/package.json` said 0.0.0, `main.py` said 0.1.0, and a README badge
-said v0.1. None of them read any of the others, so they drifted the moment the
-first one was written — which is what happens to every number that is declared
-in more than one place.
+This number once lived in three files that each declared their own value and
+read none of the others, so they drifted the moment the second one was written
+— which is what happens to every number declared in more than one place.
 
 So `VERSION` at the repo root is the single source of truth. Python reads it
 here, the release workflow reads it with `cat`, and CI FAILS if
 `package.json` or a release tag disagrees with it. That last part is the point:
 a convention nobody checks is a convention that has already drifted.
+
+The value is `0.0.0-dev` until the first real release. This project is
+unreleased; `1.0.0` will be the first stable, full-featured build. See
+scripts/version.py.
 
 WHY NOT DERIVE IT FROM GIT
 --------------------------

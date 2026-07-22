@@ -1,66 +1,55 @@
 """
-Read, check, or bump the project version — the only way it should change.
+Read, check, or set the project version — the only way it should change.
 
     python scripts/version.py                 # what is it?
     python scripts/version.py --check         # do all the places agree?
-    python scripts/version.py --set 0.2.0     # set it everywhere
-    python scripts/version.py --bump minor    # 0.1.0 -> 0.2.0
-    python scripts/version.py --bump patch    # 0.1.0 -> 0.1.1
+    python scripts/version.py --set 1.0.0     # set it everywhere
+    python scripts/version.py --bump minor    # 1.0.0 -> 1.1.0
+    python scripts/version.py --bump patch    # 1.0.0 -> 1.0.1
 
-WHY THIS EXISTS
----------------
-The version used to live in three files that didn't read each other, and they
-disagreed: package.json said 0.0.0, main.py said 0.1.0, a README badge said
-v0.1. That is what happens to any number declared in more than one place.
+CURRENT STATUS — PRE-RELEASE
+----------------------------
+The version reads `0.0.0-dev`. This project is UNRELEASED: the first tagged
+release will be `1.0.0`, the first stable build with the full feature set.
+Until then nothing carries a real version number, on purpose — a released-
+looking number on a build that isn't finished misleads. `0.0.0-dev` is the
+placeholder that says exactly that.
 
-`VERSION` at the repo root is now the source of truth. Python reads it at
-import (app/version.py); this script is what keeps the copies that CANNOT read
-it — `package.json`, which npm requires to hold a literal — in step, and
-`--check` is what CI runs so they can never silently drift again.
+Set it with `--set 1.0.0` when the feature set is complete; do not hand-bump
+toward it in the meantime.
 
-THE SCHEME — WHAT EACH NUMBER MEANS
------------------------------------
-MAJOR.MINOR.PATCH, most disruptive first. Each answers one question for
-somebody upgrading: what does this cost me?
+WHY A SINGLE SOURCE
+-------------------
+A version declared in more than one place drifts the moment the second copy is
+written — this project has already seen that. `VERSION` at the repo root is the
+one source of truth. Python reads it at import (app/version.py); this script
+keeps the copy that CANNOT read it — `package.json`, which npm requires to hold
+a literal — in step, and `--check` is what CI runs so they never silently
+diverge again.
 
-MAJOR — "something you relied on no longer works that way."
-    Existing usage breaks, or existing data needs migrating by hand. Upgrading
-    requires reading the notes first.
+THE SCHEME — WHAT EACH NUMBER WILL MEAN, FROM 1.0.0 ON
+------------------------------------------------------
+MAJOR.MINOR.PATCH, most disruptive first. Each answers one question for someone
+upgrading: what does this cost me?
 
-    Real example: training now REFUSES to start without a validation split.
-    Projects that trained fine before suddenly couldn't. Under 1.x that would
-    have forced 2.0.0.
+MAJOR — "something you relied on no longer works that way." Existing usage
+    breaks, or existing data needs migrating by hand. Read the notes first.
 
-    Stays 0 until the phase plan in README.md is complete — a leading zero is
-    semver's way of saying "the shape is still moving", which is honest while
-    phase 5 is unwritten.
+MINOR — "there's something new, and nothing you did stopped working." A
+    capability added alongside what exists. Upgrading is safe.
 
-MINOR — "there's something new, and nothing you did stopped working."
-    A capability added alongside what exists. Upgrading is safe.
+PATCH — "the same thing, working properly." Fixes and internal work; nothing
+    new to learn, nothing to migrate. The number moves so a bug report can name
+    a build.
 
-    Real examples: YOLO import, folder upload, grid pagination. None of them
-    changed anything that already worked.
+RESETTING: MINOR returns to 0 when MAJOR increments; PATCH returns to 0 when
+MINOR increments — 1.4.9 -> next feature -> 1.5.0, not 1.5.9.
 
-    0.1.0 is phases 0-4; phase 5 will be 0.2.0.
+TIEBREAKER when you can't decide: does anything that worked yesterday work
+differently today? Yes -> MAJOR. No, but there's something new -> MINOR. No to
+both -> PATCH.
 
-PATCH — "the same thing, working properly."
-    Fixes and internal work. Nothing new to learn, nothing to migrate; the
-    number moves so a bug report can name a build.
-
-    Real examples: rotated photos stored transposed dimensions so boxes landed
-    wrong; deep links 404'd instead of loading; SQLite hit "database is locked"
-    under a training run.
-
-RESETTING. MINOR returns to 0 when MAJOR increments; PATCH returns to 0 when
-MINOR increments. So 0.1.9 -> next feature -> 0.2.0, not 0.2.9. That is why
-the current version reads 0.1.0: first cut of this feature set, no fixes on
-top of it yet.
-
-WHEN YOU CAN'T DECIDE, the tiebreaker is: does anything that worked yesterday
-work differently today? Yes -> MAJOR. No, but there's something new -> MINOR.
-No to both -> PATCH.
-
-A release tag is this number with a `v`: VERSION 0.2.0 -> tag v0.2.0. The
+A release tag is this number with a `v`: VERSION 1.0.0 -> tag v1.0.0. The
 release workflow refuses to publish if a tag and this file disagree, so the
 number on a download always matches the code inside it.
 """
@@ -77,7 +66,12 @@ ROOT = Path(__file__).resolve().parent.parent
 VERSION_FILE = ROOT / "VERSION"
 PACKAGE_JSON = ROOT / "frontend" / "package.json"
 
-SEMVER = re.compile(r"^(\d+)\.(\d+)\.(\d+)$")
+# MAJOR.MINOR.PATCH, with an optional -prerelease and +build, per the semver
+# spec. The prerelease slot is what lets the working tree carry "0.0.0-dev"
+# before the first real release without this rejecting it.
+SEMVER = re.compile(
+    r"^(\d+)\.(\d+)\.(\d+)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$"
+)
 
 
 def read() -> str:
@@ -85,7 +79,7 @@ def read() -> str:
         sys.exit(f"No VERSION file at {VERSION_FILE}")
     value = VERSION_FILE.read_text(encoding="utf-8").strip()
     if not SEMVER.match(value):
-        sys.exit(f"VERSION holds {value!r}, which is not MAJOR.MINOR.PATCH")
+        sys.exit(f"VERSION holds {value!r}, which is not a valid semver")
     return value
 
 
