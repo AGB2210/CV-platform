@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import {
   ArrowLeft,
@@ -24,6 +24,7 @@ import {
   X,
 } from 'lucide-react'
 import { PageBody, PageHeader } from '@/components/layout/AppShell'
+import { PageSizeSelect } from '@/components/PageSizeSelect'
 import { ConfirmDialog } from '@/components/ui/Modal'
 import {
   RenameDialog,
@@ -39,6 +40,7 @@ import {
   deleteDatasetVersion,
   bulkDeleteImages,
   deleteImage,
+  getDatasetStats,
   getProject,
   listClasses,
   listDatasetVersions,
@@ -57,6 +59,7 @@ import {
   type UploadProgress,
   versionLabel,
   type DatasetImage,
+  type DatasetStats,
   type DatasetVersion,
   type Project,
   type ProjectClass,
@@ -65,9 +68,8 @@ import {
   type UploadResult,
 } from '@/lib/api'
 
-/** Images per page in the grid. Large enough that most projects are one page,
- *  small enough that a page of thumbnails stays quick to render and scroll. */
-const PAGE_SIZE = 200
+/** Default images per page. User-adjustable — see PageSizeSelect. */
+const DEFAULT_PAGE_SIZE = 200
 
 export function ProjectDetail() {
   // Route params always arrive as strings — the router can't know the type.
@@ -81,7 +83,11 @@ export function ProjectDetail() {
   // used to render whatever the default page happened to be — 200 rows — as if
   // that were the whole project.
   const [page, setPage] = useState(0)
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE)
   const [totalImages, setTotalImages] = useState(0)
+  // Whole-dataset split counts. The split panel used to count the LOADED PAGE,
+  // which read as the dataset's split and was simply wrong past page one.
+  const [stats, setStats] = useState<DatasetStats | null>(null)
   // Bumped on every refresh so the storage figures re-read after an upload,
   // a delete or a save rather than showing what was true on page load.
   const [storageKey, setStorageKey] = useState(0)
@@ -119,17 +125,19 @@ export function ProjectDetail() {
       // Promise.all, not three sequential awaits: the requests don't depend on
       // each other, so serialising them would triple the time to first paint
       // for no reason.
-      const [p, imgs, cls, vers] = await Promise.all([
+      const [p, imgs, cls, vers, s] = await Promise.all([
         getProject(projectId),
-        listImagePage(projectId, PAGE_SIZE, page * PAGE_SIZE),
+        listImagePage(projectId, pageSize, page * pageSize),
         listClasses(projectId),
         listDatasetVersions(projectId),
+        getDatasetStats(projectId),
       ])
       setProject(p)
       setImages(imgs.images)
       setTotalImages(imgs.total)
       setClasses(cls)
       setVersions(vers)
+      setStats(s)
       setStorageKey((k) => k + 1)
       setError(null)
     } catch (err) {
@@ -137,7 +145,7 @@ export function ProjectDetail() {
     } finally {
       setLoading(false)
     }
-  }, [projectId, page])
+  }, [projectId, page, pageSize])
 
   useEffect(() => {
     void refresh()
@@ -253,12 +261,17 @@ export function ProjectDetail() {
               // confirm dialogs must say which of the two is happening.
               hasVersions={versions.length > 0}
               page={page}
-              pageSize={PAGE_SIZE}
+              pageSize={pageSize}
               total={totalImages}
               onPageChange={(p) => {
                 setPage(p)
                 // Selection is per-page, so carrying it across would leave
                 // "12 selected" pointing at rows no longer on screen.
+                setSelected(new Set())
+              }}
+              onPageSizeChange={(n) => {
+                setPageSize(n)
+                setPage(0) // page 3 of 200-per-page is meaningless at 1000
                 setSelected(new Set())
               }}
             />
@@ -268,7 +281,7 @@ export function ProjectDetail() {
             {images.length > 0 && (
               <SplitPanel
                 projectId={projectId}
-                images={images}
+                stats={stats}
                 selected={selected}
                 onChanged={refresh}
               />
@@ -1107,12 +1120,12 @@ function StoragePanel({
  */
 function SplitPanel({
   projectId,
-  images,
+  stats,
   selected,
   onChanged,
 }: {
   projectId: number
-  images: DatasetImage[]
+  stats: DatasetStats | null
   selected: Set<number>
   onChanged: () => void
 }) {
@@ -1122,11 +1135,15 @@ function SplitPanel({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const counts = useMemo(() => {
-    const c = { train: 0, val: 0, test: 0 } as Record<string, number>
-    for (const i of images) c[i.split] = (c[i.split] ?? 0) + 1
-    return c
-  }, [images])
+  // WHOLE-dataset counts, from the stats endpoint. Counting the loaded page
+  // shipped as a bug: past page one the numbers read as the dataset's split
+  // while describing only the 200 rows on screen.
+  const counts = {
+    train: stats?.splits.train ?? 0,
+    val: stats?.splits.val ?? 0,
+    test: stats?.splits.test ?? 0,
+  }
+  const totalImages = stats?.total_images ?? 0
 
   const total = trainPct + valPct + testPct
   const pctValid = total === 100
@@ -1180,7 +1197,7 @@ function SplitPanel({
       <div className="space-y-3 p-4">
         {/* No validation set = no way to detect overfitting, and nothing else
             in the app would ever tell you. */}
-        {(counts.val ?? 0) === 0 && images.length > 1 && (
+        {(counts.val ?? 0) === 0 && totalImages > 1 && (
           <p className="rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs text-amber-900">
             <span className="font-medium">No validation set.</span> Without one you'll
             have no way to tell whether the model is learning or memorising.
@@ -1212,7 +1229,7 @@ function SplitPanel({
               <button
                 className="btn-primary"
                 onClick={() => void applyPercentages()}
-                disabled={busy || !pctValid || images.length === 0}
+                disabled={busy || !pctValid || totalImages === 0}
               >
                 <Shuffle size={13} />
                 {busy ? 'Splitting…' : 'Apply split'}
@@ -1295,6 +1312,7 @@ function ImageGrid({
   pageSize,
   total,
   onPageChange,
+  onPageSizeChange,
 }: {
   images: DatasetImage[]
   projectId: number
@@ -1308,6 +1326,7 @@ function ImageGrid({
   pageSize: number
   total: number
   onPageChange: (page: number) => void
+  onPageSizeChange: (size: number) => void
 }) {
   const [pending, setPending] = useState<DatasetImage | null>(null)
   const [bulkOpen, setBulkOpen] = useState(false)
@@ -1495,29 +1514,35 @@ function ImageGrid({
         ))}
       </div>
 
-      {/* Pager. Hidden entirely on a single-page project — controls that can
-          never do anything are furniture. */}
-      {total > pageSize && (
+      {/* Pager + page size. The pager hides on a single-page project (controls
+          that can never do anything are furniture); the size selector shows
+          whenever there are images, since it changes what "a page" means. */}
+      {total > 0 && (
         <div className="mt-3 flex items-center justify-center gap-2 text-xs">
-          <button
-            onClick={() => onPageChange(page - 1)}
-            disabled={page === 0}
-            className="flex items-center gap-1 rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            <ChevronLeft size={11} />
-            Previous
-          </button>
-          <span className="tabular-nums text-gray-500">
-            Page {page + 1} of {Math.ceil(total / pageSize)}
-          </span>
-          <button
-            onClick={() => onPageChange(page + 1)}
-            disabled={(page + 1) * pageSize >= total}
-            className="flex items-center gap-1 rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            Next
-            <ChevronRight size={11} />
-          </button>
+          {total > pageSize && (
+            <>
+              <button
+                onClick={() => onPageChange(page - 1)}
+                disabled={page === 0}
+                className="flex items-center gap-1 rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <ChevronLeft size={11} />
+                Previous
+              </button>
+              <span className="tabular-nums text-gray-500">
+                Page {page + 1} of {Math.ceil(total / pageSize)}
+              </span>
+              <button
+                onClick={() => onPageChange(page + 1)}
+                disabled={(page + 1) * pageSize >= total}
+                className="flex items-center gap-1 rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Next
+                <ChevronRight size={11} />
+              </button>
+            </>
+          )}
+          <PageSizeSelect value={pageSize} onChange={onPageSizeChange} />
         </div>
       )}
 

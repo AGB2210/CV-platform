@@ -195,3 +195,53 @@ def test_pages_do_not_overlap_or_skip(client):
 
     assert len(seen) == 23
     assert len(set(seen)) == 23, "no image appeared on two pages"
+
+
+# --- server-side list filters (split / state / category) --------------------
+#
+# These exist because client-side filtering of a loaded PAGE shipped a real
+# contradiction: the stats banner counted the whole dataset while the No-boxes
+# filter searched only the 200 images on screen, so "1 image has no boxes"
+# coexisted with an empty filter result. Filters must see everything.
+
+
+def test_list_images_filters_by_state(client):
+    from tests.conftest import make_project, upload_images
+
+    pid = make_project(client)
+    images = upload_images(client, pid, ["a.png", "b.png", "c.png"])
+    car = client.get(f"/api/projects/{pid}/classes").json()[0]
+
+    # a: accepted box. b: proposal only. c: nothing.
+    client.post(
+        f"/api/images/{images[0]['id']}/annotations",
+        json={"category_id": car["id"], "x": 1, "y": 1, "width": 5, "height": 5},
+    )
+    from tests.conftest import add_proposals
+
+    add_proposals(client, images[1]["id"], car["id"], n=1)
+
+    def ids(params: str) -> set[int]:
+        r = client.get(f"/api/projects/{pid}/images?{params}")
+        return {i["id"] for i in r.json()}, r.headers.get("X-Total-Count")
+
+    got, total = ids("state=annotated")
+    assert got == {images[0]["id"]} and total == "1"
+    got, total = ids("state=unannotated")
+    # b has only a PROPOSAL, which is not an annotation — so b and c are both
+    # unannotated. The proposals mental model, enforced at the filter.
+    assert got == {images[1]["id"], images[2]["id"]} and total == "2"
+    got, total = ids("state=pending")
+    assert got == {images[1]["id"]} and total == "1"
+
+
+def test_list_images_filters_by_split_and_reports_filtered_total(client):
+    from tests.conftest import make_project, upload_images
+
+    pid = make_project(client)
+    images = upload_images(client, pid, ["a.png", "b.png", "c.png"])
+    client.patch(f"/api/images/{images[0]['id']}/split", params={"split": "test"})
+
+    r = client.get(f"/api/projects/{pid}/images?split=test")
+    assert {i["id"] for i in r.json()} == {images[0]["id"]}
+    assert r.headers["X-Total-Count"] == "1"  # the FILTERED total, not 3

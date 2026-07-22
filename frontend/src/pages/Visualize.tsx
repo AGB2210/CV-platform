@@ -1,12 +1,13 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { SquarePen } from 'lucide-react'
+import { ChevronLeft, ChevronRight, SquarePen } from 'lucide-react'
 import { PageBody, PageHeader } from '@/components/layout/AppShell'
+import { PageSizeSelect } from '@/components/PageSizeSelect'
 import {
   getDatasetStats,
   listAnnotations,
   listClasses,
-  listImages,
+  listImagePage,
   type Annotation,
   type DatasetImage,
   type DatasetStats,
@@ -32,39 +33,54 @@ export function Visualize() {
 
   const [images, setImages] = useState<DatasetImage[]>([])
   const [classes, setClasses] = useState<ProjectClass[]>([])
-  /** image_id -> boxes. Fetched per image, then cached. */
+  /** image_id -> boxes, for the LOADED PAGE only. */
   const [boxes, setBoxes] = useState<Record<number, Annotation[]>>({})
   const [stats, setStats] = useState<DatasetStats | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
-  // Filters
+  // Filters — applied SERVER-SIDE, so they search the whole dataset. Filtering
+  // the loaded page client-side shipped a real contradiction: the stats banner
+  // said "1 image has no boxes" (whole-dataset) while the No-boxes filter found
+  // nothing, because that image sat beyond the first page.
   const [splitFilter, setSplitFilter] = useState<'all' | Split>('all')
-  /** Annotation state, replacing the old staging/dataset filter — that
-   *  distinction no longer exists, but "which of these still need boxes" is the
-   *  question you actually ask while auditing. */
   const [stateFilter, setStateFilter] = useState<'all' | 'annotated' | 'empty' | 'pending'>(
     'all',
   )
   const [classFilter, setClassFilter] = useState<number | 'all'>('all')
   const [size, setSize] = useState(220)
 
+  // Paging. Visualize used to silently show the server's default first page —
+  // 200 images presented as if they were the dataset.
+  const [page, setPage] = useState(0)
+  const [pageSize, setPageSize] = useState(200)
+  const [total, setTotal] = useState(0)
+
   const load = useCallback(async () => {
     try {
-      const [imgs, cls, s] = await Promise.all([
-        listImages(projectId),
+      const [pageResult, cls, s] = await Promise.all([
+        listImagePage(projectId, pageSize, page * pageSize, {
+          split: splitFilter === 'all' ? undefined : splitFilter,
+          state:
+            stateFilter === 'all'
+              ? undefined
+              : stateFilter === 'empty'
+                ? 'unannotated'
+                : stateFilter,
+          categoryId: classFilter === 'all' ? undefined : classFilter,
+        }),
         listClasses(projectId),
         getDatasetStats(projectId),
       ])
-      setImages(imgs)
+      setImages(pageResult.images)
+      setTotal(pageResult.total)
       setClasses(cls)
       setStats(s)
 
-      // Fetch every image's boxes in parallel rather than sequentially. For a
-      // few hundred images this is fine; past that the right answer is a bulk
-      // endpoint, not a faster loop. Noted rather than pre-built.
+      // Boxes for THIS PAGE's images, in parallel. Bounded by the page size, so
+      // a 5,000-image project doesn't fire 5,000 requests.
       const pairs = await Promise.all(
-        imgs.map(async (i) => [i.id, await listAnnotations(i.id)] as const),
+        pageResult.images.map(async (i) => [i.id, await listAnnotations(i.id)] as const),
       )
       setBoxes(Object.fromEntries(pairs))
     } catch (e) {
@@ -72,29 +88,19 @@ export function Visualize() {
     } finally {
       setLoading(false)
     }
-  }, [projectId])
+  }, [projectId, page, pageSize, splitFilter, stateFilter, classFilter])
 
   useEffect(() => {
     void load()
   }, [load])
 
-  const visible = useMemo(
-    () =>
-      images.filter((img) => {
-        if (splitFilter !== 'all' && img.split !== splitFilter) return false
-        const accepted = (boxes[img.id] ?? []).filter((a) => !a.proposed)
-        const pending = (boxes[img.id] ?? []).filter((a) => a.proposed)
-        if (stateFilter === 'annotated' && accepted.length === 0) return false
-        if (stateFilter === 'empty' && accepted.length > 0) return false
-        if (stateFilter === 'pending' && pending.length === 0) return false
-        if (classFilter !== 'all') {
-          if (!accepted.some((a) => a.category_id === classFilter)) return false
-        }
-        return true
-      }),
-    [images, boxes, splitFilter, stateFilter, classFilter],
-  )
+  // A filter change makes the current page number meaningless.
+  const withPageReset = <T,>(set: (v: T) => void) => (v: T) => {
+    set(v)
+    setPage(0)
+  }
 
+  const visible = images
   const totalBoxes = visible.reduce((n, i) => n + (boxes[i.id]?.length ?? 0), 0)
 
   if (loading) {
@@ -183,7 +189,7 @@ export function Visualize() {
           <Filter label="Split">
             <Select
               value={splitFilter}
-              onChange={(v) => setSplitFilter(v as 'all' | Split)}
+              onChange={withPageReset((v) => setSplitFilter(v as 'all' | Split))}
               options={[
                 { value: 'all', label: 'All' },
                 { value: 'train', label: 'Train' },
@@ -196,9 +202,9 @@ export function Visualize() {
           <Filter label="State">
             <Select
               value={stateFilter}
-              onChange={(v) =>
-                setStateFilter(v as 'all' | 'annotated' | 'empty' | 'pending')
-              }
+              onChange={withPageReset((v) =>
+                setStateFilter(v as 'all' | 'annotated' | 'empty' | 'pending'),
+              )}
               options={[
                 { value: 'all', label: 'All' },
                 { value: 'annotated', label: 'Annotated' },
@@ -211,7 +217,7 @@ export function Visualize() {
           <Filter label="Class">
             <Select
               value={String(classFilter)}
-              onChange={(v) => setClassFilter(v === 'all' ? 'all' : Number(v))}
+              onChange={withPageReset((v) => setClassFilter(v === 'all' ? 'all' : Number(v)))}
               options={[
                 { value: 'all', label: 'All' },
                 ...classes.map((c) => ({ value: String(c.id), label: c.name })),
@@ -232,8 +238,12 @@ export function Visualize() {
           </Filter>
 
           <span className="ml-auto text-xs tabular-nums text-gray-500">
-            {visible.length} image{visible.length === 1 ? '' : 's'} · {totalBoxes} box
+            {/* The MATCH count is dataset-wide; boxes are counted for the page
+                actually on screen, and say so when those differ. */}
+            {total} image{total === 1 ? '' : 's'}
+            {total > visible.length ? ` · showing ${visible.length}` : ''} · {totalBoxes} box
             {totalBoxes === 1 ? '' : 'es'}
+            {total > visible.length ? ' on this page' : ''}
           </span>
         </div>
 
@@ -270,7 +280,7 @@ export function Visualize() {
           <div className="card border-dashed px-4 py-8">
             <h3 className="text-sm font-medium text-gray-900">Nothing to show</h3>
             <p className="mt-1 text-xs text-gray-500">
-              {images.length === 0
+              {(stats?.total_images ?? 0) === 0
                 ? 'Upload images to this project first.'
                 : 'No images match these filters.'}
             </p>
@@ -292,6 +302,43 @@ export function Visualize() {
                 projectId={projectId}
               />
             ))}
+          </div>
+        )}
+
+        {/* Pager + page size — same bar as the Dataset grid, so the two views
+            page identically. */}
+        {total > 0 && (
+          <div className="mt-4 flex items-center justify-center gap-2 text-xs">
+            {total > pageSize && (
+              <>
+                <button
+                  onClick={() => setPage(page - 1)}
+                  disabled={page === 0}
+                  className="flex items-center gap-1 rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  <ChevronLeft size={11} />
+                  Previous
+                </button>
+                <span className="tabular-nums text-gray-500">
+                  Page {page + 1} of {Math.ceil(total / pageSize)}
+                </span>
+                <button
+                  onClick={() => setPage(page + 1)}
+                  disabled={(page + 1) * pageSize >= total}
+                  className="flex items-center gap-1 rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-gray-700 hover:bg-gray-50 disabled:cursor-not-allowed disabled:opacity-40"
+                >
+                  Next
+                  <ChevronRight size={11} />
+                </button>
+              </>
+            )}
+            <PageSizeSelect
+              value={pageSize}
+              onChange={(n) => {
+                setPageSize(n)
+                setPage(0)
+              }}
+            />
           </div>
         )}
       </PageBody>

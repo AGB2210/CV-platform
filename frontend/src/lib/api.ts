@@ -378,16 +378,27 @@ export const listImages = (projectId: number) =>
  *  The plain `listImages` above returns whatever the server's default page is,
  *  which is fine for callers that just want "some images" (Review, Visualize)
  *  and wrong for the grid, which is meant to show the dataset. */
+/** Filters run SERVER-SIDE so they see the whole dataset, not the loaded page —
+ *  a page-local filter once contradicted the whole-dataset stats banner. */
+export interface ImageFilters {
+  split?: 'train' | 'val' | 'test'
+  state?: 'annotated' | 'unannotated' | 'pending'
+  categoryId?: number
+}
+
 export async function listImagePage(
   projectId: number,
   limit: number,
   offset: number,
+  filters: ImageFilters = {},
 ): Promise<{ images: DatasetImage[]; total: number }> {
+  const params = new URLSearchParams({ limit: String(limit), offset: String(offset) })
+  if (filters.split) params.set('split', filters.split)
+  if (filters.state) params.set('state', filters.state)
+  if (filters.categoryId != null) params.set('category_id', String(filters.categoryId))
   let res: Response
   try {
-    res = await fetch(
-      `${BASE_URL}/projects/${projectId}/images?limit=${limit}&offset=${offset}`,
-    )
+    res = await fetch(`${BASE_URL}/projects/${projectId}/images?${params}`)
   } catch (err) {
     throw describeNetworkFailure(err, 'the backend is not running')
   }

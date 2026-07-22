@@ -35,6 +35,9 @@ def list_images(
     response: Response,
     limit: int = 200,
     offset: int = 0,
+    split: str | None = None,
+    state: str | None = None,
+    category_id: int | None = None,
     db: Session = Depends(get_db),
 ) -> list[ImageRead]:
     """List a project's images, oldest first, with annotation counts.
@@ -51,6 +54,14 @@ def list_images(
     envelope keeps the response body a plain list, so the callers that legitimately
     want "some images" (Review, Visualize) need no changes.
 
+    FILTERS RUN SERVER-SIDE (`split`, `state`, `category_id`) so they apply to
+    the WHOLE dataset, not whichever page happens to be loaded. Filtering the
+    loaded page client-side shipped a real contradiction: the stats banner said
+    "1 image has no boxes" (a whole-dataset count) while the No-boxes filter
+    found nothing, because that one image sat beyond page 1. `state` is one of
+    `annotated` (has accepted boxes), `unannotated` (none), `pending` (has
+    proposals). The total header reflects the filtered count.
+
     Ordered by id ASC, not DESC: the review workflow walks the dataset in a
     stable order, and "next image" should mean the next one, not a list that
     reshuffles as you upload.
@@ -59,12 +70,41 @@ def list_images(
     the N+1 problem again. outerjoin so unannotated images still appear.
     """
     get_project_or_404(project_id, db)
-    limit = max(1, min(limit, 500))
+    limit = max(1, min(limit, 1000))
     offset = max(0, offset)
 
-    total = db.scalar(
-        select(func.count(Image.id)).where(Image.project_id == project_id)
-    ) or 0
+    filters = [Image.project_id == project_id]
+    if split is not None:
+        filters.append(Image.split == split)
+    if state == "annotated":
+        filters.append(
+            select(Annotation.id)
+            .where(Annotation.image_id == Image.id, Annotation.proposed.is_(False))
+            .exists()
+        )
+    elif state == "unannotated":
+        filters.append(
+            ~select(Annotation.id)
+            .where(Annotation.image_id == Image.id, Annotation.proposed.is_(False))
+            .exists()
+        )
+    elif state == "pending":
+        filters.append(
+            select(Annotation.id)
+            .where(Annotation.image_id == Image.id, Annotation.proposed.is_(True))
+            .exists()
+        )
+    if category_id is not None:
+        filters.append(
+            select(Annotation.id)
+            .where(
+                Annotation.image_id == Image.id,
+                Annotation.category_id == category_id,
+            )
+            .exists()
+        )
+
+    total = db.scalar(select(func.count(Image.id)).where(*filters)) or 0
     response.headers["X-Total-Count"] = str(total)
 
     counts = (
@@ -100,7 +140,7 @@ def list_images(
             func.coalesce(counts.c.proposed, 0),
         )
         .outerjoin(counts, counts.c.image_id == Image.id)
-        .where(Image.project_id == project_id)
+        .where(*filters)
         .order_by(Image.id.asc())
         .limit(limit)
         .offset(offset)
