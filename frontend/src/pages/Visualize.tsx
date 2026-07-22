@@ -405,7 +405,11 @@ function AnnotatedTile({
       title={`${image.original_filename} — click to edit`}
     >
       <div className="relative bg-gray-100">
-        <img src={image.url} alt="" loading="lazy" className="block w-full" />
+        {/* Thumbnail, not the original: these are grid cells, and decoding
+            200 full-size images while scrolling is the lag the thumbs fix.
+            The box overlay is unaffected — its viewBox is the image's natural
+            size and scales with the container either way. */}
+        <img src={image.thumb_url} alt="" loading="lazy" className="block w-full" />
 
         {/* Same viewBox trick as the editor: user units == image pixels, so
             stored coordinates draw correctly at whatever size the tile ends up.

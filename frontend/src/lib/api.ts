@@ -312,6 +312,9 @@ export interface DatasetImage {
   created_at: string
   /** Relative path, e.g. /static/images/1/abc.jpg — usable directly in <img src>. */
   url: string
+  /** Small cached JPEG for GRIDS and filmstrips — the scroll-lag fix. Use
+   *  `url` only where one image is being worked on at full size. */
+  thumb_url: string
   /** ACCEPTED boxes only — a proposal isn't an annotation. */
   annotation_count: number
   reviewed_count: number

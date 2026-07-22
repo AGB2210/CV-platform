@@ -1546,7 +1546,9 @@ function ImageGrid({
               {/* aspect-square + object-cover: uniform tiles regardless of source
                   aspect ratio, so the grid stays a grid. */}
               <img
-                src={img.url}
+                // Thumbnail, not the original: 200 full-size images decoding
+                // into 150px cells was the scroll lag.
+                src={img.thumb_url}
                 alt={img.original_filename}
                 // Native lazy loading — a 5,000-image dataset must not issue
                 // 5,000 requests on mount.

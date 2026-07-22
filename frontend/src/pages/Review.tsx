@@ -440,7 +440,10 @@ export function Review() {
                 ].join(' ')}
               >
                 <img
-                  src={img.url}
+                  // Filmstrip cells are ~150px wide — thumbnails, not originals.
+                  // The CANVAS keeps current.url: that's the one image being
+                  // worked on at full size.
+                  src={img.thumb_url}
                   alt=""
                   loading="lazy"
                   className="aspect-video w-full object-cover"

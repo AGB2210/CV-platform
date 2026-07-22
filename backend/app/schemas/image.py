@@ -49,6 +49,18 @@ class ImageRead(BaseModel):
         """
         return f"/static/images/{self.project_id}/{self.filename}"
 
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def thumb_url(self) -> str:
+        """Small cached JPEG for grids and filmstrips.
+
+        Grids used to render the full originals into 150px cells — the cause
+        of the 200-image scroll lag. Anything showing many images at once
+        should use this; anything showing ONE image to work on (the canvas,
+        a lightbox) keeps `url`.
+        """
+        return f"/api/thumbs/{self.project_id}/{self.filename}"
+
 
 class UploadResult(BaseModel):
     """Response body for an upload.

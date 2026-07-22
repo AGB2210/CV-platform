@@ -29,6 +29,55 @@ from app.services.dataset_version import has_any_version
 router = APIRouter(tags=["images"])
 
 
+#: Longest edge of a cached grid thumbnail. 256 is crisp in a ~150px grid cell
+#: on a 2x display, and a 256px JPEG is ~10-30 KB against multi-MB originals —
+#: which is the difference between a smooth 200-image scroll and a lagging one.
+THUMB_SIZE = 256
+
+
+@router.get("/thumbs/{project_id}/{filename}")
+def get_thumbnail(project_id: int, filename: str) -> "FileResponse":
+    """A small cached JPEG of one stored image, for grids and filmstrips.
+
+    The scroll-lag fix: grids used to render the ORIGINALS (multi-megabyte,
+    thousands of pixels) into 150px cells, so a 200-image page decoded hundreds
+    of megapixels while you scrolled. Cells now ask for this instead.
+
+    Generated on first request and cached under storage/thumbs/ — a pure
+    cache: deleting the directory costs regeneration, never data. Cacheable
+    forever on the browser side too, because stored filenames are content-
+    addressed uuids that never change their bytes.
+    """
+    from fastapi.responses import FileResponse
+
+    # The filename is a path segment from the URL — refuse anything that could
+    # walk out of the project directory.
+    if "/" in filename or "\\" in filename or ".." in filename:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such image")
+
+    src = storage.project_dir(project_id) / filename
+    if not src.exists():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such image")
+
+    from app.config import settings
+
+    dest = settings.thumbs_dir / str(project_id) / f"{filename}.jpg"
+    if not dest.exists() or dest.stat().st_mtime < src.stat().st_mtime:
+        from PIL import Image as PILImage
+
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        with PILImage.open(src) as im:
+            thumb = im.convert("RGB")  # JPEG has no alpha; RGBA sources would fail
+            thumb.thumbnail((THUMB_SIZE, THUMB_SIZE))
+            thumb.save(dest, "JPEG", quality=80)
+
+    return FileResponse(
+        dest,
+        media_type="image/jpeg",
+        headers={"Cache-Control": "public, max-age=31536000, immutable"},
+    )
+
+
 @router.get("/projects/{project_id}/images", response_model=list[ImageRead])
 def list_images(
     project_id: int,

@@ -71,6 +71,12 @@ class Settings(BaseSettings):
         """Saved dataset-version snapshots (JSON, one per version)."""
         return self.STORAGE_DIR / "versions"
 
+    @property
+    def thumbs_dir(self) -> Path:
+        """Cached grid thumbnails, generated on first request. A pure cache:
+        deleting it costs regeneration, never data."""
+        return self.STORAGE_DIR / "thumbs"
+
     def ensure_dirs(self) -> None:
         """Create storage directories if missing. Called once on startup."""
         for path in (
@@ -79,6 +85,7 @@ class Settings(BaseSettings):
             self.weights_dir,
             self.runs_dir,
             self.versions_dir,
+            self.thumbs_dir,
         ):
             path.mkdir(parents=True, exist_ok=True)
 

@@ -1,7 +1,18 @@
 import { useEffect, useState } from 'react'
 import { NavLink, useMatch } from 'react-router-dom'
 import { getProject } from '@/lib/api'
-import { LayoutGrid, Boxes, Tags, Cpu, PlayCircle, SquarePen, Eye, Gauge } from 'lucide-react'
+import {
+  LayoutGrid,
+  Boxes,
+  Tags,
+  Cpu,
+  ChevronDown,
+  ChevronRight,
+  PlayCircle,
+  SquarePen,
+  Eye,
+  Gauge,
+} from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 
 /**
@@ -20,6 +31,15 @@ import type { LucideIcon } from 'lucide-react'
  * you don't "go to Annotate", you annotate your dataset. The real top-level
  * stages are Dataset -> Train -> Deploy.
  *
+ * DISCLOSURE: the sub-sections are collapsed by default. Three states, in
+ * priority order:
+ *   - the user opened the chevron        -> all sub-sections stay visible
+ *   - closed, but you're IN a sub-section -> only that one shows (you can see
+ *     where you are without the other two adding noise)
+ *   - closed, elsewhere                   -> none show
+ * Leaving a sub-section with the chevron closed collapses it again — the
+ * sidebar reflects where you are, not where you've been.
+ *
  * The pipeline stages are PROJECT-SCOPED: "Annotate" is meaningless without
  * knowing which project's images to annotate. So they only become active once
  * a project is open, and are shown greyed out otherwise rather than hidden —
@@ -31,21 +51,19 @@ interface NavItem {
   suffix: string
   label: string
   icon: LucideIcon
-  /** Built yet? */
-  ready: boolean
   /** Rendered indented, as an operation on the section above it. */
   nested?: boolean
 }
 
 // Ordered to match the actual pipeline, not alphabetically.
 const PROJECT_NAV: NavItem[] = [
-  { suffix: '', label: 'Dataset', icon: Boxes, ready: true },
-  { suffix: '/visualize', label: 'Visualize', icon: Eye, ready: true, nested: true },
-  { suffix: '/annotate', label: 'Auto-annotate', icon: Tags, ready: true, nested: true },
-  { suffix: '/review', label: 'Annotate', icon: SquarePen, ready: true, nested: true },
-  { suffix: '/train', label: 'Train', icon: Cpu, ready: true },
-  { suffix: '/evaluate', label: 'Evaluate', icon: Gauge, ready: true },
-  { suffix: '/deploy', label: 'Deploy', icon: PlayCircle, ready: true },
+  { suffix: '', label: 'Dataset', icon: Boxes },
+  { suffix: '/visualize', label: 'Visualize', icon: Eye, nested: true },
+  { suffix: '/annotate', label: 'Auto-annotate', icon: Tags, nested: true },
+  { suffix: '/review', label: 'Annotate', icon: SquarePen, nested: true },
+  { suffix: '/train', label: 'Train', icon: Cpu },
+  { suffix: '/evaluate', label: 'Evaluate', icon: Gauge },
+  { suffix: '/deploy', label: 'Deploy', icon: PlayCircle },
 ]
 
 const linkClass = (isActive: boolean, nested = false) =>
@@ -73,6 +91,20 @@ export function Sidebar() {
   const match = useMatch({ path: '/projects/:id', end: false })
   const id = match?.params.id
   const inProject = Boolean(id)
+
+  // What comes after /projects/:id — "visualize", "review/5", "train", "".
+  // Drives the closed-but-inside disclosure state below.
+  const splat = useMatch('/projects/:id/*')?.params['*'] ?? ''
+  const activeNestedSuffix =
+    PROJECT_NAV.find(
+      (n) =>
+        n.nested &&
+        (splat === n.suffix.slice(1) || splat.startsWith(`${n.suffix.slice(1)}/`)),
+    )?.suffix ?? null
+
+  // The chevron's state — the USER's choice, which outranks the route. Not
+  // persisted: a fresh session starts tidy.
+  const [datasetOpen, setDatasetOpen] = useState(false)
 
   // Fetched here rather than passed down: the Sidebar renders outside every
   // page (it's in the layout route), so there's no parent holding the project
@@ -124,8 +156,13 @@ export function Sidebar() {
             >
               {projectName ?? '…'}
             </p>
-            {PROJECT_NAV.map(({ suffix, label, icon: Icon, ready, nested }) =>
-              ready ? (
+            {PROJECT_NAV.map(({ suffix, label, icon: Icon, nested }) => {
+              // Disclosure: a nested item renders only if the chevron is open,
+              // or it's the sub-section you're currently standing in.
+              if (nested && !datasetOpen && suffix !== activeNestedSuffix) {
+                return null
+              }
+              const link = (
                 <NavLink
                   key={label}
                   to={`/projects/${id}${suffix}`}
@@ -138,20 +175,28 @@ export function Sidebar() {
                   <Icon size={nested ? 14 : 16} strokeWidth={2} />
                   {label}
                 </NavLink>
-              ) : (
-                <div
-                  key={label}
-                  className={[
-                    'flex cursor-not-allowed items-center gap-2.5 rounded-md py-1.5 text-sm text-gray-300',
-                    nested ? 'ml-3 border-l border-gray-200 pl-3.5 pr-2.5' : 'px-2.5',
-                  ].join(' ')}
-                  title="Not built yet"
-                >
-                  <Icon size={nested ? 14 : 16} strokeWidth={2} />
-                  {label}
+              )
+              if (suffix !== '') return link
+              // The Dataset row carries the disclosure chevron. A separate
+              // BUTTON, not part of the link: expanding must not navigate,
+              // and navigating must not toggle.
+              return (
+                <div key={label} className="flex items-center gap-1">
+                  <div className="min-w-0 flex-1">{link}</div>
+                  <button
+                    type="button"
+                    onClick={() => setDatasetOpen((v) => !v)}
+                    aria-label={
+                      datasetOpen ? 'Collapse dataset sections' : 'Expand dataset sections'
+                    }
+                    aria-expanded={datasetOpen}
+                    className="rounded p-1 text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+                  >
+                    {datasetOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                  </button>
                 </div>
-              ),
-            )}
+              )
+            })}
           </>
         )}
       </nav>

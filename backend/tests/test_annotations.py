@@ -405,3 +405,35 @@ def test_export_content_options(client):
     assert any(n.endswith("a.png") for n in images_only)
 
     assert client.get(f"/api/projects/{pid}/export?content=nonsense").status_code == 400
+
+
+# --- grid thumbnails ----------------------------------------------------------
+
+
+def test_thumbnail_generated_cached_and_cleaned_up(client):
+    """The thumb endpoint serves a small cached JPEG; rows carry thumb_url;
+    deleting the image removes the cached thumb; traversal names 404."""
+    from PIL import Image as PILImage
+    import io
+
+    from app.config import settings
+
+    pid, img_id, _ = _one_image(client)
+    row = client.get(f"/api/projects/{pid}/images").json()[0]
+    assert row["thumb_url"] == f"/api/thumbs/{pid}/{row['filename']}"
+
+    r = client.get(row["thumb_url"])
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "image/jpeg"
+    assert "immutable" in r.headers["cache-control"]
+    with PILImage.open(io.BytesIO(r.content)) as im:
+        assert max(im.size) <= 256
+
+    cached = settings.thumbs_dir / str(pid) / f"{row['filename']}.jpg"
+    assert cached.exists(), "thumb must be cached on disk for the next request"
+
+    assert client.get(f"/api/thumbs/{pid}/..%5C..%5Csecrets.txt").status_code == 404
+    assert client.get(f"/api/thumbs/{pid}/nope.png").status_code == 404
+
+    assert client.delete(f"/api/images/{img_id}").status_code == 204
+    assert not cached.exists(), "deleting the image must drop its cached thumb"

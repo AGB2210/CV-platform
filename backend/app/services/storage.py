@@ -253,11 +253,15 @@ def delete_image_file(project_id: int, filename: str) -> None:
     """
     path = project_dir(project_id) / filename
     path.unlink(missing_ok=True)
+    # Its cached thumbnail goes with it — a thumb of a deleted image is dead
+    # bytes that would sit in the cache forever.
+    (settings.thumbs_dir / str(project_id) / f"{filename}.jpg").unlink(missing_ok=True)
 
 
 def delete_project_dir(project_id: int) -> None:
-    """Remove a project's entire image directory."""
+    """Remove a project's entire image directory (and its thumbnail cache)."""
     shutil.rmtree(settings.images_dir / str(project_id), ignore_errors=True)
+    shutil.rmtree(settings.thumbs_dir / str(project_id), ignore_errors=True)
 
 
 def delete_project_files(project_id: int, job_ids: list[int]) -> None:

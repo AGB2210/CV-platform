@@ -962,7 +962,7 @@ function ImagePicker({
               title={img.original_filename}
             >
               <img
-                src={`/static/images/${projectId}/${img.filename}`}
+                src={img.thumb_url}
                 alt={img.original_filename}
                 loading="lazy"
                 className="aspect-square w-full object-cover"
