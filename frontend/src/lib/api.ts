@@ -679,6 +679,54 @@ export interface MlStatus {
 export const getMlStatus = () => api.get<MlStatus>('/ml/status')
 export const startMlInstall = () => api.post<MlStatus>('/ml/install')
 
+// --- Inference playground (Deploy) -----------------------------------------
+
+export interface DeployableModel {
+  job_id: number
+  trainer_key: string
+  version: number
+  label: string
+  best_map: number | null
+}
+
+export interface PredictionBox {
+  label: string
+  confidence: number
+  /** COCO-style absolute pixels: top-left + size. */
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+export interface PredictionResult {
+  image_width: number
+  image_height: number
+  boxes: PredictionBox[]
+}
+
+export const listModels = (projectId: number) =>
+  api.get<DeployableModel[]>(`/projects/${projectId}/models`)
+
+/** Run a model on one uploaded image. Nothing is stored — this is read-only. */
+export async function predictImage(
+  jobId: number,
+  file: File,
+  confThreshold: number,
+): Promise<PredictionResult> {
+  const form = new FormData()
+  form.append('file', file)
+  form.append('conf_threshold', String(confThreshold))
+  let res: Response
+  try {
+    res = await fetch(`${BASE_URL}/models/${jobId}/predict`, { method: 'POST', body: form })
+  } catch (err) {
+    throw describeNetworkFailure(err, 'the model may still be loading, or the backend stopped')
+  }
+  if (!res.ok) throw new ApiError(await describeFailure(res), res.status)
+  return res.json() as Promise<PredictionResult>
+}
+
 /** Used only when no explicit image selection is given. */
 export type JobScope = 'unannotated' | 'all'
 

@@ -6,6 +6,7 @@ import { Annotate } from '@/pages/Annotate'
 import { Review } from '@/pages/Review'
 import { Visualize } from '@/pages/Visualize'
 import { Train } from '@/pages/Train'
+import { Deploy } from '@/pages/Deploy'
 
 /**
  * Route table.
@@ -30,7 +31,7 @@ export default function App() {
           <Route path="/projects/:id/review" element={<Review />} />
           <Route path="/projects/:id/review/:imageId" element={<Review />} />
           <Route path="/projects/:id/train" element={<Train />} />
-          {/* Phase 5: /projects/:id/deploy   */}
+          <Route path="/projects/:id/deploy" element={<Deploy />} />
         </Route>
       </Routes>
     </BrowserRouter>
