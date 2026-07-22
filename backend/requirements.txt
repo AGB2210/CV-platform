@@ -12,6 +12,10 @@ sqlalchemy>=2.0.36
 pydantic>=2.9.0
 pydantic-settings>=2.6.0
 
+# Schema migrations. init_db() runs `upgrade head` at startup; the baseline
+# revision converges any pre-1.0 database (see backend/migrations/).
+alembic>=1.13.0
+
 # Required by FastAPI to parse multipart/form-data — i.e. file uploads (Phase 1).
 python-multipart>=0.0.12
 
