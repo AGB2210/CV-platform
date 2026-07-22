@@ -106,16 +106,11 @@ class AnnotationJobCreate(BaseModel):
     #: Used only when image_ids is absent.
     scope: str = Field(default=JobScope.UNANNOTATED, pattern="^(unannotated|all)$")
 
-    #: When True, delete EVERY existing box first — including human-drawn and
-    #: imported ones — so the result is purely the model's output.
-    #:
-    #: Defaults to False, which deletes only this pipeline's own previous
-    #: `auto` boxes and leaves human work alone. That default protects
-    #: corrections from being wiped by a re-run, but it does mean a project
-    #: with manual boxes shows a MIX afterwards, which surprises people who
-    #: expect "run the model" to mean "show me the model". Hence the switch,
-    #: surfaced in the UI with the counts it would destroy.
-    clear_existing: bool = False
+    # NOTE: no clear_existing here any more. It predated the proposals model and
+    # nothing in the pipeline read it — see the note in models/annotation_job.py.
+    # Accept is the moment existing boxes are replaced, on exactly the images
+    # the run covered.
+
     # Thresholds bounded 0..1 — they're probabilities. A typo'd 30 instead of
     # 0.30 would otherwise silently produce zero detections and look like a
     # broken model rather than a bad input.

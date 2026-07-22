@@ -795,12 +795,16 @@ export const startAnnotation = (
     box_threshold?: number
     text_threshold?: number
     prompts?: Record<string, string>
-    clear_existing?: boolean
     /** Annotate exactly these. Takes precedence over `scope`. */
     image_ids?: number[]
     scope?: JobScope
   },
 ) => api.post<AnnotationJob>(`/projects/${projectId}/annotate`, body)
+
+/** Cancel a queued/running annotation run — DISCARDS everything it produced.
+ *  The job row itself is deleted, so the poller sees 404 as the expected end. */
+export const cancelAnnotationJob = (jobId: number) =>
+  api.post<{ status: string }>(`/jobs/${jobId}/cancel`)
 
 export const getJob = (jobId: number) => api.get<AnnotationJob>(`/jobs/${jobId}`)
 export const listJobs = (projectId: number) =>

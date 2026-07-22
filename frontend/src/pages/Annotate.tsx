@@ -13,6 +13,8 @@ import { PageBody, PageHeader } from '@/components/layout/AppShell'
 import { MlSetupGate } from '@/components/MlSetupGate'
 import { StatusBadge, type Status } from '@/components/StatusBadge'
 import {
+  ApiError,
+  cancelAnnotationJob,
   exportUrl,
   getAnnotatePreview,
   getAnnotationSummary,
@@ -21,17 +23,20 @@ import {
   listAnnotators,
   listClasses,
   listExportFormats,
+  listImagePage,
   listJobs,
   startAnnotation,
   type AnnotationJob,
   type AnnotatePreview,
   type AnnotationSummary,
   type AnnotatorInfo,
+  type DatasetImage,
   type JobScope,
   type DeviceInfo,
   type ExportFormatInfo,
   type ProjectClass,
 } from '@/lib/api'
+import { Modal } from '@/components/ui/Modal'
 
 /** How often to poll a running job. 1s is responsive without hammering the API;
  *  inference takes ~1s/image on this GPU, so faster polling would mostly return
@@ -47,7 +52,7 @@ export function Annotate() {
   // The URL rather than shared state: it survives a refresh, it's shareable,
   // and it means the two pages don't need a store between them just to pass a
   // list of ids one way.
-  const [searchParams] = useSearchParams()
+  const [searchParams, setSearchParams] = useSearchParams()
   const selectedIds = useMemo(() => {
     const raw = searchParams.get('images')
     if (!raw) return null
@@ -69,8 +74,11 @@ export function Annotate() {
   const [boxThreshold, setBoxThreshold] = useState(0.3)
   const [textThreshold, setTextThreshold] = useState(0.25)
   const [prompts, setPrompts] = useState<Record<string, string>>({})
-  const [clearExisting, setClearExisting] = useState(false)
   const [scope, setScope] = useState<JobScope>('unannotated')
+  // Images chosen in the ON-PAGE picker. Overrides a Dataset-page selection,
+  // which itself overrides the scope buckets. null = no picker choice made.
+  const [pickedIds, setPickedIds] = useState<number[] | null>(null)
+  const [pickerOpen, setPickerOpen] = useState(false)
   const [pre, setPre] = useState<AnnotatePreview | null>(null)
 
   const [activeJob, setActiveJob] = useState<AnnotationJob | null>(null)
@@ -168,7 +176,14 @@ export function Annotate() {
           void refreshSummary()
         }
       } catch (e) {
-        setError((e as Error).message)
+        // Cancel DELETES the job row, so the poll 404s — that is the expected
+        // end of a cancelled run, not an error (same contract as training).
+        if (e instanceof ApiError && e.status === 404) {
+          setActiveJob(null)
+          void refreshSummary()
+        } else {
+          setError((e as Error).message)
+        }
         if (pollRef.current) clearInterval(pollRef.current)
         pollRef.current = null
       }
@@ -192,9 +207,8 @@ export function Annotate() {
         model_key: modelKey,
         box_threshold: boxThreshold,
         text_threshold: textThreshold,
-        clear_existing: clearExisting,
         // A selection wins outright; scope is only the fallback.
-        ...(selectedIds ? { image_ids: selectedIds } : { scope }),
+        ...(effectiveIds ? { image_ids: effectiveIds } : { scope }),
         // Only send non-empty overrides; the backend falls back to class names.
         prompts: Object.fromEntries(
           Object.entries(prompts).filter(([, v]) => v.trim()),
@@ -208,10 +222,12 @@ export function Annotate() {
 
   const selected = annotators.find((a) => a.key === modelKey)
   const isRunning = activeJob?.status === 'running' || activeJob?.status === 'queued'
+  // Precedence: the on-page picker, then a Dataset-page selection, then scope.
+  const effectiveIds = pickedIds ?? selectedIds
   // Gate on what will ACTUALLY be processed — the selection if there is one,
   // otherwise the chosen bucket's count. Using the project total would offer a
   // run that immediately 400s because the bucket is empty.
-  const scopeCount = selectedIds ? selectedIds.length : (pre?.scope_counts?.[scope] ?? 0)
+  const scopeCount = effectiveIds ? effectiveIds.length : (pre?.scope_counts?.[scope] ?? 0)
   const canRun = !isRunning && classes.length > 0 && scopeCount > 0
 
   if (loading) {
@@ -255,7 +271,22 @@ export function Annotate() {
                 only thing you care about; the config above it is settled. */}
             {activeJob && (
               <div ref={jobRef}>
-                <JobProgress job={activeJob} />
+                <JobProgress
+                  job={activeJob}
+                  onCancel={
+                    isRunning
+                      ? async () => {
+                          try {
+                            await cancelAnnotationJob(activeJob.id)
+                            // The runner deletes the row; the poll's 404 closes
+                            // the card. Nothing else to do here.
+                          } catch (e) {
+                            setError((e as Error).message)
+                          }
+                        }
+                      : undefined
+                  }
+                />
               </div>
             )}
 
@@ -367,27 +398,42 @@ export function Annotate() {
               <div className="border-b border-gray-200 px-4 py-3">
                 <h2 className="text-sm font-medium text-gray-900">Which images</h2>
                 <p className="text-xs text-gray-500">
-                  {selectedIds
+                  {effectiveIds
                     ? 'Running on the images you selected.'
-                    : 'Select images on the Dataset page to run on a specific subset.'}
+                    : 'Pick a bucket, or choose specific images.'}
                 </p>
               </div>
               <div className="space-y-1.5 p-4">
-                {selectedIds ? (
+                {effectiveIds ? (
                   <div className="flex items-center gap-2 rounded-md border border-accent-500 bg-accent-50 p-2">
                     <ImageIcon size={14} className="shrink-0 text-accent-700" />
                     <span className="min-w-0 flex-1 text-sm text-accent-900">
                       <span className="font-medium">
-                        {selectedIds.length} selected image
-                        {selectedIds.length === 1 ? '' : 's'}
+                        {effectiveIds.length} selected image
+                        {effectiveIds.length === 1 ? '' : 's'}
                       </span>
                     </span>
-                    <Link
-                      to={`/projects/${projectId}`}
+                    <button
+                      type="button"
+                      onClick={() => setPickerOpen(true)}
+                      disabled={isRunning}
                       className="shrink-0 text-xs font-medium text-accent-800 underline"
                     >
                       Change
-                    </Link>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        // Both sources, or a URL selection would survive the
+                        // clear and the banner would seem stuck.
+                        setPickedIds(null)
+                        setSearchParams({}, { replace: true })
+                      }}
+                      disabled={isRunning}
+                      className="shrink-0 text-xs font-medium text-gray-500 underline"
+                    >
+                      Clear
+                    </button>
                   </div>
                 ) : (
                   (
@@ -441,72 +487,61 @@ export function Annotate() {
                     "all images" leaves your boxes exactly as they were. Keeping
                     a scary warning that is no longer true would only teach
                     people to ignore warnings. */}
+
+                {!effectiveIds && (
+                  <button
+                    type="button"
+                    onClick={() => setPickerOpen(true)}
+                    disabled={isRunning}
+                    className="mt-1 flex w-full items-center justify-center gap-1.5 rounded-md border border-dashed border-gray-300 px-2 py-1.5 text-xs text-gray-600 hover:border-accent-400 hover:text-accent-700"
+                  >
+                    <ImageIcon size={13} />
+                    Choose specific images…
+                  </button>
+                )}
               </div>
             </div>
 
+            {pickerOpen && (
+              <ImagePicker
+                projectId={projectId}
+                initial={effectiveIds ?? []}
+                onClose={() => setPickerOpen(false)}
+                onConfirm={(ids) => {
+                  setPickedIds(ids.length ? ids : null)
+                  setPickerOpen(false)
+                }}
+              />
+            )}
+
             {/* --- What this run will do to what's already there ---
-                Auto-annotation is NOT additive: it clears prior output before
-                writing new output. Leaving that implicit meant a re-run could
-                silently delete hand-drawn boxes, and it meant a project with
-                manual boxes showed a confusing mix afterwards with no way to
-                get a clean model-only result. */}
+                A run writes PROPOSALS — dashed boxes awaiting review. Nothing
+                of yours changes until you Accept, and Accept replaces boxes on
+                exactly the images the run covered. There used to be a "replace
+                all annotations" switch here with a project-wide deletion
+                warning; it predated the proposals model and no longer did
+                anything, so it is gone rather than wired to a second deletion
+                path. */}
             <div className="card">
               <div className="border-b border-gray-200 px-4 py-3">
                 <h2 className="text-sm font-medium text-gray-900">Existing annotations</h2>
                 <p className="text-xs text-gray-500">
-                  A run always replaces its own previous output. Choose what happens to
-                  everything else.
+                  A run proposes boxes; nothing of yours changes unless you accept them.
                 </p>
               </div>
               <div className="space-y-3 p-4">
                 {pre && (
                   <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
-                    <Stat label="From model" value={pre.auto_boxes} note="always replaced" />
-                    <Stat
-                      label="Hand-drawn"
-                      value={pre.manual_boxes}
-                      note={clearExisting ? 'will be DELETED' : 'kept'}
-                      danger={clearExisting && pre.manual_boxes > 0}
-                    />
-                    <Stat
-                      label="Imported"
-                      value={pre.imported_boxes}
-                      note={clearExisting ? 'will be DELETED' : 'kept'}
-                      danger={clearExisting && pre.imported_boxes > 0}
-                    />
+                    <Stat label="From model" value={pre.auto_boxes} note="kept until you accept" />
+                    <Stat label="Hand-drawn" value={pre.manual_boxes} note="kept" />
+                    <Stat label="Imported" value={pre.imported_boxes} note="kept" />
                   </div>
                 )}
-
-                <label className="flex cursor-pointer items-start gap-2">
-                  <input
-                    type="checkbox"
-                    checked={clearExisting}
-                    onChange={(e) => setClearExisting(e.target.checked)}
-                    disabled={isRunning}
-                    className="mt-0.5 accent-accent-600"
-                  />
-                  <span>
-                    <span className="block text-sm text-gray-900">
-                      Replace all annotations
-                    </span>
-                    <span className="block text-xs text-gray-500">
-                      Delete every existing box first, so the result is only this model's
-                      output. Leave unticked to keep hand-drawn and imported boxes.
-                    </span>
-                  </span>
-                </label>
-
-                {clearExisting && pre && pre.manual_boxes + pre.imported_boxes > 0 && (
-                  <p className="rounded-md border border-red-200 bg-red-50 px-2.5 py-1.5 text-xs text-red-800">
-                    <span className="font-medium">
-                      {pre.manual_boxes + pre.imported_boxes} hand-drawn/imported box
-                      {pre.manual_boxes + pre.imported_boxes === 1 ? '' : 'es'} will be
-                      permanently deleted.
-                    </span>{' '}
-                    This cannot be undone.
-                  </p>
-                )}
-
+                <p className="text-xs text-gray-500">
+                  Accepting a batch later replaces the boxes on the images that run
+                  covered — that is the one moment existing work is exchanged, and it is
+                  always your click that does it.
+                </p>
               </div>
             </div>
 
@@ -611,7 +646,13 @@ function Slider({
   )
 }
 
-function JobProgress({ job }: { job: AnnotationJob }) {
+function JobProgress({
+  job,
+  onCancel,
+}: {
+  job: AnnotationJob
+  onCancel?: () => void
+}) {
   const status: Status =
     job.status === 'done'
       ? 'done'
@@ -636,7 +677,21 @@ function JobProgress({ job }: { job: AnnotationJob }) {
         <h2 className="text-sm font-medium text-gray-900">
           {isRunning ? 'Running…' : `Job #${job.id}`}
         </h2>
-        <StatusBadge status={status} />
+        <span className="flex items-center gap-3">
+          {isRunning && onCancel && (
+            // Cancel DISCARDS: the run's proposals and its record go, as if it
+            // never ran. Red because it destroys the run's output — the one
+            // colour rule this page has.
+            <button
+              type="button"
+              onClick={onCancel}
+              className="text-xs font-medium text-red-700 underline underline-offset-2 hover:text-red-800"
+            >
+              Cancel run
+            </button>
+          )}
+          <StatusBadge status={status} />
+        </span>
       </div>
       <div className="p-4">
         {/* A real progress bar, driven by processed/total from the DB. */}
@@ -829,5 +884,143 @@ function JobHistory({ jobs }: { jobs: AnnotationJob[] }) {
         ))}
       </ul>
     </div>
+  )
+}
+
+/**
+ * On-page image picker: choose exactly which images a run covers, without a
+ * round-trip through the Dataset page's selection. Paged like every other
+ * grid, and selection ACCUMULATES across pages — ticking on page 2 must not
+ * lose the ticks from page 1.
+ */
+function ImagePicker({
+  projectId,
+  initial,
+  onClose,
+  onConfirm,
+}: {
+  projectId: number
+  initial: number[]
+  onClose: () => void
+  onConfirm: (ids: number[]) => void
+}) {
+  const [images, setImages] = useState<DatasetImage[]>([])
+  const [total, setTotal] = useState(0)
+  const [page, setPage] = useState(0)
+  const [checked, setChecked] = useState<Set<number>>(new Set(initial))
+  const pageSize = 100
+
+  useEffect(() => {
+    listImagePage(projectId, pageSize, page * pageSize)
+      .then((r) => {
+        setImages(r.images)
+        setTotal(r.total)
+      })
+      .catch(() => setImages([]))
+  }, [projectId, page])
+
+  const toggle = (id: number) =>
+    setChecked((prev) => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+
+  const pageIds = images.map((i) => i.id)
+  const allOnPage = pageIds.length > 0 && pageIds.every((id) => checked.has(id))
+
+  return (
+    <Modal
+      open
+      onClose={onClose}
+      title="Choose images to annotate"
+      footer={
+        <div className="flex w-full items-center justify-between">
+          <span className="text-xs tabular-nums text-gray-500">
+            {checked.size} selected
+          </span>
+          <span className="flex gap-2">
+            <button type="button" onClick={onClose} className="btn-secondary">
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => onConfirm([...checked])}
+              disabled={checked.size === 0}
+              className="btn-primary"
+            >
+              Use {checked.size} image{checked.size === 1 ? '' : 's'}
+            </button>
+          </span>
+        </div>
+      }
+    >
+      <div className="mb-2 flex items-center justify-between text-xs">
+        <button
+          type="button"
+          onClick={() =>
+            setChecked((prev) => {
+              const next = new Set(prev)
+              if (allOnPage) pageIds.forEach((id) => next.delete(id))
+              else pageIds.forEach((id) => next.add(id))
+              return next
+            })
+          }
+          className="font-medium text-accent-700 underline underline-offset-2"
+        >
+          {allOnPage ? 'Unselect page' : 'Select page'}
+        </button>
+        {total > pageSize && (
+          <span className="flex items-center gap-2 tabular-nums text-gray-500">
+            <button
+              type="button"
+              onClick={() => setPage(page - 1)}
+              disabled={page === 0}
+              className="rounded border border-gray-300 px-1.5 py-0.5 disabled:opacity-40"
+            >
+              ‹
+            </button>
+            Page {page + 1} / {Math.ceil(total / pageSize)}
+            <button
+              type="button"
+              onClick={() => setPage(page + 1)}
+              disabled={(page + 1) * pageSize >= total}
+              className="rounded border border-gray-300 px-1.5 py-0.5 disabled:opacity-40"
+            >
+              ›
+            </button>
+          </span>
+        )}
+      </div>
+      <div className="grid max-h-96 grid-cols-4 gap-2 overflow-y-auto sm:grid-cols-6">
+        {images.map((img) => {
+          const on = checked.has(img.id)
+          return (
+            <button
+              key={img.id}
+              type="button"
+              onClick={() => toggle(img.id)}
+              className={`relative overflow-hidden rounded border-2 ${
+                on ? 'border-accent-600' : 'border-transparent'
+              }`}
+              title={img.original_filename}
+            >
+              <img
+                src={`/static/images/${projectId}/${img.filename}`}
+                alt={img.original_filename}
+                loading="lazy"
+                className="aspect-square w-full object-cover"
+              />
+              {on && (
+                <span className="absolute right-1 top-1 rounded-full bg-accent-600 px-1.5 text-[10px] font-bold text-white">
+                  ✓
+                </span>
+              )}
+            </button>
+          )
+        })}
+      </div>
+    </Modal>
   )
 }

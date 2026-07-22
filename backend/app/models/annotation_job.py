@@ -28,7 +28,7 @@ imports FastAPI.
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.database import Base
@@ -76,12 +76,28 @@ class AnnotationJob(Base):
     # "this job used threshold 0.35" months later.
     box_threshold: Mapped[float] = mapped_column(Float, nullable=False, default=0.30)
     text_threshold: Mapped[float] = mapped_column(Float, nullable=False, default=0.25)
-    # Whether this run wiped human work as well as its own prior output. Worth
-    # recording: it's the difference between "the model found 3 boxes" and "the
-    # model found 3 boxes and I deleted your 40".
-    clear_existing: Mapped[bool] = mapped_column(
-        Boolean, nullable=False, default=False
-    )
+
+    # NOTE: `clear_existing` is gone.
+    #
+    # It predated the proposals model: back when a run WROTE annotations
+    # directly, this was the "wipe mine first" switch. The proposals redesign
+    # made Accept the moment existing boxes are replaced (on exactly the images
+    # the run covered), and nothing ever read this flag again — it was stored on
+    # every job and acted on by no code. The UI meanwhile showed a project-wide
+    # "N boxes will be permanently deleted" warning for a checkbox that did
+    # nothing. Removed outright rather than wired up: Accept already IS the
+    # replace, so a second deletion path would be a footgun with a dialog.
+    #
+    # The column still exists in old databases — SQLite can't drop one without a
+    # table rebuild — and is harmless: nothing selects it, and its NOT NULL
+    # DEFAULT 0 keeps old rows valid. Same treatment as Image.in_dataset.
+
+    # NULL | "cancel" — set by the route, read by the runner between images.
+    # A DB flag rather than an in-process event for the same reason as
+    # TrainingJob.control: the runner and the request that interrupts it are
+    # different sessions. Cancel DISCARDS the run: its proposals are deleted and
+    # the job row goes with them, as if the run never happened.
+    control: Mapped[str | None] = mapped_column(String(16), default=None)
     # "selected" | "unannotated" | "all" — which images this run covered.
     # Recorded so job history can answer "what did that run actually look at".
     scope: Mapped[str] = mapped_column(String(16), nullable=False, default="unannotated")

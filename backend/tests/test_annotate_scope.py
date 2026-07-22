@@ -77,3 +77,56 @@ def test_empty_project_rejected(client, no_run):
         json={"model_key": "grounding_dino", "scope": "all"},
     )
     assert r.status_code == 400
+
+
+def test_cancel_discards_run_proposals_and_row(client, monkeypatch):
+    """Cancel means the run never happened: its proposals AND its row go.
+
+    The runner sees the flag before loading any model, so a cancel-while-queued
+    costs nothing. Proposals from other sources must survive.
+    """
+    from app.models import AnnotationJob, Annotation, JobStatus
+    from app.services import annotation_job as service
+    from tests.conftest import add_proposals, make_project, upload_images
+
+    monkeypatch.setattr(service, "SessionLocal", client.SessionLocal)
+
+    pid = make_project(client)
+    images = upload_images(client, pid, ["a.png"])
+    car = client.get(f"/api/projects/{pid}/classes").json()[0]
+
+    # A proposal from an unrelated source (no job_id) that must survive.
+    add_proposals(client, images[0]["id"], car["id"], n=1)
+
+    db = client.SessionLocal()
+    try:
+        job = AnnotationJob(project_id=pid, model_key="grounding_dino", status=JobStatus.QUEUED)
+        db.add(job)
+        db.commit()
+        job_id = job.id
+        # A proposal THIS run produced.
+        db.add(
+            Annotation(
+                image_id=images[0]["id"], category_id=car["id"],
+                x=1, y=1, width=5, height=5,
+                source="auto", proposed=True, reviewed=False, job_id=job_id,
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    r = client.post(f"/api/jobs/{job_id}/cancel")
+    assert r.status_code == 202
+
+    service.run_annotation_job(job_id)
+
+    db = client.SessionLocal()
+    try:
+        assert db.get(AnnotationJob, job_id) is None, "cancelled row must be gone"
+        remaining = db.query(Annotation).filter(Annotation.proposed.is_(True)).all()
+        assert len(remaining) == 1 and remaining[0].job_id is None, (
+            "only the run's own proposals are discarded"
+        )
+    finally:
+        db.close()

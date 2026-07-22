@@ -105,6 +105,12 @@ def _run(db: Session, job: AnnotationJob) -> None:
     job.started_at = utcnow()
     db.commit()
 
+    # Cancelled while still queued — bail before loading a 700 MB model for
+    # work that has already been called off.
+    if job.control == "cancel":
+        _discard(db, job)
+        return
+
     # Classes define what we're looking for. No classes means nothing to prompt
     # with — fail loudly rather than run an expensive no-op.
     categories = list(
@@ -141,6 +147,16 @@ def _run(db: Session, job: AnnotationJob) -> None:
 
     total_boxes = 0
     for image in images:
+        # Cancel is read BETWEEN images, like training reads its control between
+        # epochs: the per-image commit below re-queries the row (expire_on_commit),
+        # so a flag written by the cancel request's session becomes visible here.
+        # Mid-image is not interruptible — one image costs about a second, and a
+        # half-written image's proposals would be exactly the kind of partial
+        # state the discard exists to prevent.
+        if job.control == "cancel":
+            _discard(db, job)
+            return
+
         path = storage.project_dir(image.project_id) / image.filename
         if not path.exists():
             # A DB row whose file is missing. Skip rather than abort: one absent
@@ -223,7 +239,32 @@ def _run(db: Session, job: AnnotationJob) -> None:
         # 400 keeps the first 399 images' annotations instead of losing the lot.
         db.commit()
 
+    # A cancel that landed during the final image still wins: the user asked for
+    # this run not to exist, and "it finished anyway" is not an answer.
+    if job.control == "cancel":
+        _discard(db, job)
+        return
+
     job.status = JobStatus.DONE
     job.finished_at = utcnow()
     db.commit()
     logger.info("Job %s done: %d boxes over %d images", job.id, total_boxes, len(images))
+
+
+def _discard(db: Session, job: AnnotationJob) -> None:
+    """Cancel: throw the run away — its proposals and its row.
+
+    Mirrors training's cancel. The run's own proposals (job_id = this job) are
+    deleted; proposals from OTHER runs or imports are untouched, and accepted
+    boxes were never touched to begin with. Deleting the row too means job
+    history doesn't accumulate entries whose only content is "asked not to
+    exist"; the poller treats the resulting 404 as the expected end of a cancel.
+    """
+    job_id = job.id
+    for stale in db.scalars(
+        select(Annotation).where(Annotation.job_id == job_id, Annotation.proposed.is_(True))
+    ).all():
+        db.delete(stale)
+    db.delete(job)
+    db.commit()
+    logger.info("Annotation job %s cancelled and discarded", job_id)

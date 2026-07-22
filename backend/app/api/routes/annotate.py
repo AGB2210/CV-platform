@@ -139,7 +139,6 @@ def start_annotation(
         total_images=image_count,
         box_threshold=payload.box_threshold,
         text_threshold=payload.text_threshold,
-        clear_existing=payload.clear_existing,
         scope=scope_label,
         image_ids_json=json.dumps(payload.image_ids) if payload.image_ids else None,
         prompts_json=json.dumps(payload.prompts) if payload.prompts else None,
@@ -156,6 +155,29 @@ def start_annotation(
     # replaces it, and nothing else in the codebase changes.
     background_tasks.add_task(run_annotation_job, job.id)
     return job
+
+
+@router.post("/jobs/{job_id}/cancel", status_code=status.HTTP_202_ACCEPTED)
+def cancel_job(job_id: int, db: Session = Depends(get_db)) -> dict:
+    """Cancel a queued or running annotation run, DISCARDING everything it did.
+
+    Sets a flag the runner reads between images (mirroring training's control
+    column — the runner and this request are different sessions, so a DB flag is
+    the only channel they share). The runner deletes the run's proposals and the
+    job row itself; the poller treats the resulting 404 as the expected end of a
+    cancel, not an error.
+    """
+    job = db.get(AnnotationJob, job_id)
+    if job is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Job {job_id} not found")
+    if job.status not in (JobStatus.QUEUED, JobStatus.RUNNING):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"Job {job_id} is {job.status}; only a queued or running job can be cancelled.",
+        )
+    job.control = "cancel"
+    db.commit()
+    return {"status": "cancelling"}
 
 
 @router.get("/jobs/{job_id}", response_model=AnnotationJobRead)
@@ -344,11 +366,10 @@ def _scope_counts(db: Session, project_id: int) -> dict:
 
 @router.get("/projects/{project_id}/annotate/preview")
 def annotate_preview(project_id: int, db: Session = Depends(get_db)) -> dict:
-    """What a run would touch, so the UI can say so before the click.
+    """What a run would cover, so the UI can say so before the click.
 
-    A run writes proposals and can't destroy anything by itself — but
-    `clear_existing` deletes your boxes outright, and that count has to be on
-    screen before the tick, not discovered afterwards.
+    A run writes proposals and cannot destroy anything by itself; existing
+    boxes are only ever replaced at Accept, on the images the run covered.
     """
     get_project_or_404(project_id, db)
 
@@ -362,8 +383,6 @@ def annotate_preview(project_id: int, db: Session = Depends(get_db)) -> dict:
 
     return {
         "auto_boxes": by_source.get("auto", 0),
-        # These two are destroyed by clear_existing — the number the user
-        # actually needs before ticking that box.
         "manual_boxes": by_source.get("manual", 0),
         "imported_boxes": by_source.get("imported", 0),
         # Drives the scope selector's per-option counts.
