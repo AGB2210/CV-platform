@@ -285,18 +285,22 @@ def test_train_rejects_unknown_trainer(client, no_train_run):
     assert r.status_code == 400
 
 
-def test_train_conflicts_with_active_training(client, no_train_run, fake_trainer):
+def test_overlapping_training_queues_instead_of_409(client, no_train_run, fake_trainer):
+    """The old contract (409 while another job is in flight) is GONE: a second
+    start is accepted and holds in QUEUED, where the runner's GPU-admission
+    loop will start it once the card frees up (tests/test_gpu_admission.py
+    covers the admission logic itself)."""
     pid, _ = make_trainable_project(client)
     first = client.post(f"/api/projects/{pid}/train", json={"trainer_key": "fake"})
     assert first.status_code == 202
-    # A second while the first is queued/running must be refused.
     second = client.post(f"/api/projects/{pid}/train", json={"trainer_key": "fake"})
-    assert second.status_code == 409
+    assert second.status_code == 202
+    assert second.json()["status"] == "queued"
 
 
-def test_train_conflicts_with_active_annotation(client, no_train_run, fake_trainer):
-    """Annotation and training both want the whole 4 GB card — refuse to start
-    training while an annotate job is in flight for the project."""
+def test_training_queues_while_annotation_runs(client, no_train_run, fake_trainer):
+    """Same across job kinds: an annotate run in flight no longer blocks the
+    POST — the training job queues behind it."""
     from app.models import AnnotationJob, JobStatus
 
     pid, _ = make_trainable_project(client)
@@ -315,7 +319,8 @@ def test_train_conflicts_with_active_annotation(client, no_train_run, fake_train
         db.close()
 
     r = client.post(f"/api/projects/{pid}/train", json={"trainer_key": "fake"})
-    assert r.status_code == 409
+    assert r.status_code == 202
+    assert r.json()["status"] == "queued"
 
 
 # --- the runner, end to end -------------------------------------------------

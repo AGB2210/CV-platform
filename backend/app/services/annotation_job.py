@@ -101,6 +101,18 @@ def _images_in_scope(db: Session, job: AnnotationJob) -> list[Image]:
 
 
 def _run(db: Session, job: AnnotationJob) -> None:
+    # GPU admission first, while still QUEUED: another job (any project) may
+    # hold the card. status_detail carries the live waiting reason; False
+    # means the user cancelled the wait.
+    from app.services import gpu_admission
+
+    annotator_cls = registry.get_class(job.model_key)
+    if not gpu_admission.wait_for_gpu(
+        db, job, "annotation", annotator_cls.approx_vram_gb
+    ):
+        _discard(db, job)
+        return
+
     job.status = JobStatus.RUNNING
     job.started_at = utcnow()
     db.commit()

@@ -142,6 +142,12 @@ class TrainingJob(Base):
     # next. "stop" keeps the model trained so far; "cancel" throws it away.
     control: Mapped[str | None] = mapped_column(String(16), default=None)
 
+    #: Why a QUEUED job hasn't started yet — e.g. "Waiting for GPU: 0.4 GB
+    #: free, needs ~3 GB". Written by the admission wait loop with LIVE
+    #: numbers, cleared the moment the run starts, so the UI never invents a
+    #: hardcoded explanation. NULL when there's nothing to explain.
+    status_detail: Mapped[str | None] = mapped_column(String(255), default=None)
+
     #: True when the run finished because the user asked it to stop early, so
     #: the UI can say "stopped at epoch 13 of 50" rather than implying it ran
     #: the full schedule.

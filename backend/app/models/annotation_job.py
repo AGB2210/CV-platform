@@ -98,6 +98,10 @@ class AnnotationJob(Base):
     # different sessions. Cancel DISCARDS the run: its proposals are deleted and
     # the job row goes with them, as if the run never happened.
     control: Mapped[str | None] = mapped_column(String(16), default=None)
+
+    #: Why a QUEUED job hasn't started yet — written by the GPU-admission wait
+    #: loop with live numbers, cleared when the run starts. See TrainingJob.
+    status_detail: Mapped[str | None] = mapped_column(String(255), default=None)
     # "selected" | "unannotated" | "all" — which images this run covered.
     # Recorded so job history can answer "what did that run actually look at".
     scope: Mapped[str] = mapped_column(String(16), nullable=False, default="unannotated")

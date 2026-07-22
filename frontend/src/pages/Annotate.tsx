@@ -715,6 +715,14 @@ function JobProgress({
         </span>
       </div>
       <div className="p-4">
+        {/* The admission loop's live waiting reason, verbatim — see Train's
+            RunDetail for why this is never composed client-side. */}
+        {job.status === 'queued' && job.status_detail && (
+          <p className="mb-3 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs text-amber-900">
+            {job.status_detail} The run starts automatically when the GPU frees up
+            — or cancel it above.
+          </p>
+        )}
         {/* A real progress bar, driven by processed/total from the DB. */}
         <div className="mb-1.5 flex items-baseline justify-between text-xs">
           <span className="text-gray-600">

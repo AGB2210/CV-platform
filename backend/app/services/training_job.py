@@ -126,6 +126,19 @@ def _discard(db: Session, job: TrainingJob) -> None:
 
 
 def _run(db: Session, job: TrainingJob) -> None:
+    # GPU admission FIRST, while the job is still QUEUED: if another job (any
+    # project) holds the resources this one needs, hold here — the row's
+    # status_detail carries a live "waiting for GPU: X free, needs ~Y" the UI
+    # shows verbatim. Returns False only if the user cancelled the wait.
+    from app.services import gpu_admission
+
+    trainer_cls = trainer_registry.get_class(job.trainer_key)
+    if not gpu_admission.wait_for_gpu(
+        db, job, "training", trainer_cls.approx_vram_gb
+    ):
+        _discard(db, job)
+        return
+
     job.status = JobStatus.RUNNING
     job.started_at = utcnow()
     db.commit()

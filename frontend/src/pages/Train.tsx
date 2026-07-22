@@ -843,6 +843,16 @@ function RunDetail({
         </span>
       </div>
       <div className="p-4">
+        {/* Why a queued run hasn't started — the admission loop's live reason
+            ("Waiting for GPU: 0.4 GB free, needs ~3.0 GB…"), shown verbatim.
+            The server computes it from real numbers; inventing a message here
+            would just be a guess wearing a suit. */}
+        {job.status === 'queued' && job.status_detail && (
+          <p className="mb-3 rounded-md border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-xs text-amber-900">
+            {job.status_detail} The run starts automatically when the GPU frees up
+            — or cancel it above.
+          </p>
+        )}
         <div className="mb-1.5 flex items-baseline justify-between text-xs">
           <span className="text-gray-600">
             Epoch {job.current_epoch} / {job.total_epochs}

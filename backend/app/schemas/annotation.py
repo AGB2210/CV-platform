@@ -163,6 +163,9 @@ class AnnotationJobRead(BaseModel):
     project_id: int
     model_key: str
     status: str
+    #: Why a queued job hasn't started — the live "waiting for GPU" reason
+    #: from the admission loop. NULL once running.
+    status_detail: str | None = None
     total_images: int
     processed_images: int
     boxes_created: int

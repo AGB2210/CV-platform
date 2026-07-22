@@ -127,14 +127,17 @@ def download_weights(job_id: int, db: Session = Depends(get_db)) -> FileResponse
     )
 
 
-def _gpu_busy(db: Session, project_id: int) -> bool:
-    """Is a heavy GPU job running for this project? Inference must not overlap it."""
+def _gpu_busy(db: Session) -> bool:
+    """Is a heavy GPU job RUNNING anywhere? Inference must not overlap it.
+
+    Global, not per-project — there is one GPU, and a training run in project A
+    collides with a predict request in project B exactly as hard as one in the
+    same project. QUEUED jobs don't count: they're waiting for admission
+    (services/gpu_admission.py) and hold no memory yet.
+    """
     for model in (TrainingJob, AnnotationJob):
         running = db.scalar(
-            select(model.id).where(
-                model.project_id == project_id,
-                model.status.in_([JobStatus.QUEUED, JobStatus.RUNNING]),
-            )
+            select(model.id).where(model.status == JobStatus.RUNNING)
         )
         if running is not None:
             return True
@@ -169,7 +172,7 @@ async def predict(
     class_names = _class_names_for(db, job)
 
     # One heavy GPU model at a time: refuse if a job is already using the card.
-    if _gpu_busy(db, job.project_id):
+    if _gpu_busy(db):
         raise HTTPException(
             status.HTTP_409_CONFLICT,
             "A training or annotation job is running for this project. "

@@ -86,21 +86,10 @@ def start_annotation(
     except KeyError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from None
 
-    # Refuse to queue a second job while one is in flight. Two concurrent runs
-    # would evict each other's model on every image — thrashing weights in and
-    # out and running slower than either alone, and on a GPU too small to hold
-    # both they would simply OOM.
-    active = db.scalar(
-        select(AnnotationJob).where(
-            AnnotationJob.project_id == project_id,
-            AnnotationJob.status.in_([JobStatus.QUEUED, JobStatus.RUNNING]),
-        )
-    )
-    if active is not None:
-        raise HTTPException(
-            status.HTTP_409_CONFLICT,
-            f"Job {active.id} is already {active.status} for this project",
-        )
+    # No refusal for an overlapping job any more: a second run — this project
+    # or another — QUEUES, and the runner's GPU-admission loop starts it when
+    # the card can actually take it (services/gpu_admission.py). The job card
+    # shows the live waiting reason meanwhile.
 
     if payload.image_ids:
         # Count within THIS project — an id from elsewhere shouldn't inflate the

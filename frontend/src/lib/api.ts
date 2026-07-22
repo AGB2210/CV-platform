@@ -590,6 +590,9 @@ export interface AnnotationJob {
   project_id: number
   model_key: string
   status: 'queued' | 'running' | 'done' | 'failed'
+  /** Why a queued job hasn't started — the live "waiting for GPU" reason
+   *  from the admission loop. Null once running. */
+  status_detail: string | null
   total_images: number
   processed_images: number
   boxes_created: number
@@ -936,6 +939,9 @@ export interface TrainingJob {
   /** User-given name; null means it displays as "v{version}". */
   name: string | null
   status: 'queued' | 'running' | 'done' | 'failed'
+  /** Why a queued job hasn't started — the live "waiting for GPU" reason
+   *  from the admission loop. Null once running. */
+  status_detail: string | null
   epochs: number
   batch_size: number
   image_size: number

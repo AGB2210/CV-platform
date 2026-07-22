@@ -197,9 +197,10 @@ def _fail_interrupted_jobs() -> None:
     that: the runner is gone, so the code that would set a terminal status is
     gone too.
 
-    The visible symptom is a UI that polls a job which will never move again,
-    and a project that refuses new training because it believes one is already
-    in flight (the one-GPU-job-at-a-time guard reads exactly this status).
+    The visible symptom is a UI that polls a job which will never move again —
+    and since GPU admission (services/gpu_admission.py) reads RUNNING rows
+    globally to decide whether the card is busy, one orphaned row would make
+    every future job wait for a GPU that nothing is actually using.
 
     Startup is the one moment we can be certain: no job can legitimately be
     running yet, because nothing has had a chance to start one. So anything
@@ -222,6 +223,10 @@ def _fail_interrupted_jobs() -> None:
                     "The server stopped while this job was running, so it was "
                     "interrupted. Nothing was corrupted — start it again."
                 )
+                # Clear any admission wait note (training/annotation jobs) —
+                # it referred to a world that no longer exists.
+                if hasattr(job, "status_detail"):
+                    job.status_detail = None
                 job.finished_at = utcnow()
                 reclaimed += 1
         if reclaimed:

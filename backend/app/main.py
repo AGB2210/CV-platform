@@ -35,7 +35,7 @@ async def lifespan(app: FastAPI):
     """
     # --- startup ---
     settings.ensure_dirs()  # storage/ dirs are gitignored, so create on demand
-    init_db()  # create tables that don't exist yet
+    init_db()  # create tables that don't exist yet; fail orphaned jobs
     yield
     # --- shutdown ---
     # (nothing to tear down yet)

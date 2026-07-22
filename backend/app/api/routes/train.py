@@ -86,10 +86,11 @@ def start_training(
     except KeyError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from None
 
-    # One heavy GPU job at a time. Training AND annotation both want the whole
-    # card, so refuse to start training while either is in flight for this
-    # project — two at once would evict each other's weights or simply OOM.
-    _reject_if_gpu_busy(db, project_id)
+    # No busy-check here any more. A job queued while another is using the GPU
+    # simply WAITS — the runner's admission loop (services/gpu_admission.py)
+    # holds it in QUEUED with a live "waiting for GPU" message and starts it
+    # when the resources actually free up, cloud-style. Rejecting with a 409
+    # made the user babysit the first run's finish line.
 
     # Training runs against a SAVED dataset version, never the live rows — that's
     # what makes a run reproducible and its provenance truthful. Resolve which
@@ -465,31 +466,9 @@ def train_preview(project_id: int, db: Session = Depends(get_db)) -> dict:
 # --- helpers ----------------------------------------------------------------
 
 
-def _reject_if_gpu_busy(db: Session, project_id: int) -> None:
-    """409 if a training or annotation job is already active for this project."""
-    active_train = db.scalar(
-        select(TrainingJob).where(
-            TrainingJob.project_id == project_id,
-            TrainingJob.status.in_([JobStatus.QUEUED, JobStatus.RUNNING]),
-        )
-    )
-    if active_train is not None:
-        raise HTTPException(
-            status.HTTP_409_CONFLICT,
-            f"Training job {active_train.id} is already {active_train.status}.",
-        )
-    active_annotate = db.scalar(
-        select(AnnotationJob).where(
-            AnnotationJob.project_id == project_id,
-            AnnotationJob.status.in_([JobStatus.QUEUED, JobStatus.RUNNING]),
-        )
-    )
-    if active_annotate is not None:
-        raise HTTPException(
-            status.HTTP_409_CONFLICT,
-            f"An auto-annotation job ({active_annotate.id}) is still "
-            f"{active_annotate.status}; it holds the GPU. Wait for it to finish.",
-        )
+# _reject_if_gpu_busy is gone: overlapping jobs are no longer an error. They
+# queue, and the runner's GPU-admission loop starts each one when the card can
+# actually take it (services/gpu_admission.py).
 
 
 def _resolve_dataset_version(db: Session, project_id: int, version_id: int | None):

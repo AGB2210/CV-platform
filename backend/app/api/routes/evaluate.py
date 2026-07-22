@@ -31,16 +31,22 @@ from app.services.evaluation_job import run_evaluation_job
 router = APIRouter(tags=["evaluate"])
 
 
-def _gpu_busy(db: Session, project_id: int) -> bool:
-    for model in (TrainingJob, AnnotationJob, EvaluationJob):
-        if db.scalar(
-            select(model.id).where(
-                model.project_id == project_id,
-                model.status.in_([JobStatus.QUEUED, JobStatus.RUNNING]),
-            )
-        ):
+def _gpu_busy(db: Session) -> bool:
+    """RUNNING GPU work anywhere — one GPU, so another project's job collides
+    just as hard. QUEUED training/annotation jobs don't count (they're waiting
+    for admission and hold no memory); a QUEUED evaluation does, because
+    evaluations have no admission loop and will grab the card the moment the
+    background task fires."""
+    for model in (TrainingJob, AnnotationJob):
+        if db.scalar(select(model.id).where(model.status == JobStatus.RUNNING)):
             return True
-    return False
+    return bool(
+        db.scalar(
+            select(EvaluationJob.id).where(
+                EvaluationJob.status.in_([JobStatus.QUEUED, JobStatus.RUNNING])
+            )
+        )
+    )
 
 
 def _test_image_count(version: DatasetVersion, split: str) -> int:
@@ -100,7 +106,7 @@ def start_evaluation(
             "test score honest.",
         )
 
-    _reject_if_busy(db, project_id)
+    _reject_if_busy(db)
 
     job = EvaluationJob(
         project_id=project_id,
@@ -117,12 +123,13 @@ def start_evaluation(
     return job
 
 
-def _reject_if_busy(db: Session, project_id: int) -> None:
-    if _gpu_busy(db, project_id):
+def _reject_if_busy(db: Session) -> None:
+    if _gpu_busy(db):
         raise HTTPException(
             status.HTTP_409_CONFLICT,
-            "A training, annotation or evaluation job is already running for this "
-            "project. They share the GPU — wait for it to finish.",
+            "A training, annotation or evaluation job is running. Evaluations "
+            "share the one GPU and don't queue — wait for it to finish, then "
+            "evaluate.",
         )
 
 

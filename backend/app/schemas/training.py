@@ -103,6 +103,9 @@ class TrainingJobRead(BaseModel):
     #: User-given name; None means it displays as "v{version}".
     name: str | None
     status: str
+    #: Why a queued job hasn't started — the live "waiting for GPU" reason
+    #: from the admission loop. NULL once running.
+    status_detail: str | None = None
 
     epochs: int
     batch_size: int

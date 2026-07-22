@@ -159,3 +159,15 @@ def add_proposals(client, image_id: int, category_id: int, n: int = 1) -> list[i
     finally:
         db.close()
     return ids
+
+
+@pytest.fixture(autouse=True)
+def plenty_of_gpu(monkeypatch):
+    """GPU admission must not depend on the test machine's real GPU state.
+
+    Without this, the suite consults the actual nvidia-smi: on a machine whose
+    card happens to be busy (a real training running while tests run), every
+    runner test would sit in the admission wait loop. Tests that exercise
+    admission itself override this with their own numbers.
+    """
+    monkeypatch.setattr("app.services.gpu_admission.free_vram_gb", lambda: 999.0)
