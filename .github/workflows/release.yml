@@ -8,7 +8,7 @@
 # upload endpoint with a broken feature set.
 #
 # So the deliverable is an ARTIFACT: a zip someone downloads, unpacks, and runs
-# by double-clicking run.bat. That is genuine continuous delivery — every tag
+# by double-clicking start.bat. That is genuine continuous delivery — every tag
 # produces a tested, installable build with no manual steps.
 #
 # WHAT MAKES IT RUNNABLE
@@ -104,16 +104,16 @@ jobs:
                 backend "dist/$STAGE/"
 
           # The COMPILED frontend only. No source, no node_modules — the whole
-          # point is that the download needs no Node.
+          # point is that the download needs no Node. scripts/app.py sees there
+          # is no frontend/src, skips the build step, and just serves this.
           mkdir -p "dist/$STAGE/frontend"
           cp -r frontend/dist "dist/$STAGE/frontend/dist"
 
+          # One launcher for everyone. app.py is the same script a developer runs
+          # from source; here it finds a prebuilt dist and no source, so it never
+          # touches Node. start.bat is its double-click shim.
           cp -r scripts "dist/$STAGE/scripts"
-          cp run.bat README.md "dist/$STAGE/"
-
-          # start.bat runs the Vite dev server, which this build has no source
-          # for. Shipping it would hand people a button that cannot work.
-          rm -f "dist/$STAGE/scripts/dev.py"
+          cp start.bat README.md "dist/$STAGE/"
 
           cd dist && zip -qr "$STAGE.zip" "$STAGE"
           echo "stage=$STAGE" >> "$GITHUB_OUTPUT"
@@ -186,7 +186,7 @@ jobs:
             ## Install
 
             1. Download the zip below and unpack it anywhere.
-            2. Double-click **run.bat**.
+            2. Double-click **start.bat**.
 
             First launch creates a Python environment and installs
             dependencies (a minute or two); after that it starts in seconds,

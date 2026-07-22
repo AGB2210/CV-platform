@@ -4,11 +4,17 @@ REM  CV Platform - one-click start
 REM
 REM  Double-click this file, or run `start.bat` from a terminal.
 REM
-REM  This is deliberately a thin shim. All the real work (dependency install,
-REM  process supervision, health checks, clean shutdown) lives in
-REM  scripts\dev.py, because batch is poorly suited to any of it. The only jobs
-REM  here are: find Python, run the script, and keep the window open long
-REM  enough to read an error if it fails.
+REM  This is deliberately a thin shim. All the real work (create the Python
+REM  environment, install dependencies, build the interface if needed, serve
+REM  everything, clean shutdown) lives in scripts\app.py, because batch is
+REM  poorly suited to any of it. The only jobs here are: find Python, run the
+REM  script, and keep the window open long enough to read an error if it fails.
+REM
+REM  ONE launcher for everyone. The same file a developer runs from source and a
+REM  user runs from a downloaded release: it builds the interface when there is
+REM  source to build and none is built yet, and otherwise just serves the
+REM  interface a release already ships. So "working on it" and "using it" are
+REM  the same experience.
 REM ===========================================================================
 
 setlocal
@@ -42,7 +48,7 @@ pause
 exit /b 1
 
 :run
-%PY% scripts\dev.py %*
+%PY% scripts\app.py %*
 set "EXITCODE=%ERRORLEVEL%"
 
 REM Only pause on failure. On a clean Ctrl+C exit the window just closes, which
