@@ -240,72 +240,211 @@ class UltralyticsTrainer(Trainer):
 # UI compares them against the detected GPU to size the default batch, and an
 # optimistic figure turns into an OOM mid-run where a cautious one merely
 # trains slightly slower.
+#
+# YOLO11 vs YOLO12: the user asked for whichever is better, not both. YOLO12
+# wins on accuracy at every size (ultralytics' own COCO tables: 40.6 vs 39.5
+# mAP at nano, and the gap holds up the ladder) at comparable inference cost,
+# so YOLO12 is the listed family and YOLO11 is legacy — registered but hidden,
+# because checkpoints already trained with these keys must keep deploying.
+
+
+class _LegacyYolo11(UltralyticsTrainer):
+    """Base for the delisted YOLO11 family — see the roster note above."""
+
+    family = "YOLO11"
+    listed = False
+    description = "Superseded by YOLO12. Existing checkpoints still deploy."
 
 
 @register
-class Yolo11NanoTrainer(UltralyticsTrainer):
+class Yolo11NanoTrainer(_LegacyYolo11):
     # HISTORIC KEY: this was the first (only) trainer, registered as "yolo".
     # Existing job rows and checkpoints reference it, so the key stays even
     # though its siblings follow the "yolo11s" pattern.
     key = "yolo"
-    family = "YOLO11"
     variant = "nano"
     display_name = "YOLO11 nano"
-    description = (
-        "The smallest YOLO11 — trains on modest GPUs and predicts fastest. "
-        "The right starting point on most machines."
-    )
     approx_vram_gb = 3.0
     default_batch_size = 8
     base_weights = "yolo11n.pt"
 
 
 @register
-class Yolo11SmallTrainer(UltralyticsTrainer):
+class Yolo11SmallTrainer(_LegacyYolo11):
     key = "yolo11s"
-    family = "YOLO11"
     variant = "small"
     display_name = "YOLO11 small"
-    description = "A step up in accuracy from nano for roughly half again the memory."
     approx_vram_gb = 4.5
     default_batch_size = 8
     base_weights = "yolo11s.pt"
 
 
 @register
-class Yolo11MediumTrainer(UltralyticsTrainer):
+class Yolo11MediumTrainer(_LegacyYolo11):
     key = "yolo11m"
-    family = "YOLO11"
     variant = "medium"
     display_name = "YOLO11 medium"
-    description = "The middle of the family — needs a mid-range GPU (6 GB+)."
     approx_vram_gb = 6.5
     default_batch_size = 4
     base_weights = "yolo11m.pt"
 
 
 @register
-class Yolo11LargeTrainer(UltralyticsTrainer):
+class Yolo11LargeTrainer(_LegacyYolo11):
     key = "yolo11l"
-    family = "YOLO11"
     variant = "large"
     display_name = "YOLO11 large"
-    description = "High accuracy, slower — wants 8 GB+ of VRAM."
     approx_vram_gb = 8.5
     default_batch_size = 4
     base_weights = "yolo11l.pt"
 
 
 @register
-class Yolo11XLargeTrainer(UltralyticsTrainer):
+class Yolo11XLargeTrainer(_LegacyYolo11):
     key = "yolo11x"
-    family = "YOLO11"
     variant = "xlarge"
     display_name = "YOLO11 xlarge"
-    description = "The biggest YOLO11. Best accuracy in the family; wants 10 GB+."
     approx_vram_gb = 11.0
     default_batch_size = 2
     base_weights = "yolo11x.pt"
+
+
+# --- YOLO12: attention-based, better mAP than YOLO11 at every size ----------
+# Slightly hungrier than YOLO11 at the same size (the attention blocks), hence
+# the +0.5 GB on each estimate.
+
+
+@register
+class Yolo12NanoTrainer(UltralyticsTrainer):
+    key = "yolo12n"
+    family = "YOLO12"
+    variant = "nano"
+    display_name = "YOLO12 nano"
+    description = (
+        "Attention-based YOLO, better accuracy than YOLO11 at every size. "
+        "Nano trains on modest GPUs — the right starting point on most machines."
+    )
+    approx_vram_gb = 3.5
+    default_batch_size = 8
+    base_weights = "yolo12n.pt"
+
+
+@register
+class Yolo12SmallTrainer(UltralyticsTrainer):
+    key = "yolo12s"
+    family = "YOLO12"
+    variant = "small"
+    display_name = "YOLO12 small"
+    description = "A step up in accuracy from nano for roughly half again the memory."
+    approx_vram_gb = 5.0
+    default_batch_size = 8
+    base_weights = "yolo12s.pt"
+
+
+@register
+class Yolo12MediumTrainer(UltralyticsTrainer):
+    key = "yolo12m"
+    family = "YOLO12"
+    variant = "medium"
+    display_name = "YOLO12 medium"
+    description = "The middle of the family — needs a mid-range GPU (7 GB+)."
+    approx_vram_gb = 7.0
+    default_batch_size = 4
+    base_weights = "yolo12m.pt"
+
+
+@register
+class Yolo12LargeTrainer(UltralyticsTrainer):
+    key = "yolo12l"
+    family = "YOLO12"
+    variant = "large"
+    display_name = "YOLO12 large"
+    description = "High accuracy, slower — wants 9 GB+ of VRAM."
+    approx_vram_gb = 9.0
+    default_batch_size = 4
+    base_weights = "yolo12l.pt"
+
+
+@register
+class Yolo12XLargeTrainer(UltralyticsTrainer):
+    key = "yolo12x"
+    family = "YOLO12"
+    variant = "xlarge"
+    display_name = "YOLO12 xlarge"
+    description = "The biggest YOLO12. Best accuracy in the family; wants 12 GB+."
+    approx_vram_gb = 12.0
+    default_batch_size = 2
+    base_weights = "yolo12x.pt"
+
+
+# --- YOLO26: ultralytics' newest family — NMS-free end-to-end ---------------
+
+
+@register
+class Yolo26NanoTrainer(UltralyticsTrainer):
+    key = "yolo26n"
+    family = "YOLO26"
+    variant = "nano"
+    display_name = "YOLO26 nano"
+    description = (
+        "Ultralytics' newest family: NMS-free end-to-end detection, faster "
+        "inference and better small-object accuracy than YOLO11/12. Nano fits "
+        "modest GPUs."
+    )
+    approx_vram_gb = 3.0
+    default_batch_size = 8
+    base_weights = "yolo26n.pt"
+
+
+@register
+class Yolo26SmallTrainer(UltralyticsTrainer):
+    key = "yolo26s"
+    family = "YOLO26"
+    variant = "small"
+    display_name = "YOLO26 small"
+    description = "A step up in accuracy from nano for roughly half again the memory."
+    approx_vram_gb = 4.5
+    default_batch_size = 8
+    base_weights = "yolo26s.pt"
+
+
+@register
+class Yolo26MediumTrainer(UltralyticsTrainer):
+    key = "yolo26m"
+    family = "YOLO26"
+    variant = "medium"
+    display_name = "YOLO26 medium"
+    description = "The middle of the family — needs a mid-range GPU (6 GB+)."
+    approx_vram_gb = 6.5
+    default_batch_size = 4
+    base_weights = "yolo26m.pt"
+
+
+@register
+class Yolo26LargeTrainer(UltralyticsTrainer):
+    key = "yolo26l"
+    family = "YOLO26"
+    variant = "large"
+    display_name = "YOLO26 large"
+    description = "High accuracy, slower — wants 8 GB+ of VRAM."
+    approx_vram_gb = 8.5
+    default_batch_size = 4
+    base_weights = "yolo26l.pt"
+
+
+@register
+class Yolo26XLargeTrainer(UltralyticsTrainer):
+    key = "yolo26x"
+    family = "YOLO26"
+    variant = "xlarge"
+    display_name = "YOLO26 xlarge"
+    description = "The biggest YOLO26. Best accuracy in the family; wants 10 GB+."
+    approx_vram_gb = 11.0
+    default_batch_size = 2
+    base_weights = "yolo26x.pt"
+
+
+# --- RT-DETR: Baidu's real-time detection transformer -----------------------
 
 
 @register
@@ -321,4 +460,20 @@ class RtDetrLTrainer(UltralyticsTrainer):
     approx_vram_gb = 10.0
     default_batch_size = 4
     base_weights = "rtdetr-l.pt"
+    model_class = "RTDETR"
+
+
+@register
+class RtDetrXTrainer(UltralyticsTrainer):
+    key = "rtdetr_x"
+    family = "RT-DETR"
+    variant = "X"
+    display_name = "RT-DETR X"
+    description = (
+        "The bigger RT-DETR — best transformer accuracy in the roster, and the "
+        "hungriest to train. Wants 14 GB+."
+    )
+    approx_vram_gb = 14.0
+    default_batch_size = 2
+    base_weights = "rtdetr-x.pt"
     model_class = "RTDETR"

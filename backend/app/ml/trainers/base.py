@@ -149,6 +149,11 @@ class Trainer(ABC):
     #: The size/flavour within the family, e.g. "nano" or "L".
     variant: str = ""
     description: str = ""
+    #: Offered for NEW runs? False = legacy: hidden from the picker, but still
+    #: registered so existing checkpoints trained with this key keep loading
+    #: (deploy, evaluate, weights download). This is how a family gets
+    #: superseded without breaking every model it ever trained.
+    listed: bool = True
     #: Rough peak VRAM at the DEFAULT settings, surfaced so the user can tell
     #: what will fit before they wait for an OOM. Batch/image size move it.
     approx_vram_gb: float = 0.0

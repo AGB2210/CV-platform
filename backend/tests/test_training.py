@@ -138,15 +138,14 @@ def fake_trainer():
 
 def test_trainers_lists_registered_backends(client):
     """The dropdown is fetched, not hardcoded: whatever trainers are registered
-    show up, each carrying the metadata and form defaults the UI needs. YOLO is
-    registered in Phase 4b."""
+    show up, each carrying the metadata and form defaults the UI needs."""
     r = client.get("/api/trainers")
     assert r.status_code == 200
     keys = {t["key"] for t in r.json()}
-    assert "yolo" in keys
-    yolo = next(t for t in r.json() if t["key"] == "yolo")
-    assert yolo["export_format"] == "yolo"
-    assert yolo["default_epochs"] > 0 and yolo["default_image_size"] > 0
+    assert "yolo12n" in keys
+    first = next(t for t in r.json() if t["key"] == "yolo12n")
+    assert first["export_format"] == "yolo"
+    assert first["default_epochs"] > 0 and first["default_image_size"] > 0
 
 
 def test_preview_reports_split_readiness(client):
@@ -803,22 +802,37 @@ def test_training_logs_capture_and_endpoint(client, monkeypatch, fake_trainer):
 # --- the model roster --------------------------------------------------------
 
 
-def test_roster_covers_yolo_family_and_rtdetr(client):
-    """Six ultralytics trainers, grouped by family, with 'yolo' keeping its
-    historic key (existing job rows reference it)."""
+def test_roster_lists_yolo12_yolo26_rtdetr_and_hides_legacy_yolo11(client):
+    """The listed roster is YOLO12 n-x, YOLO26 n-x, RT-DETR L/X. YOLO11 was
+    superseded by YOLO12 (better mAP at every size) and is DELISTED, not
+    deleted: its keys must still resolve so checkpoints already trained with
+    them keep deploying."""
+    from app.ml.trainers import registry
+
     trainers = client.get("/api/trainers").json()
     by_key = {t["key"]: t for t in trainers}
 
-    for key in ("yolo", "yolo11s", "yolo11m", "yolo11l", "yolo11x", "rtdetr_l"):
+    for key in (
+        "yolo12n", "yolo12s", "yolo12m", "yolo12l", "yolo12x",
+        "yolo26n", "yolo26s", "yolo26m", "yolo26l", "yolo26x",
+        "rtdetr_l", "rtdetr_x",
+    ):
         assert key in by_key, f"missing trainer {key}"
 
-    assert by_key["yolo"]["family"] == "YOLO11" and by_key["yolo"]["variant"] == "nano"
-    assert by_key["rtdetr_l"]["family"] == "RT-DETR"
-    # The ladder is ordered: VRAM demand grows with size within the family.
-    yolo_family = [t for t in trainers if t["family"] == "YOLO11"]
-    assert len(yolo_family) == 5
-    vrams = [by_key[k]["approx_vram_gb"] for k in ("yolo", "yolo11s", "yolo11m", "yolo11l", "yolo11x")]
-    assert vrams == sorted(vrams)
+    # Legacy YOLO11: absent from the picker, present in the registry.
+    for key in ("yolo", "yolo11s", "yolo11m", "yolo11l", "yolo11x"):
+        assert key not in by_key, f"legacy {key} must not be offered for new runs"
+        assert registry.get_class(key), f"legacy {key} must still resolve"
+
+    # The ladders stay ordered: VRAM demand grows with size within a family.
+    for fam, keys in (
+        ("YOLO12", ("yolo12n", "yolo12s", "yolo12m", "yolo12l", "yolo12x")),
+        ("YOLO26", ("yolo26n", "yolo26s", "yolo26m", "yolo26l", "yolo26x")),
+        ("RT-DETR", ("rtdetr_l", "rtdetr_x")),
+    ):
+        assert all(by_key[k]["family"] == fam for k in keys)
+        vrams = [by_key[k]["approx_vram_gb"] for k in keys]
+        assert vrams == sorted(vrams), f"{fam} ladder out of order"
 
 
 def test_oom_failure_gets_actionable_message(client, monkeypatch):

@@ -72,6 +72,9 @@ def available() -> list[dict]:
             "default_image_size": cls.default_image_size,
         }
         for cls in _REGISTRY.values()
+        # Legacy trainers stay resolvable by key (existing checkpoints must
+        # keep deploying) but are not offered for new runs.
+        if cls.listed
     ]
 
 
