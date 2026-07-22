@@ -20,6 +20,7 @@ import tempfile
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -91,6 +92,39 @@ def list_models(project_id: int, db: Session = Depends(get_db)) -> list[Deployab
             )
         )
     return out
+
+
+@router.get("/models/{job_id}/weights")
+def download_weights(job_id: int, db: Session = Depends(get_db)) -> FileResponse:
+    """Download a finished run's checkpoint (.pt) — the model, portable.
+
+    The file is streamed as-is from storage: what ultralytics saved as best.pt
+    is exactly what you get, loadable anywhere with `YOLO("file.pt")`. The
+    download name carries the version label and trainer key so a folder of
+    exported weights stays tellable-apart.
+    """
+    job = db.get(TrainingJob, job_id)
+    if job is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Model {job_id} not found")
+    if job.status != JobStatus.DONE or not job.checkpoint_path:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "That run has no usable checkpoint — only a finished run has weights.",
+        )
+    checkpoint = from_storage_path(job.checkpoint_path)
+    if checkpoint is None or not checkpoint.exists():
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "The checkpoint file for that run is missing on disk.",
+        )
+
+    label = label_for(job.name, job.version)
+    safe = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in label)
+    return FileResponse(
+        checkpoint,
+        media_type="application/octet-stream",
+        filename=f"{safe}_{job.trainer_key}.pt",
+    )
 
 
 def _gpu_busy(db: Session, project_id: int) -> bool:

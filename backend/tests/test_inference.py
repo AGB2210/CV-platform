@@ -162,3 +162,29 @@ def test_predict_400_when_run_unfinished(client, infer_setup):
     )
     # RUNNING is both "not done" and "gpu busy"; either way it must refuse.
     assert r.status_code in (400, 409)
+
+
+def test_download_weights_streams_checkpoint(client, infer_setup):
+    """The .pt download is the checkpoint file, byte for byte, under a
+    label-carrying name."""
+    r = client.get(f"/api/models/{infer_setup['job_id']}/weights")
+    assert r.status_code == 200
+    assert r.content == b"not really weights"
+    dispo = r.headers["content-disposition"]
+    assert dispo.endswith('.pt"') and "fakeinfer" in dispo
+
+
+def test_download_weights_404_and_400(client, infer_setup):
+    """No job = 404; a job without a usable checkpoint = 400."""
+    assert client.get("/api/models/999999/weights").status_code == 404
+
+    from app.config import from_storage_path
+    from app.models import TrainingJob
+
+    db = client.SessionLocal()  # type: ignore[attr-defined]
+    try:
+        job = db.get(TrainingJob, infer_setup["job_id"])
+        from_storage_path(job.checkpoint_path).unlink()  # weights cleaned up
+    finally:
+        db.close()
+    assert client.get(f"/api/models/{infer_setup['job_id']}/weights").status_code == 400

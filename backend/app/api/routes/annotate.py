@@ -547,6 +547,7 @@ def export_dataset(
     background_tasks: BackgroundTasks,
     format: str = "coco",
     include_unreviewed: bool = True,
+    content: str = "full",
     db: Session = Depends(get_db),
 ) -> FileResponse:
     """Build and download the dataset as a zip.
@@ -554,13 +555,25 @@ def export_dataset(
     Generated on demand, exactly like Roboflow's "Generate version": the DB is
     the source of truth and the export is a derived artifact. Nothing is cached,
     so an export can never be stale relative to your annotations.
+
+    `content` picks what goes in the zip:
+      full         labels AND image files — a training-ready dataset.
+      annotations  labels only. Small, and enough when the recipient already
+                   has the images (or you're versioning labels in git).
+      images       image files only, split-foldered, no labels. `format` is
+                   irrelevant here — there are no labels to format.
     """
     project = get_project_or_404(project_id, db)
 
-    try:
-        exporter = exporters.get(format)
-    except KeyError as exc:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from None
+    if content not in ("full", "annotations", "images"):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"content must be full, annotations or images, not {content!r}",
+        )
+
+    safe_name = "".join(
+        ch if ch.isalnum() or ch in "-_" else "_" for ch in project.name
+    )
 
     # mkdtemp, not TemporaryDirectory: the context manager would delete the zip
     # before FileResponse has streamed it. Cleanup is deferred to a background
@@ -568,18 +581,43 @@ def export_dataset(
     tmp_root = Path(tempfile.mkdtemp(prefix="cvexport_"))
     try:
         dataset_dir = tmp_root / "dataset"
-        exporter.export(
-            build_snapshot(db, project_id),
-            exporters.ExportRequest(
-                out_dir=dataset_dir,
-                include_unreviewed=include_unreviewed,
-            ),
-        )
-        safe_name = "".join(
-            ch if ch.isalnum() or ch in "-_" else "_" for ch in project.name
-        )
+        snapshot = build_snapshot(db, project_id)
+
+        if content == "images":
+            # No exporter: just the files, in the same {split}/images/ layout
+            # the full export uses, so the two zips line up side by side.
+            from app.services import storage
+
+            for image in snapshot.images:
+                src = storage.project_dir(project_id) / image.filename
+                if not src.exists():
+                    continue
+                dest_dir = dataset_dir / image.split / "images"
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(src, dest_dir / image.original_filename)
+            stem = f"{safe_name}_images"
+        else:
+            try:
+                exporter = exporters.get(format)
+            except KeyError as exc:
+                raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from None
+            exporter.export(
+                snapshot,
+                exporters.ExportRequest(
+                    out_dir=dataset_dir,
+                    include_unreviewed=include_unreviewed,
+                    copy_images=content == "full",
+                ),
+            )
+            stem = (
+                f"{safe_name}_{format}"
+                if content == "full"
+                else f"{safe_name}_{format}_annotations"
+            )
+
+        dataset_dir.mkdir(parents=True, exist_ok=True)  # empty project still zips
         archive = shutil.make_archive(
-            str(tmp_root / f"{safe_name}_{format}"), "zip", root_dir=dataset_dir
+            str(tmp_root / stem), "zip", root_dir=dataset_dir
         )
     except Exception:
         shutil.rmtree(tmp_root, ignore_errors=True)
@@ -589,5 +627,5 @@ def export_dataset(
     return FileResponse(
         archive,
         media_type="application/zip",
-        filename=f"{safe_name}_{format}.zip",
+        filename=f"{stem}.zip",
     )

@@ -3,7 +3,6 @@ import { Link, useParams, useSearchParams } from 'react-router-dom'
 import {
   ArrowLeft,
   Cpu,
-  Download,
   Image as ImageIcon,
   Play,
   Sparkles,
@@ -15,14 +14,12 @@ import { StatusBadge, type Status } from '@/components/StatusBadge'
 import {
   ApiError,
   cancelAnnotationJob,
-  exportUrl,
   getAnnotatePreview,
   getAnnotationSummary,
   getDevice,
   getJob,
   listAnnotators,
   listClasses,
-  listExportFormats,
   listImagePage,
   listJobs,
   startAnnotation,
@@ -33,7 +30,6 @@ import {
   type DatasetImage,
   type JobScope,
   type DeviceInfo,
-  type ExportFormatInfo,
   type ProjectClass,
 } from '@/lib/api'
 import { Modal } from '@/components/ui/Modal'
@@ -66,7 +62,6 @@ export function Annotate() {
   const [annotators, setAnnotators] = useState<AnnotatorInfo[]>([])
   const [device, setDevice] = useState<DeviceInfo | null>(null)
   const [classes, setClasses] = useState<ProjectClass[]>([])
-  const [formats, setFormats] = useState<ExportFormatInfo[]>([])
   const [summary, setSummary] = useState<AnnotationSummary | null>(null)
   const [jobs, setJobs] = useState<AnnotationJob[]>([])
 
@@ -121,17 +116,15 @@ export function Annotate() {
       listAnnotators(),
       getDevice(),
       listClasses(projectId),
-      listExportFormats(),
       getAnnotationSummary(projectId),
       listJobs(projectId),
       getAnnotatePreview(projectId),
     ])
-      .then(([a, d, c, f, s, j, p]) => {
+      .then(([a, d, c, s, j, p]) => {
         if (cancelled) return
         setAnnotators(a)
         setDevice(d)
         setClasses(c)
-        setFormats(f)
         setSummary(s)
         setJobs(j)
         setPre(p)
@@ -578,7 +571,8 @@ export function Annotate() {
           <aside className="space-y-4">
             {device && <DeviceCard device={device} />}
             {summary && <SummaryCard summary={summary} />}
-            <ExportCard projectId={projectId} formats={formats} />
+            {/* Export moved to the Dataset page — it exports the dataset, and
+                it lives with the thing it acts on. */}
             {jobs.length > 0 && <JobHistory jobs={jobs} />}
           </aside>
         </div>
@@ -811,45 +805,6 @@ function Row({ label, value }: { label: string; value: string | number }) {
     <div className="flex justify-between">
       <dt className="text-gray-500">{label}</dt>
       <dd className="font-mono tabular-nums text-gray-900">{value}</dd>
-    </div>
-  )
-}
-
-function ExportCard({
-  projectId,
-  formats,
-}: {
-  projectId: number
-  formats: ExportFormatInfo[]
-}) {
-  const [format, setFormat] = useState('coco')
-  return (
-    <div className="card">
-      <div className="flex items-center gap-2 border-b border-gray-200 px-3 py-2.5">
-        <Download size={14} className="text-gray-400" />
-        <h2 className="text-sm font-medium text-gray-900">Export</h2>
-      </div>
-      <div className="space-y-2 p-3">
-        <select
-          value={format}
-          onChange={(e) => setFormat(e.target.value)}
-          className="w-full rounded-md border border-gray-300 bg-white px-2 py-1 text-xs focus:border-accent-500 focus:outline-none"
-        >
-          {formats.map((f) => (
-            <option key={f.key} value={f.key}>
-              {f.display_name}
-            </option>
-          ))}
-        </select>
-        <p className="text-xs text-gray-400">
-          {formats.find((f) => f.key === format)?.description}
-        </p>
-        {/* An <a download>, not a fetch — native download UI and streaming. */}
-        <a href={exportUrl(projectId, format)} download className="btn-secondary w-full">
-          <Download size={13} />
-          Download dataset
-        </a>
-      </div>
     </div>
   )
 }

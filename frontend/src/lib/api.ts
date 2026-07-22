@@ -1089,5 +1089,13 @@ export const getAnnotationSummary = (projectId: number) =>
 /** Export is a plain link, not a fetch: letting the browser navigate to the URL
  *  gets the native download UI and streaming for free, where fetch would buffer
  *  the whole zip into memory first. */
-export const exportUrl = (projectId: number, format: string, includeUnreviewed = true) =>
-  `/api/projects/${projectId}/export?format=${format}&include_unreviewed=${includeUnreviewed}`
+export const exportUrl = (
+  projectId: number,
+  format: string,
+  includeUnreviewed = true,
+  content: 'full' | 'annotations' | 'images' = 'full',
+) =>
+  `/api/projects/${projectId}/export?format=${format}&include_unreviewed=${includeUnreviewed}&content=${content}`
+
+/** Trained weights (.pt) download — also a plain link, same reasoning. */
+export const weightsUrl = (jobId: number) => `/api/models/${jobId}/weights`

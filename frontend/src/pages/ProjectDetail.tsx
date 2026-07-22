@@ -14,6 +14,7 @@ import {
   Tags,
   ChevronLeft,
   ChevronRight,
+  Download,
   HardDrive,
   Trash2,
   Undo2,
@@ -40,10 +41,12 @@ import {
   deleteDatasetVersion,
   bulkDeleteImages,
   deleteImage,
+  exportUrl,
   getDatasetStats,
   getProject,
   listClasses,
   listDatasetVersions,
+  listExportFormats,
   listImagePage,
   renameDatasetVersion,
   restoreDatasetVersion,
@@ -61,6 +64,7 @@ import {
   type DatasetImage,
   type DatasetStats,
   type DatasetVersion,
+  type ExportFormatInfo,
   type Project,
   type ProjectClass,
   type Split,
@@ -297,6 +301,11 @@ export function ProjectDetail() {
               onChanged={refresh}
               onError={setError}
             />
+            {/* Export lives HERE, on the dataset page — it exports the
+                dataset, and hunting for it on the Auto-annotate page (its old
+                home, a leftover from when that page was the only one that knew
+                about formats) made no sense. */}
+            <ExportPanel projectId={projectId} hasImages={images.length > 0} />
             {/* Last: housekeeping is something you check occasionally, not a
                 thing to put above the work. */}
             <StoragePanel
@@ -934,6 +943,104 @@ function UploadPanel({
 }
 
 const mb = (bytes: number) => `${(bytes / 1048576).toFixed(1)} MB`
+
+/**
+ * Download the dataset as a zip — whole, labels only, or images only.
+ *
+ * Three contents rather than one because the three journeys differ: "train
+ * elsewhere" wants everything, "I already have the images" wants the small
+ * labels-only zip, and "reuse these images in another tool" wants no labels at
+ * all. Format only applies when labels are in the zip, so the picker greys out
+ * for images-only instead of pretending the choice still means something.
+ */
+function ExportPanel({
+  projectId,
+  hasImages,
+}: {
+  projectId: number
+  hasImages: boolean
+}) {
+  const [formats, setFormats] = useState<ExportFormatInfo[]>([])
+  const [format, setFormat] = useState('coco')
+  const [content, setContent] = useState<'full' | 'annotations' | 'images'>('full')
+
+  useEffect(() => {
+    listExportFormats()
+      .then(setFormats)
+      .catch(() => {
+        /* the card still works: content radio + a download that defaults to coco */
+      })
+  }, [])
+
+  const options = [
+    { value: 'full' as const, label: 'Whole dataset', blurb: 'Labels and image files.' },
+    { value: 'annotations' as const, label: 'Annotations only', blurb: 'Just the label files — small.' },
+    { value: 'images' as const, label: 'Images only', blurb: 'Just the image files, split-foldered.' },
+  ]
+
+  return (
+    <div className="card">
+      <div className="flex items-center gap-2 border-b border-gray-200 px-3 py-2.5">
+        <Download size={14} className="text-gray-400" />
+        <h2 className="text-sm font-medium text-gray-900">Export</h2>
+      </div>
+      <div className="space-y-2 p-3">
+        <div className="space-y-1">
+          {options.map((o) => (
+            <label
+              key={o.value}
+              className={`flex cursor-pointer items-baseline gap-2 rounded-md border p-1.5 text-xs transition-colors ${
+                content === o.value
+                  ? 'border-accent-500 bg-accent-50'
+                  : 'border-gray-200 hover:bg-gray-50'
+              }`}
+            >
+              <input
+                type="radio"
+                name="export-content"
+                checked={content === o.value}
+                onChange={() => setContent(o.value)}
+                className="accent-accent-600"
+              />
+              <span className="font-medium text-gray-900">{o.label}</span>
+              <span className="ml-auto text-right text-gray-400">{o.blurb}</span>
+            </label>
+          ))}
+        </div>
+        <select
+          value={format}
+          onChange={(e) => setFormat(e.target.value)}
+          disabled={content === 'images'}
+          className="w-full rounded-md border border-gray-300 bg-white px-2 py-1 text-xs focus:border-accent-500 focus:outline-none disabled:bg-gray-50 disabled:text-gray-400"
+        >
+          {formats.map((f) => (
+            <option key={f.key} value={f.key}>
+              {f.display_name}
+            </option>
+          ))}
+        </select>
+        <p className="text-xs text-gray-400">
+          {content === 'images'
+            ? 'No labels in this zip, so the format does not apply.'
+            : formats.find((f) => f.key === format)?.description}
+        </p>
+        {/* An <a download>, not a fetch — native download UI and streaming. */}
+        {hasImages ? (
+          <a
+            href={exportUrl(projectId, format, true, content)}
+            download
+            className="btn-secondary w-full"
+          >
+            <Download size={13} />
+            Download
+          </a>
+        ) : (
+          <p className="text-xs text-gray-400">Upload images first.</p>
+        )}
+      </div>
+    </div>
+  )
+}
 
 /**
  * Disk usage, and the two things that can be freed.

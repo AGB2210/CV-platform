@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { ArrowLeft, Cpu, Upload, ScanSearch } from 'lucide-react'
+import { ArrowLeft, Cpu, Download, Upload, ScanSearch } from 'lucide-react'
 import { PageBody, PageHeader } from '@/components/layout/AppShell'
 import { MlSetupGate } from '@/components/MlSetupGate'
 import {
   listModels,
   predictImage,
+  weightsUrl,
   type DeployableModel,
   type PredictionResult,
 } from '@/lib/api'
@@ -128,6 +129,21 @@ export function Deploy() {
                     Higher keeps only confident boxes; lower surfaces more, with more
                     false positives.
                   </p>
+
+                  {/* The model as a file. An <a download> streaming the .pt
+                      straight from storage — take it to a Pi, a server, a
+                      colleague's ultralytics script. */}
+                  {modelId != null && (
+                    <a
+                      href={weightsUrl(modelId)}
+                      download
+                      className="btn-secondary mt-4 w-full"
+                      title="Download this run's checkpoint (.pt) for use outside the app"
+                    >
+                      <Download size={13} />
+                      Download weights (.pt)
+                    </a>
+                  )}
                 </div>
 
                 <div className="card p-4">

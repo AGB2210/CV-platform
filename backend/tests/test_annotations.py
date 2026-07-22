@@ -369,3 +369,39 @@ def test_bulk_replace_rejects_cross_project_class(client):
         },
     )
     assert r.status_code == 400
+
+
+# --- export content options ---------------------------------------------------
+
+
+def _export_names(client, pid, query):
+    import io
+    import zipfile
+
+    r = client.get(f"/api/projects/{pid}/export?{query}")
+    assert r.status_code == 200, r.text
+    with zipfile.ZipFile(io.BytesIO(r.content)) as zf:
+        return set(zf.namelist())
+
+
+def test_export_content_options(client):
+    """full = labels + images; annotations = labels only; images = files only."""
+    pid, img_id, car = _one_image(client)
+    client.post(
+        f"/api/images/{img_id}/annotations",
+        json={"category_id": car["id"], "x": 5, "y": 5, "width": 20, "height": 20},
+    )
+
+    full = _export_names(client, pid, "format=coco&content=full")
+    assert any(n.endswith(".json") for n in full)
+    assert any("/images/" in n for n in full)
+
+    labels_only = _export_names(client, pid, "format=coco&content=annotations")
+    assert any(n.endswith(".json") for n in labels_only)
+    assert not any("/images/" in n for n in labels_only), "annotations-only must carry no image files"
+
+    images_only = _export_names(client, pid, "content=images")
+    assert not any(n.endswith(".json") for n in images_only), "images-only must carry no labels"
+    assert any(n.endswith("a.png") for n in images_only)
+
+    assert client.get(f"/api/projects/{pid}/export?content=nonsense").status_code == 400
