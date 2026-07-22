@@ -346,6 +346,13 @@ def serve(python: Path, host: str, port: int, open_browser: bool) -> int:
         print("    The app has NO login. Anyone who can reach this port can read,")
         print("    upload and delete every project. Only do this on a trusted network.\n")
 
+    # PYTHONUTF8=1: force UTF-8 stdio in the server, whatever the console's
+    # codepage. Windows consoles default to cp1252, and ML frameworks assume
+    # UTF-8 freely — rfdetr's Rich metrics tables CRASHED a whole training run
+    # with UnicodeEncodeError, killed by its own progress printout. This is
+    # also simply Python's future default (PEP 686).
+    env = {**os.environ, "PYTHONUTF8": "1"}
+
     proc = subprocess.Popen(
         [
             str(python),
@@ -358,6 +365,7 @@ def serve(python: Path, host: str, port: int, open_browser: bool) -> int:
             str(port),
         ],
         cwd=str(BACKEND),
+        env=env,
     )
 
     if open_browser:

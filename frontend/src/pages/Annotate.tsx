@@ -128,9 +128,15 @@ export function Annotate() {
         setSummary(s)
         setJobs(j)
         setPre(p)
-        // Default to the first registered model rather than hardcoding a key —
-        // the backend decides what exists.
-        if (a.length) setModelKey((k) => k || a[0].key)
+        // Default to Grounding DINO tiny when present — the recommended
+        // starting point — falling back to whatever exists. Without the
+        // preference, registry import order picks the default, and that put
+        // Florence-2 (the slow, careful-pass model) in front by alphabet.
+        if (a.length) {
+          setModelKey(
+            (k) => k || (a.find((x) => x.key === 'grounding_dino')?.key ?? a[0].key),
+          )
+        }
         // Resume polling if a job is already in flight (e.g. you reloaded the
         // page mid-run). This is exactly why job state lives in the DB.
         const running = j.find((x) => x.status === 'running' || x.status === 'queued')

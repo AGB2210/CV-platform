@@ -36,7 +36,10 @@ supervision>=0.25.0
 # Pulls polars + nvidia-ml-py + thop; torch is already satisfied, so the CUDA
 # build is left untouched. Nano fine-tunes on modest GPUs.
 ultralytics>=8.3.0
-# rfdetr>=1.1.0             # RF-DETR (COCO) — a later trainer, not yet wired
+# RF-DETR (app/ml/trainers/rf_detr.py) — Roboflow's detection transformer.
+# The [train] extras pull the PyTorch Lightning training stack; inference
+# alone would not need them, but training is the whole point here.
+rfdetr[train]>=1.7.0
 
 # --- Phase 5: evaluation ---
 # COCO mAP on a held-out test split (services/evaluation_job.py). The reference

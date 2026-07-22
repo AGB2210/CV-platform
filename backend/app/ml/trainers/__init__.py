@@ -20,10 +20,12 @@ from app.ml.trainers.base import (
     TrainResult,
     Trainer,
 )
+from app.ml.trainers.rf_detr import RfDetrTrainer
 from app.ml.trainers.yolo import UltralyticsTrainer
 
 __all__ = [
     "EpochMetrics",
+    "RfDetrTrainer",
     "TrainConfig",
     "TrainResult",
     "Trainer",

@@ -816,6 +816,7 @@ def test_roster_lists_yolo12_yolo26_rtdetr_and_hides_legacy_yolo11(client):
         "yolo12n", "yolo12s", "yolo12m", "yolo12l", "yolo12x",
         "yolo26n", "yolo26s", "yolo26m", "yolo26l", "yolo26x",
         "rtdetr_l", "rtdetr_x",
+        "rfdetr_nano", "rfdetr_small", "rfdetr_medium",
     ):
         assert key in by_key, f"missing trainer {key}"
 
@@ -829,6 +830,7 @@ def test_roster_lists_yolo12_yolo26_rtdetr_and_hides_legacy_yolo11(client):
         ("YOLO12", ("yolo12n", "yolo12s", "yolo12m", "yolo12l", "yolo12x")),
         ("YOLO26", ("yolo26n", "yolo26s", "yolo26m", "yolo26l", "yolo26x")),
         ("RT-DETR", ("rtdetr_l", "rtdetr_x")),
+        ("RF-DETR", ("rfdetr_nano", "rfdetr_small", "rfdetr_medium")),
     ):
         assert all(by_key[k]["family"] == fam for k in keys)
         vrams = [by_key[k]["approx_vram_gb"] for k in keys]
