@@ -68,6 +68,12 @@ class EvaluationJob(Base):
     # so a JSON column buys nothing over Text (same call as TrainingJob.metrics).
     per_class_json: Mapped[str | None] = mapped_column(Text, default=None)
 
+    # The diagnostics beyond the headline: per-class PR curves (from COCOeval's
+    # precision tensor), the detection confusion matrix, and the worst-scoring
+    # images. One JSON blob because it is written once and read whole, like
+    # per_class_json — a number you'd QUERY BY would deserve a column.
+    details_json: Mapped[str | None] = mapped_column(Text, default=None)
+
     error: Mapped[str | None] = mapped_column(Text, default=None)
 
     created_at: Mapped[datetime] = mapped_column(

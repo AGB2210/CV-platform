@@ -198,3 +198,78 @@ def test_evaluate_400_when_split_empty(client, eval_setup):
     )
     assert r.status_code == 400
     assert "no val images" in r.json()["detail"].lower()
+
+
+# --- confusion matrix, PR curves, worst images -------------------------------
+
+
+def test_confusion_and_worst_matching_logic():
+    """The pure matching maths, all four outcomes: correct match, class
+    confusion, invention (FP vs background), and miss (FN)."""
+    from app.services.evaluation_job import _confusion_and_worst
+
+    classes = ["car", "person"]
+    per_image = [
+        {
+            # Image A: one car predicted correctly; one person MISSED.
+            "image_id": 10, "filename": "a.png", "original_filename": "a.png",
+            "gt": [(0, [10, 10, 20, 20]), (1, [50, 50, 10, 10])],
+            "preds": [(0, [11, 11, 20, 20], 0.9)],
+        },
+        {
+            # Image B: the car called a PERSON (confusion), plus a pure
+            # invention in empty space; below-threshold pred must be ignored.
+            "image_id": 11, "filename": "b.png", "original_filename": "b.png",
+            "gt": [(0, [10, 10, 20, 20])],
+            "preds": [
+                (1, [10, 10, 20, 20], 0.8),
+                (0, [80, 80, 10, 10], 0.7),
+                (0, [10, 10, 20, 20], 0.05),  # under 0.25 — invisible
+            ],
+        },
+    ]
+
+    confusion, worst = _confusion_and_worst(per_image, classes)
+    m = confusion["matrix"]  # [predicted][actual], bg index = 2
+    assert confusion["classes"] == ["car", "person", "background"]
+    assert m[0][0] == 1, "correct car match"
+    assert m[1][0] == 1, "car called person"
+    assert m[0][2] == 1, "invented car (background)"
+    assert m[2][1] == 1, "missed person"
+
+    # Worst ranking: image B has 2 errors (confusion + invention), A has 1 miss.
+    assert [w["image_id"] for w in worst] == [11, 10]
+    assert worst[0]["fp"] == 2 and worst[0]["fn"] == 0
+    assert worst[1]["fp"] == 0 and worst[1]["fn"] == 1
+
+
+def test_evaluation_stores_details(client, eval_setup):
+    """A finished evaluation carries PR curves, the confusion matrix and the
+    worst-image list through the API."""
+    r = client.post(
+        f"/api/projects/{eval_setup['project_id']}/evaluate",
+        json={
+            "training_job_id": eval_setup["model_id"],
+            "dataset_version_id": eval_setup["version_id"],
+            "split": "test",
+        },
+    )
+    assert r.status_code == 202, r.text
+    job = client.get(f"/api/evaluation-jobs/{r.json()['id']}").json()
+    assert job["status"] == "done", job.get("error")
+
+    d = job["details"]
+    assert d is not None
+    assert {c["name"] for c in d["pr_curves"]} <= {"car", "person"}
+    curve = next(c for c in d["pr_curves"] if c["name"] == "car")
+    assert len(curve["recall"]) == len(curve["precision"]) > 0
+    assert all(0 <= p <= 1 for p in curve["precision"])
+
+    conf = d["confusion"]
+    assert conf["classes"][-1] == "background"
+    n = len(conf["classes"])
+    assert len(conf["matrix"]) == n and all(len(row) == n for row in conf["matrix"])
+    # The fake predictor nails the car on both test images — diagonal hits.
+    assert conf["matrix"][0][0] == 2
+
+    assert isinstance(d["worst"], list)

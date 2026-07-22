@@ -750,10 +750,29 @@ export interface EvaluationJob {
   map_50: number | null
   map_75: number | null
   per_class: PerClassAP[]
+  /** Diagnostics beyond the headline. Null while running or for evaluations
+   *  from before the field existed. */
+  details: EvaluationDetails | null
   error: string | null
   created_at: string
   started_at: string | null
   finished_at: string | null
+}
+
+export interface EvaluationDetails {
+  /** Per-class precision over recall at IoU 0.50 — COCOeval's own sweep. */
+  pr_curves: { name: string; recall: number[]; precision: number[] }[]
+  /** matrix[predicted][actual]; last index on both axes is "background"
+   *  (a missed object or an invented one). */
+  confusion: { classes: string[]; matrix: number[][] }
+  /** Test images ranked by errors at conf 0.25 / IoU 0.45 — the ones to look at. */
+  worst: {
+    image_id: number
+    filename: string
+    original_filename: string
+    fp: number
+    fn: number
+  }[]
 }
 
 export const listEvaluations = (projectId: number) =>

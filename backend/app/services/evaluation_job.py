@@ -131,8 +131,21 @@ def _run(db: Session, job: EvaluationJob) -> None:
     detections: list[dict] = []
     project_dir = storage.project_dir(job.project_id)
 
+    # Per-image record for the confusion matrix and the worst-images ranking —
+    # kept beside the COCO structures because those flatten away the per-image
+    # grouping this analysis needs.
+    per_image: list[dict] = []
+
     for image_index, img in enumerate(test_images, start=1):
         gt_images.append({"id": image_index, "width": img.width, "height": img.height})
+        record = {
+            "image_id": img.id,
+            "filename": img.filename,
+            "original_filename": img.original_filename,
+            "gt": [],
+            "preds": [],
+        }
+        per_image.append(record)
         for a in img.annotations:
             name = gt_name_of.get(a.category_id)
             cat_id = cat_id_of.get(name) if name else None
@@ -152,6 +165,7 @@ def _run(db: Session, job: EvaluationJob) -> None:
                 }
             )
             ann_id += 1
+            record["gt"].append((cat_id - 1, [a.x, a.y, a.width, a.height]))
 
         path = project_dir / img.filename
         if not path.exists():
@@ -168,14 +182,23 @@ def _run(db: Session, job: EvaluationJob) -> None:
                     "score": b.confidence,
                 }
             )
+            record["preds"].append((cat_id - 1, b.to_coco_bbox(), b.confidence))
 
-    # 4. COCOeval.
+    # 4. COCOeval, then the diagnostics the headline number hides.
     metrics = _coco_evaluate(gt_images, gt_annotations, detections, class_names, cat_id_of)
+    confusion, worst = _confusion_and_worst(per_image, class_names)
 
     job.map_50_95 = metrics["map_50_95"]
     job.map_50 = metrics["map_50"]
     job.map_75 = metrics["map_75"]
     job.per_class_json = json.dumps(metrics["per_class"])
+    job.details_json = json.dumps(
+        {
+            "pr_curves": metrics["pr_curves"],
+            "confusion": confusion,
+            "worst": worst,
+        }
+    )
     job.status = JobStatus.DONE
     job.finished_at = utcnow()
     db.commit()
@@ -235,6 +258,13 @@ def _coco_evaluate(
     precision = ev.eval["precision"] if ev.eval else None
 
     per_class: list[dict] = []
+    pr_curves: list[dict] = []
+    # COCOeval traces precision at 101 fixed recall thresholds — that IS the
+    # PR curve, already computed; extracting it costs nothing extra. IoU 0.50
+    # (T index 0): the loosest standard threshold, which is the one people
+    # mean when they picture "the PR curve".
+    rec_thrs = list(getattr(ev.params, "recThrs", []))
+
     for name, cid in cat_id_of.items():
         ap = None
         if precision is not None:
@@ -245,6 +275,24 @@ def _coco_evaluate(
             col = col[col > -1]
             if col.size:
                 ap = float(np.mean(col))
+
+            curve = precision[0, :, k, 0, -1]  # IoU=.50, all recall thresholds
+            # -1 = "recall level never reached"; the curve honestly ends there.
+            pts = [
+                (float(r), float(p))
+                for r, p in zip(rec_thrs, curve.tolist())
+                if p > -1
+            ]
+            # Every 2nd point: 51 instead of 101 — indistinguishable on a
+            # 300px chart, half the JSON.
+            pts = pts[::2]
+            pr_curves.append(
+                {
+                    "name": name,
+                    "recall": [round(r, 3) for r, _ in pts],
+                    "precision": [round(p, 3) for _, p in pts],
+                }
+            )
         per_class.append({"name": name, "ap": ap})
 
     def stat(i: int) -> float | None:
@@ -256,4 +304,95 @@ def _coco_evaluate(
         "map_50": stat(1),
         "map_75": stat(2),
         "per_class": per_class,
+        "pr_curves": pr_curves,
     }
+
+
+# --- Confusion matrix + worst images -----------------------------------------
+# COCOeval sweeps every confidence, which is right for mAP and useless for a
+# confusion matrix — "what did the model call this?" only means something at
+# an OPERATING POINT. These are the conventional ones (YOLO uses the same).
+
+#: Confidence a detection must clear to count as "the model said so".
+_CONFUSION_CONF = 0.25
+#: Overlap for a prediction and a ground-truth box to be the same object.
+_CONFUSION_IOU = 0.45
+
+
+def _iou(a: list[float], b: list[float]) -> float:
+    """IoU of two COCO xywh boxes."""
+    ax2, ay2 = a[0] + a[2], a[1] + a[3]
+    bx2, by2 = b[0] + b[2], b[1] + b[3]
+    iw = min(ax2, bx2) - max(a[0], b[0])
+    ih = min(ay2, by2) - max(a[1], b[1])
+    if iw <= 0 or ih <= 0:
+        return 0.0
+    inter = iw * ih
+    return inter / (a[2] * a[3] + b[2] * b[3] - inter)
+
+
+def _confusion_and_worst(
+    per_image: list[dict], class_names: list[str]
+) -> tuple[dict, list[dict]]:
+    """Greedy IoU matching per image -> confusion matrix + worst-image ranking.
+
+    Matrix layout: matrix[predicted][actual], each axis being the classes plus
+    a final "background" slot. An unmatched ground-truth box is the model
+    MISSING something (background predicted, actual class); an unmatched
+    prediction is the model INVENTING something (predicted class, actual
+    background). Diagonal = right box, right class.
+
+    Worst images are ranked by misses + inventions at the same operating
+    point — the images to LOOK at, which a single mAP number never names.
+    """
+    n = len(class_names)
+    bg = n  # index of the background row/column
+    matrix = [[0] * (n + 1) for _ in range(n + 1)]
+    scored: list[dict] = []
+
+    for rec in per_image:
+        preds = sorted(
+            (p for p in rec["preds"] if p[2] >= _CONFUSION_CONF),
+            key=lambda p: -p[2],
+        )
+        gt = list(rec["gt"])
+        gt_taken = [False] * len(gt)
+        fp = fn = 0
+
+        for p_cls, p_box, _score in preds:
+            best_i, best_iou = -1, _CONFUSION_IOU
+            for i, (g_cls, g_box) in enumerate(gt):
+                if gt_taken[i]:
+                    continue
+                iou = _iou(p_box, g_box)
+                if iou >= best_iou:
+                    best_i, best_iou = i, iou
+            if best_i >= 0:
+                gt_taken[best_i] = True
+                g_cls = gt[best_i][0]
+                matrix[p_cls][g_cls] += 1
+                if p_cls != g_cls:
+                    fp += 1  # right place, wrong name — still an error to review
+            else:
+                matrix[p_cls][bg] += 1
+                fp += 1
+
+        for i, (g_cls, _g_box) in enumerate(gt):
+            if not gt_taken[i]:
+                matrix[bg][g_cls] += 1
+                fn += 1
+
+        if fp or fn:
+            scored.append(
+                {
+                    "image_id": rec["image_id"],
+                    "filename": rec["filename"],
+                    "original_filename": rec["original_filename"],
+                    "fp": fp,
+                    "fn": fn,
+                }
+            )
+
+    scored.sort(key=lambda s: -(s["fp"] + s["fn"]))
+    confusion = {"classes": [*class_names, "background"], "matrix": matrix}
+    return confusion, scored[:12]

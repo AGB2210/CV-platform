@@ -52,6 +52,19 @@ class EvaluationJobRead(BaseModel):
         except (ValueError, TypeError):
             return []
 
+    #: details_json unpacked: PR curves, confusion matrix, worst images.
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def details(self) -> dict | None:
+        raw = getattr(self, "details_json", None)
+        if not raw:
+            return None
+        try:
+            return json.loads(raw)
+        except (ValueError, TypeError):
+            return None
+
     # Carried through from the ORM object so the computed field above can read
     # it; excluded from the response body itself.
     per_class_json: str | None = Field(default=None, exclude=True)
+    details_json: str | None = Field(default=None, exclude=True)

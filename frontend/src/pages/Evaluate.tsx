@@ -13,6 +13,7 @@ import {
   versionLabel,
   type DatasetVersion,
   type DeployableModel,
+  type EvaluationDetails,
   type EvaluationJob,
 } from '@/lib/api'
 
@@ -262,8 +263,192 @@ function ResultCard({ job }: { job: EvaluationJob }) {
             {job.num_images} test image{job.num_images === 1 ? '' : 's'}. mAP@50-95 is the
             COCO headline metric — the average over IoU thresholds 0.50 to 0.95.
           </p>
+
+          {/* The diagnostics the headline hides: what got confused with what,
+              how precision trades against recall, and WHICH images fail. */}
+          {job.details && (
+            <>
+              <PRCurves curves={job.details.pr_curves} />
+              <ConfusionMatrix confusion={job.details.confusion} />
+              <WorstImages worst={job.details.worst} projectId={job.project_id} />
+            </>
+          )}
         </div>
       )}
+    </div>
+  )
+}
+
+/** One line per class in a fixed palette (class colors live on the project;
+ *  a deterministic assignment here keeps the chart self-contained). */
+const PR_COLORS = ['#2563eb', '#dc2626', '#16a34a', '#d97706', '#7c3aed', '#0891b2', '#db2777', '#65a30d']
+
+function PRCurves({ curves }: { curves: EvaluationDetails['pr_curves'] }) {
+  if (!curves.length) return null
+  const W = 320
+  const H = 180
+  const PAD = { l: 30, r: 8, t: 8, b: 24 }
+  const pw = W - PAD.l - PAD.r
+  const ph = H - PAD.t - PAD.b
+  const sx = (r: number) => PAD.l + r * pw
+  const sy = (p: number) => PAD.t + (1 - p) * ph
+
+  return (
+    <div>
+      <p className="label-eyebrow mb-1.5">Precision–recall at IoU 0.50</p>
+      <div className="mb-1 flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-gray-500">
+        {curves.map((c, i) => (
+          <span key={c.name} className="flex items-center gap-1">
+            <span
+              className="inline-block h-0.5 w-3 rounded"
+              style={{ backgroundColor: PR_COLORS[i % PR_COLORS.length] }}
+            />
+            {c.name}
+          </span>
+        ))}
+      </div>
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full rounded border border-gray-100">
+        {/* Axis frame + quarter gridlines. */}
+        {[0, 0.25, 0.5, 0.75, 1].map((t) => (
+          <g key={t}>
+            <line x1={sx(t)} y1={PAD.t} x2={sx(t)} y2={H - PAD.b} stroke="#f4f4f5" />
+            <line x1={PAD.l} y1={sy(t)} x2={W - PAD.r} y2={sy(t)} stroke="#f4f4f5" />
+            <text x={sx(t)} y={H - PAD.b + 12} textAnchor="middle" className="fill-gray-400 text-[8px] tabular-nums">
+              {t}
+            </text>
+            <text x={PAD.l - 4} y={sy(t)} dy="0.32em" textAnchor="end" className="fill-gray-400 text-[8px] tabular-nums">
+              {t}
+            </text>
+          </g>
+        ))}
+        <line x1={PAD.l} y1={PAD.t} x2={PAD.l} y2={H - PAD.b} stroke="#d4d4d8" />
+        <line x1={PAD.l} y1={H - PAD.b} x2={W - PAD.r} y2={H - PAD.b} stroke="#d4d4d8" />
+        <text x={PAD.l + pw / 2} y={H - 2} textAnchor="middle" className="fill-gray-500 text-[8px]">
+          recall
+        </text>
+        {curves.map((c, i) => (
+          <path
+            key={c.name}
+            d={c.recall
+              .map((r, j) => `${j === 0 ? 'M' : 'L'}${sx(r).toFixed(1)},${sy(c.precision[j]).toFixed(1)}`)
+              .join(' ')}
+            fill="none"
+            stroke={PR_COLORS[i % PR_COLORS.length]}
+            strokeWidth={1.5}
+          />
+        ))}
+      </svg>
+    </div>
+  )
+}
+
+function ConfusionMatrix({ confusion }: { confusion: EvaluationDetails['confusion'] }) {
+  const { classes, matrix } = confusion
+  const max = Math.max(1, ...matrix.flat())
+  return (
+    <div>
+      <p className="label-eyebrow mb-1.5">Confusion at conf 0.25 / IoU 0.45</p>
+      <div className="overflow-x-auto">
+        <table className="text-[10px] tabular-nums">
+          <thead>
+            <tr>
+              {/* Rows = what the model SAID; columns = what was actually there. */}
+              <th className="p-1 text-left font-normal text-gray-400">pred \ actual</th>
+              {classes.map((c) => (
+                <th key={c} className="max-w-16 truncate p-1 font-medium text-gray-600">
+                  {c}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {matrix.map((row, i) => (
+              <tr key={classes[i]}>
+                <td className="max-w-16 truncate p-1 pr-2 font-medium text-gray-600">
+                  {classes[i]}
+                </td>
+                {row.map((v, j) => {
+                  const diagonal = i === j && i < classes.length - 1
+                  return (
+                    <td
+                      key={j}
+                      className="h-8 w-12 border border-gray-100 text-center"
+                      style={{
+                        // Diagonal = correct, green scale; everything else is
+                        // an error, red scale. Intensity by count.
+                        backgroundColor:
+                          v === 0
+                            ? undefined
+                            : diagonal
+                              ? `rgba(22, 163, 74, ${0.15 + 0.6 * (v / max)})`
+                              : `rgba(220, 38, 38, ${0.12 + 0.55 * (v / max)})`,
+                        color: v / max > 0.5 ? 'white' : undefined,
+                      }}
+                    >
+                      {v || ''}
+                    </td>
+                  )
+                })}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="mt-1 text-[10px] text-gray-400">
+        "background" row = missed objects; "background" column = invented ones.
+      </p>
+    </div>
+  )
+}
+
+function WorstImages({
+  worst,
+  projectId,
+}: {
+  worst: EvaluationDetails['worst']
+  projectId: number
+}) {
+  if (!worst.length) {
+    return (
+      <p className="rounded border border-status-good/30 bg-status-good/5 px-2.5 py-1.5 text-xs text-gray-700">
+        No test image had errors at the reviewing operating point (conf 0.25).
+      </p>
+    )
+  }
+  return (
+    <div>
+      <p className="label-eyebrow mb-1.5">Worst test images — the ones to look at</p>
+      <div className="grid grid-cols-3 gap-2 sm:grid-cols-4">
+        {worst.map((w) => (
+          <Link
+            key={w.image_id}
+            // Straight into the editor on that image, where the failure can
+            // be seen (and often turns out to be a labelling error).
+            to={`/projects/${projectId}/review/${w.image_id}`}
+            className="group relative overflow-hidden rounded border border-gray-200 hover:border-accent-400"
+            title={`${w.original_filename} — open in editor`}
+          >
+            <img
+              src={`/api/thumbs/${projectId}/${w.filename}`}
+              alt={w.original_filename}
+              loading="lazy"
+              className="aspect-square w-full object-cover"
+            />
+            <span className="absolute bottom-1 left-1 flex gap-1 text-[9px] font-medium">
+              {w.fn > 0 && (
+                <span className="rounded bg-amber-600/90 px-1 leading-4 text-white">
+                  {w.fn} missed
+                </span>
+              )}
+              {w.fp > 0 && (
+                <span className="rounded bg-red-600/90 px-1 leading-4 text-white">
+                  {w.fp} wrong
+                </span>
+              )}
+            </span>
+          </Link>
+        ))}
+      </div>
     </div>
   )
 }
