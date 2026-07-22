@@ -52,16 +52,18 @@ pycocotools>=2.0.8
 # VRAM BUDGET — what each model actually costs
 # =============================================================================
 # Available VRAM is the binding constraint on model choice, and it is why
-# app/ml/registry.py enforces one resident model at a time. These figures are
+# app/ml/registry.py enforces one resident model at a time and
+# services/gpu_admission.py meters concurrent jobs. These figures are
 # properties of the MODELS — compare them against whatever card you run on.
-# The app reports yours in the Compute panel.
+# The app reports yours in the Compute panel, and each picker shows the
+# per-variant estimate beside the size.
 #
-#   Grounding DINO Swin-T   ~700 MB weights   ~2-3 GB inference
-#   SAM ViT-B               ~375 MB weights   ~2-3 GB inference
-#   SAM ViT-H               ~2.4 GB weights   ~6-8 GB inference
-#   MobileSAM                ~40 MB weights     <1 GB inference
+#   Grounding DINO tiny     ~700 MB weights   ~2.5 GB inference
+#   Grounding DINO base     ~1.8 GB weights   ~5.5 GB inference
+#   YOLO-World S             ~25 MB weights   ~2 GB inference
+#   OWLv2 base              ~1.2 GB weights   ~3 GB inference
+#   Florence-2 base         ~500 MB weights   ~2.5 GB inference
 #
-# The defaults favour the smaller variants — ViT-B, not the ViT-H every
-# tutorial reaches for — because they fit a far wider range of machines. And
-# Grounded SAM cannot hold DINO and SAM resident simultaneously (~5-6 GB
-# combined): it must run them sequentially, unloading between stages.
+# Training wants far more than inference — the per-variant estimates live on
+# the trainer classes (app/ml/trainers/) and drive both the adaptive batch
+# default and the GPU-admission reservations.
