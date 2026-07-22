@@ -88,6 +88,16 @@ class UltralyticsTrainer(Trainer):
 
         return YoloPredictor(checkpoint_path, class_names, model_class=self.model_class)
 
+    def export_onnx(self, checkpoint_path) -> Path:
+        """best.pt -> best.onnx, written beside the checkpoint (the cache).
+
+        device="cpu" on purpose: exporting is a conversion, not inference, and
+        it must not fight a running training for the GPU.
+        """
+        model = self._load_model(str(checkpoint_path))
+        out = model.export(format="onnx", device="cpu")
+        return Path(out)
+
     def train(self, config: TrainConfig, on_epoch: EpochCallback) -> TrainResult:
         # Turn off ultralytics' anonymous analytics/telemetry — this is a local,
         # no-cloud tool, and a training run shouldn't phone home. Best-effort:

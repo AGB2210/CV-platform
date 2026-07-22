@@ -193,6 +193,20 @@ class Trainer(ABC):
         allowed to propagate with its original message intact.
         """
 
+    def export_onnx(self, checkpoint_path) -> "Path":
+        """Convert one of this trainer's checkpoints to ONNX; return the file.
+
+        Lives on the trainer for the same reason load_predictor does: the
+        framework that WROTE the weights is the only thing that knows how to
+        read them, and pairing them structurally means they can't drift apart.
+        Implementations should run on CPU (an export must not fight a training
+        run for the GPU) and write beside the checkpoint so the result is
+        cached — converting is slow, serving a file is not.
+        """
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support ONNX export yet."
+        )
+
     def load_predictor(self, checkpoint_path, class_names: list[str]):
         """Load a checkpoint this trainer produced into a runnable Predictor.
 

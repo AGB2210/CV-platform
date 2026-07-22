@@ -5,6 +5,7 @@ import { PageBody, PageHeader } from '@/components/layout/AppShell'
 import { MlSetupGate } from '@/components/MlSetupGate'
 import {
   listModels,
+  onnxUrl,
   predictImage,
   weightsUrl,
   type DeployableModel,
@@ -144,6 +145,9 @@ export function Deploy() {
                       Download weights (.pt)
                     </a>
                   )}
+                  {modelId != null && (
+                    <OnnxButton key={modelId} modelId={modelId} />
+                  )}
                 </div>
 
                 <div className="card p-4">
@@ -208,6 +212,59 @@ export function Deploy() {
           )}
         </MlSetupGate>
       </PageBody>
+    </>
+  )
+}
+
+/**
+ * ONNX download. A fetch with a busy state rather than an <a download>,
+ * because the FIRST request per checkpoint converts the model (up to a
+ * minute on CPU) — a link that silently hangs for a minute reads as broken.
+ * Later requests stream the cached file immediately.
+ */
+function OnnxButton({ modelId }: { modelId: number }) {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+
+  const download = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      const resp = await fetch(onnxUrl(modelId))
+      if (!resp.ok) {
+        const body = await resp.json().catch(() => null)
+        throw new Error(body?.detail ?? `Export failed (${resp.status})`)
+      }
+      const blob = await resp.blob()
+      // The server names the file; recover it from the header.
+      const dispo = resp.headers.get('content-disposition') ?? ''
+      const name = /filename="?([^";]+)"?/.exec(dispo)?.[1] ?? `model_${modelId}.onnx`
+      const url = URL.createObjectURL(blob)
+      const a = document.createElement('a')
+      a.href = url
+      a.download = name
+      a.click()
+      URL.revokeObjectURL(url)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => void download()}
+        disabled={busy}
+        className="btn-secondary mt-2 w-full"
+        title="Convert and download as ONNX — runnable without PyTorch, on edge devices and other stacks"
+      >
+        <Download size={13} />
+        {busy ? 'Converting to ONNX… (first time takes a minute)' : 'Download ONNX'}
+      </button>
+      {error && <p className="mt-1 text-xs text-red-700">{error}</p>}
     </>
   )
 }

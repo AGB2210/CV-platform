@@ -86,6 +86,30 @@ class RfDetrTrainer(Trainer):
 
         return RfDetrPredictor(checkpoint_path, class_names)
 
+    def export_onnx(self, checkpoint_path) -> Path:
+        """Checkpoint -> ONNX via rfdetr's own exporter, beside the checkpoint.
+
+        rfdetr's export deps live in its [onnxexport] extras; a missing dep
+        surfaces as a clear RuntimeError with the pip line rather than a
+        bare ImportError from three modules deep.
+        """
+        import rfdetr
+
+        model = rfdetr.from_checkpoint(str(checkpoint_path))
+        try:
+            return Path(
+                model.export(
+                    output_dir=str(Path(checkpoint_path).parent),
+                    format="onnx",
+                    verbose=False,
+                )
+            )
+        except ImportError as exc:
+            raise RuntimeError(
+                "RF-DETR's ONNX export dependencies are missing. Run "
+                '`pip install "rfdetr[onnxexport]"` in the backend venv and retry.'
+            ) from exc
+
     def train(self, config: TrainConfig, on_epoch: EpochCallback) -> TrainResult:
         try:
             import rfdetr

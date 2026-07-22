@@ -1120,3 +1120,7 @@ export const exportUrl = (
 
 /** Trained weights (.pt) download — also a plain link, same reasoning. */
 export const weightsUrl = (jobId: number) => `/api/models/${jobId}/weights`
+/** ONNX export. NOT a plain link like the .pt: the first request per
+ *  checkpoint CONVERTS (up to a minute), so the button needs a busy state
+ *  and an error surface — hence a fetch, blob and a client-side download. */
+export const onnxUrl = (jobId: number) => `/api/models/${jobId}/onnx`

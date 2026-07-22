@@ -127,6 +127,60 @@ def download_weights(job_id: int, db: Session = Depends(get_db)) -> FileResponse
     )
 
 
+@router.get("/models/{job_id}/onnx")
+def download_onnx(job_id: int, db: Session = Depends(get_db)) -> FileResponse:
+    """The trained model as ONNX — runnable without torch, on anything with an
+    ONNX runtime (edge devices, other languages, other people's stacks).
+
+    Converted ONCE per checkpoint, on first request, on the CPU (a conversion
+    must not fight a training run for the GPU), and cached beside the .pt —
+    so the first click takes up to a minute and every later one streams
+    immediately. The trainer that wrote the weights owns the conversion
+    (Trainer.export_onnx), same pairing rule as load_predictor.
+    """
+    from app.ml.trainers import registry as trainer_registry
+
+    job = db.get(TrainingJob, job_id)
+    if job is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Model {job_id} not found")
+    if job.status != JobStatus.DONE or not job.checkpoint_path:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "That run has no usable checkpoint — only a finished run can be exported.",
+        )
+    checkpoint = from_storage_path(job.checkpoint_path)
+    if checkpoint is None or not checkpoint.exists():
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "The checkpoint file for that run is missing on disk.",
+        )
+
+    onnx_path = checkpoint.with_suffix(".onnx")
+    if not onnx_path.exists():
+        try:
+            trainer = trainer_registry.get_class(job.trainer_key)()
+        except KeyError as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from None
+        try:
+            produced = trainer.export_onnx(checkpoint)
+        except NotImplementedError as exc:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from None
+        except RuntimeError as exc:
+            raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, str(exc)) from None
+        # Normalise to the cache location whatever name the framework chose,
+        # so the exists() check above finds it next time.
+        if produced != onnx_path:
+            produced.replace(onnx_path)
+
+    label = label_for(job.name, job.version)
+    safe = "".join(ch if ch.isalnum() or ch in "-_." else "_" for ch in label)
+    return FileResponse(
+        onnx_path,
+        media_type="application/octet-stream",
+        filename=f"{safe}_{job.trainer_key}.onnx",
+    )
+
+
 def _gpu_busy(db: Session) -> bool:
     """Is a heavy GPU job RUNNING anywhere? Inference must not overlap it.
 

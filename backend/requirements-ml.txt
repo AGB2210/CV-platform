@@ -41,6 +41,10 @@ ultralytics>=8.3.0
 # alone would not need them, but training is the whole point here.
 rfdetr[train]>=1.7.0
 
+# ONNX export (GET /api/models/{id}/onnx). ultralytics would auto-install this
+# at first export; declaring it means the feature works offline too.
+onnx>=1.16.0
+
 # --- Phase 5: evaluation ---
 # COCO mAP on a held-out test split (services/evaluation_job.py). The reference
 # implementation of detection mAP — a prebuilt Windows wheel now exists, so it
