@@ -13,6 +13,7 @@ from app.api.routes import (
     dataset,
     health,
     images,
+    ml,
     projects,
     proposals,
     train,
@@ -44,3 +45,4 @@ api_router.include_router(categories.router)
 api_router.include_router(dataset.router)
 api_router.include_router(proposals.router)
 api_router.include_router(train.router)
+api_router.include_router(ml.router)
