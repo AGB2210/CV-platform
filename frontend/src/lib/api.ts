@@ -255,6 +255,8 @@ export const api = {
     request<T>(path, { method: 'POST', body: JSON.stringify(body) }),
   patch: <T>(path: string, body?: unknown) =>
     request<T>(path, { method: 'PATCH', body: JSON.stringify(body) }),
+  put: <T>(path: string, body?: unknown) =>
+    request<T>(path, { method: 'PUT', body: JSON.stringify(body) }),
   delete: <T>(path: string) => request<T>(path, { method: 'DELETE' }),
   upload,
 }
@@ -828,6 +830,25 @@ export const updateAnnotation = (
   }>,
 ) => api.patch<Annotation>(`/annotations/${id}`, body)
 export const deleteAnnotation = (id: number) => api.delete<void>(`/annotations/${id}`)
+
+/** One box in a bulk save. id present = existing box (maybe edited);
+ *  id absent = drawn since the last save. */
+export interface AnnotationBulkItem {
+  id?: number
+  category_id: number
+  x: number
+  y: number
+  width: number
+  height: number
+}
+
+/** The review page's Save: atomically set an image's accepted boxes to exactly
+ *  this list. Boxes absent from it are deleted; proposals are never touched.
+ *  Returns ALL of the image's boxes afterwards (including proposals), so the
+ *  caller can rebuild its state from one response. 409 = the draft went stale
+ *  (something else changed the image) — reload and re-apply. */
+export const replaceAnnotations = (imageId: number, annotations: AnnotationBulkItem[]) =>
+  api.put<Annotation[]>(`/images/${imageId}/annotations`, { annotations })
 
 // --- Dataset stats & splits -----------------------------------------------
 //

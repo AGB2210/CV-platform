@@ -1,4 +1,9 @@
-import { BrowserRouter, Route, Routes } from 'react-router-dom'
+import {
+  createBrowserRouter,
+  createRoutesFromElements,
+  Route,
+  RouterProvider,
+} from 'react-router-dom'
 import { AppShell } from '@/components/layout/AppShell'
 import { Projects } from '@/pages/Projects'
 import { ProjectDetail } from '@/pages/ProjectDetail'
@@ -16,26 +21,31 @@ import { Deploy } from '@/pages/Deploy'
  * children with the sidebar chrome and renders them into its <Outlet />. New
  * pages in later phases are one <Route> line each and inherit the shell for
  * free.
+ *
+ * A DATA router (createBrowserRouter), not <BrowserRouter>: the review page
+ * buffers unsaved box edits and needs useBlocker to intercept navigation away
+ * from them — which only exists on data routers. The route tree itself is
+ * unchanged, still authored as JSX via createRoutesFromElements.
  */
+const router = createBrowserRouter(
+  createRoutesFromElements(
+    <Route element={<AppShell />}>
+      <Route path="/" element={<Projects />} />
+      <Route path="/projects/:id" element={<ProjectDetail />} />
+      <Route path="/projects/:id/annotate" element={<Annotate />} />
+      <Route path="/projects/:id/visualize" element={<Visualize />} />
+      {/* Two review routes: with an image id (deep-linkable — you can send
+          someone a link to a specific image) and without (lands on the
+          first image). */}
+      <Route path="/projects/:id/review" element={<Review />} />
+      <Route path="/projects/:id/review/:imageId" element={<Review />} />
+      <Route path="/projects/:id/train" element={<Train />} />
+      <Route path="/projects/:id/evaluate" element={<Evaluate />} />
+      <Route path="/projects/:id/deploy" element={<Deploy />} />
+    </Route>,
+  ),
+)
+
 export default function App() {
-  return (
-    <BrowserRouter>
-      <Routes>
-        <Route element={<AppShell />}>
-          <Route path="/" element={<Projects />} />
-          <Route path="/projects/:id" element={<ProjectDetail />} />
-          <Route path="/projects/:id/annotate" element={<Annotate />} />
-          <Route path="/projects/:id/visualize" element={<Visualize />} />
-          {/* Two review routes: with an image id (deep-linkable — you can send
-              someone a link to a specific image) and without (lands on the
-              first image). */}
-          <Route path="/projects/:id/review" element={<Review />} />
-          <Route path="/projects/:id/review/:imageId" element={<Review />} />
-          <Route path="/projects/:id/train" element={<Train />} />
-          <Route path="/projects/:id/evaluate" element={<Evaluate />} />
-          <Route path="/projects/:id/deploy" element={<Deploy />} />
-        </Route>
-      </Routes>
-    </BrowserRouter>
-  )
+  return <RouterProvider router={router} />
 }

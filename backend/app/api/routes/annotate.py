@@ -18,6 +18,7 @@ from app.ml import registry
 from app.ml.device import device_info
 from app.models import Annotation, AnnotationJob, Category, Image, JobStatus
 from app.schemas.annotation import (
+    AnnotationBulkReplace,
     AnnotationCreate,
     AnnotationJobCreate,
     AnnotationJobRead,
@@ -335,6 +336,114 @@ def delete_annotation(annotation_id: int, db: Session = Depends(get_db)) -> None
         )
     db.delete(ann)
     db.commit()
+
+
+@router.put("/images/{image_id}/annotations", response_model=list[AnnotationRead])
+def replace_annotations(
+    image_id: int, payload: AnnotationBulkReplace, db: Session = Depends(get_db)
+) -> list[Annotation]:
+    """The review page's Save: atomically set this image's accepted boxes.
+
+    The canvas buffers edits locally and sends the final picture in one request:
+    items with an id update that box, items without an id are new boxes, and any
+    accepted box missing from the payload is deleted. One commit at the end —
+    a save either fully lands or fully doesn't.
+
+    Promotion follows the same rule as PATCH: a box whose geometry or label a
+    human actually CHANGED flips source auto -> manual (their work now, safe
+    from re-runs). A box merely re-sent unchanged keeps its source — clicking
+    Save must not silently launder the model's boxes into "human" ones.
+
+    Proposals are never touched: they aren't accepted boxes, so they can't be
+    in the payload and they don't count as "missing" — accept/reject remains
+    their only exit.
+    """
+    image = db.get(Image, image_id)
+    if image is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Image {image_id} not found")
+
+    # Validate every class once, up front — fail before touching anything.
+    valid_category_ids = set(
+        db.scalars(
+            select(Category.id).where(Category.project_id == image.project_id)
+        ).all()
+    )
+    for item in payload.annotations:
+        if item.category_id not in valid_category_ids:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"Class {item.category_id} does not belong to this image's project",
+            )
+
+    existing = {
+        a.id: a
+        for a in db.scalars(
+            select(Annotation).where(
+                Annotation.image_id == image_id, Annotation.proposed.is_(False)
+            )
+        ).all()
+    }
+
+    # A stale draft — a box edited here but deleted by something else (another
+    # tab, an accepted batch) — must not half-apply. 409 tells the frontend to
+    # reload the truth, which is recoverable; silently recreating the box under
+    # a new id is not.
+    sent_ids = {item.id for item in payload.annotations if item.id is not None}
+    stale = sent_ids - existing.keys()
+    if stale:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "Some boxes changed since this page loaded (e.g. a batch was "
+            "accepted in another tab). Reload the image and re-apply your edits.",
+        )
+
+    for gone_id in existing.keys() - sent_ids:
+        db.delete(existing[gone_id])
+
+    for item in payload.annotations:
+        # Clamp to the image, like create does: a box is data we train on, and
+        # validating at the boundary means a canvas bug can't poison the set.
+        x = max(0.0, min(item.x, image.width))
+        y = max(0.0, min(item.y, image.height))
+        w = min(item.width, image.width - x)
+        h = min(item.height, image.height - y)
+
+        if item.id is None:
+            db.add(
+                Annotation(
+                    image_id=image_id,
+                    category_id=item.category_id,
+                    x=x,
+                    y=y,
+                    width=w,
+                    height=h,
+                    confidence=None,
+                    source="manual",
+                    reviewed=True,
+                )
+            )
+            continue
+
+        ann = existing[item.id]
+        changed = (
+            (ann.x, ann.y, ann.width, ann.height, ann.category_id)
+            != (x, y, w, h, item.category_id)
+        )
+        if not changed:
+            continue  # re-sent unchanged: keep source/confidence exactly as-is
+        ann.x = x
+        ann.y = y
+        ann.width = w
+        ann.height = h
+        ann.category_id = item.category_id
+        if ann.source == "auto":
+            ann.source = "manual"
+            ann.reviewed = True
+
+    db.commit()
+    return list(
+        db.scalars(select(Annotation).where(Annotation.image_id == image_id)).all()
+    )
 
 
 # The approve endpoints are gone.

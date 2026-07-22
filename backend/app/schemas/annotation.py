@@ -78,6 +78,39 @@ class AnnotationUpdate(BaseModel):
     reviewed: bool | None = None
 
 
+class AnnotationBulkItem(BaseModel):
+    """One box in a bulk save from the review canvas.
+
+    `id` present = an existing box, possibly edited since the last save.
+    `id` absent  = a box drawn since the last save.
+    """
+
+    id: int | None = None
+    category_id: int
+    # Same bounds as AnnotationCreate, same reasons.
+    x: float = Field(..., ge=0)
+    y: float = Field(..., ge=0)
+    width: float = Field(..., gt=0)
+    height: float = Field(..., gt=0)
+
+
+class AnnotationBulkReplace(BaseModel):
+    """The review page's Save: the DESIRED final state of one image's accepted
+    boxes, as a single atomic request.
+
+    The canvas buffers every edit locally and sends the whole picture at once —
+    boxes present here survive (updated or created), accepted boxes absent here
+    are deleted. One request, one transaction: a save can't half-apply, and
+    closing the tab mid-edit-session loses the buffer, never corrupts the image.
+
+    Proposals are exempt on both sides: they can't be sent (no `proposed` field
+    exists here) and the replace never deletes them — accept/reject is their
+    only exit.
+    """
+
+    annotations: list[AnnotationBulkItem]
+
+
 class JobScope:
     """Which images an auto-annotation run touches, when no explicit selection
     is given."""

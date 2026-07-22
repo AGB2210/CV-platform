@@ -1,19 +1,27 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Link, useNavigate, useParams } from 'react-router-dom'
-import { Check, ChevronLeft, ChevronRight, Database, Trash2, X } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Link, useBlocker, useNavigate, useParams } from 'react-router-dom'
+import {
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  Database,
+  RotateCcw,
+  Save,
+  Trash2,
+  X,
+} from 'lucide-react'
 import { AnnotationCanvas } from '@/components/AnnotationCanvas'
+import { Modal } from '@/components/ui/Modal'
 import { ProposalActions, ProposalBanner } from '@/components/ProposalBar'
 import {
   acceptImageProposals,
   rejectImageProposals,
   getProposalPreview,
-  createAnnotation,
-  deleteAnnotation,
   getDatasetStats,
   listAnnotations,
   listClasses,
   listImages,
-  updateAnnotation,
+  replaceAnnotations,
   type Annotation,
   type DatasetImage,
   type DatasetStats,
@@ -40,7 +48,13 @@ export function Review() {
 
   const [images, setImages] = useState<DatasetImage[]>([])
   const [classes, setClasses] = useState<ProjectClass[]>([])
-  const [annotations, setAnnotations] = useState<Annotation[]>([])
+  // The server's truth for this image — proposals AND accepted boxes.
+  const [serverAnnotations, setServerAnnotations] = useState<Annotation[]>([])
+  // The BUFFER: your working copy of the accepted boxes. Every draw, drag,
+  // relabel and delete lands here and ONLY here — nothing reaches the server
+  // until Save. New boxes carry temporary negative ids until then.
+  const [draft, setDraft] = useState<Annotation[]>([])
+  const [saving, setSaving] = useState(false)
   const [activeClassId, setActiveClassId] = useState<number | null>(null)
   const [selectedId, setSelectedId] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
@@ -89,18 +103,64 @@ export function Review() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId])
 
-  // Reload boxes whenever the image changes.
+  // Reload boxes whenever the image changes — and rebuild the draft from
+  // them. Navigation is the buffer boundary: by the time this runs the leave
+  // guard has already had its say (save, discard, or stay).
   useEffect(() => {
     if (!imageId) return
     let cancelled = false
     listAnnotations(Number(imageId))
-      .then((a) => !cancelled && setAnnotations(a))
+      .then((a) => {
+        if (cancelled) return
+        setServerAnnotations(a)
+        setDraft(a.filter((x) => !x.proposed))
+      })
       .catch((e: Error) => !cancelled && setError(e.message))
     setSelectedId(null)
     return () => {
       cancelled = true
     }
   }, [imageId])
+
+  // --- the unsaved-changes contract --------------------------------------
+
+  const serverAccepted = useMemo(
+    () => serverAnnotations.filter((a) => !a.proposed),
+    [serverAnnotations],
+  )
+
+  /** Derived, never stored: the draft differs from what the server holds.
+   *  A stored boolean would be one missed setState away from lying. */
+  const dirty = useMemo(() => {
+    if (draft.length !== serverAccepted.length) return true
+    const byId = new Map(serverAccepted.map((a) => [a.id, a]))
+    return draft.some((d) => {
+      const s = byId.get(d.id)
+      return (
+        !s ||
+        s.x !== d.x ||
+        s.y !== d.y ||
+        s.width !== d.width ||
+        s.height !== d.height ||
+        s.category_id !== d.category_id
+      )
+    })
+  }, [draft, serverAccepted])
+
+  // Intercept EVERY router navigation while dirty — next/prev image, a
+  // filmstrip click, or the sidebar taking you to a different page. One
+  // mechanism for all of them; the modal below offers Save / Discard / Stay.
+  const blocker = useBlocker(dirty)
+
+  // Browser-level exits (close tab, hard reload) can't show our modal — the
+  // native "leave site?" prompt is the only thing allowed there, and it only
+  // appears if a beforeunload handler calls preventDefault.
+  useEffect(() => {
+    if (!dirty) return
+    const h = (e: BeforeUnloadEvent) => e.preventDefault()
+    window.addEventListener('beforeunload', h)
+    return () => window.removeEventListener('beforeunload', h)
+  }, [dirty])
 
   /** Refresh the filmstrip counts and dataset stats without refetching classes. */
   const refreshCounts = useCallback(async () => {
@@ -121,78 +181,114 @@ export function Review() {
 
   // --- mutations ---------------------------------------------------------
   //
-  // Each of these applies the change to local state immediately and then
-  // reconciles with the server's response. Waiting for a round-trip before the
-  // box moves would make dragging feel broken on a task you repeat 500 times.
+  // ALL edits are buffered: they mutate the draft and nothing else. No
+  // network, no latency, no optimistic-update reconciliation — the box moves
+  // because you moved it. The server hears about it when you Save, as one
+  // atomic request. Mistakes cost nothing until then: Reset puts everything
+  // back the way the last save left it.
 
-  async function handleCreate(
+  // Temporary ids for boxes drawn since the last save. Negative so they can
+  // never collide with a real row id, decremented so they stay unique within
+  // the session. Save exchanges them for real ids.
+  const tempIdRef = useRef(-1)
+
+  function handleCreate(
     rect: { x: number; y: number; width: number; height: number },
     categoryId: number,
   ) {
     if (!current) return
-    try {
-      const created = await createAnnotation(current.id, {
+    const id = tempIdRef.current--
+    setDraft((d) => [
+      ...d,
+      {
+        id,
+        image_id: current.id,
         category_id: categoryId,
         ...rect,
-      })
-      setAnnotations((a) => [...a, created])
-      setSelectedId(created.id)
-      void refreshCounts()
-    } catch (e) {
-      setError((e as Error).message)
-    }
+        confidence: null,
+        source: 'manual',
+        reviewed: true,
+        proposed: false,
+        job_id: null,
+      },
+    ])
+    setSelectedId(id)
   }
 
-  async function handleUpdate(
+  function handleUpdate(
     annId: number,
     rect: { x: number; y: number; width: number; height: number },
   ) {
-    // Optimistic: move it now, ask the server after.
-    setAnnotations((a) => a.map((x) => (x.id === annId ? { ...x, ...rect } : x)))
-    try {
-      const updated = await updateAnnotation(annId, rect)
-      // Reconcile — the server may have clamped it, and it flips source to
-      // "manual", which changes the box from dashed to solid.
-      setAnnotations((a) => a.map((x) => (x.id === annId ? updated : x)))
-      void refreshCounts()
-    } catch (e) {
-      setError((e as Error).message)
-      // Roll back by refetching the truth rather than guessing.
-      if (current) setAnnotations(await listAnnotations(current.id))
-    }
+    setDraft((d) => d.map((x) => (x.id === annId ? { ...x, ...rect } : x)))
   }
 
-  async function handleRelabel(annId: number, categoryId: number) {
-    setAnnotations((a) =>
-      a.map((x) => (x.id === annId ? { ...x, category_id: categoryId } : x)),
+  function handleRelabel(annId: number, categoryId: number) {
+    setDraft((d) =>
+      d.map((x) => (x.id === annId ? { ...x, category_id: categoryId } : x)),
     )
-    try {
-      const updated = await updateAnnotation(annId, { category_id: categoryId })
-      setAnnotations((a) => a.map((x) => (x.id === annId ? updated : x)))
-    } catch (e) {
-      setError((e as Error).message)
-    }
   }
 
-  async function handleDelete(annId: number) {
-    const backup = annotations
-    setAnnotations((a) => a.filter((x) => x.id !== annId))
+  function handleDelete(annId: number) {
+    setDraft((d) => d.filter((x) => x.id !== annId))
     setSelectedId(null)
-    try {
-      await deleteAnnotation(annId)
-      void refreshCounts()
-    } catch (e) {
-      setError((e as Error).message)
-      setAnnotations(backup)
-    }
   }
 
-  /** Accept THIS image's proposals: the model's boxes replace this image's. */
+  /** Commit the buffer: one atomic PUT of the draft as the image's new truth.
+   *  Returns whether it landed, so the leave guard can refuse to navigate on
+   *  a failed save instead of walking away from the edits it just lost. */
+  const save = useCallback(async (): Promise<boolean> => {
+    if (!current || saving) return false
+    setSaving(true)
+    try {
+      const all = await replaceAnnotations(
+        current.id,
+        draft.map((d) => ({
+          // Temp (negative) ids are a frontend fiction — the server gets
+          // "no id", meaning "create".
+          ...(d.id > 0 ? { id: d.id } : {}),
+          category_id: d.category_id,
+          x: d.x,
+          y: d.y,
+          width: d.width,
+          height: d.height,
+        })),
+      )
+      setServerAnnotations(all)
+      setDraft(all.filter((a) => !a.proposed))
+      // Ids changed under the selection (temp -> real), so drop it rather
+      // than let it point at a box that no longer exists.
+      setSelectedId(null)
+      setError(null)
+      void refreshCounts()
+      return true
+    } catch (e) {
+      // 409 = the draft went stale (another tab, an accepted batch). The
+      // message from the server says to reload; we surface it verbatim and
+      // deliberately do NOT auto-reload — that would throw away the draft the
+      // user might want to copy from the screen first.
+      setError((e as Error).message)
+      return false
+    } finally {
+      setSaving(false)
+    }
+  }, [current, draft, saving, refreshCounts])
+
+  /** Discard the buffer: back to what the last save left. */
+  const resetDraft = useCallback(() => {
+    setDraft(serverAccepted)
+    setSelectedId(null)
+  }, [serverAccepted])
+
+  /** Accept THIS image's proposals: the model's boxes replace this image's.
+   *  Rebuilds the draft too — accepting IS a save-equivalent statement about
+   *  what this image's boxes should be, so any stale buffer yields to it. */
   async function handleAcceptImage() {
     if (!current) return
     try {
       await acceptImageProposals(current.id)
-      setAnnotations(await listAnnotations(current.id))
+      const a = await listAnnotations(current.id)
+      setServerAnnotations(a)
+      setDraft(a.filter((x) => !x.proposed))
       await refreshCounts()
       advanceIfMoreProposals()
     } catch (e) {
@@ -205,7 +301,9 @@ export function Review() {
     if (!current) return
     try {
       await rejectImageProposals(current.id)
-      setAnnotations(await listAnnotations(current.id))
+      const a = await listAnnotations(current.id)
+      setServerAnnotations(a)
+      setDraft(a.filter((x) => !x.proposed))
       await refreshCounts()
       advanceIfMoreProposals()
     } catch (e) {
@@ -224,9 +322,14 @@ export function Review() {
 
   const reloadCurrent = useCallback(async () => {
     if (!current) return
-    setAnnotations(await listAnnotations(current.id))
+    const a = await listAnnotations(current.id)
+    setServerAnnotations(a)
+    // Rebuild the draft ONLY when it holds no unsaved work. A batch action in
+    // the panel must not silently eat your edits; if the two have really
+    // diverged, Save will 409 and explain itself.
+    if (!dirty) setDraft(a.filter((x) => !x.proposed))
     await refreshCounts()
-  }, [current, refreshCounts])
+  }, [current, refreshCounts, dirty])
 
   const goTo = useCallback(
     (delta: number) => {
@@ -244,6 +347,14 @@ export function Review() {
     function onKey(e: KeyboardEvent) {
       const el = document.activeElement
       if (el && ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName)) return
+
+      // Ctrl+S saves the buffer — the browser's "save this webpage" dialog
+      // has no business appearing on an annotation tool.
+      if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+        e.preventDefault()
+        void save()
+        return
+      }
 
       if (e.key === 'ArrowRight' || e.key === 'd') goTo(1)
       if (e.key === 'ArrowLeft' || e.key === 'a') goTo(-1)
@@ -266,7 +377,7 @@ export function Review() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [goTo, classes, selectedId, current, annotations])
+  }, [goTo, classes, selectedId, current, serverAnnotations, draft, save])
 
   // --- render ------------------------------------------------------------
 
@@ -286,9 +397,10 @@ export function Review() {
   }
 
   // Proposals aren't annotations, so they're counted apart from everything else
-  // on this screen.
-  const proposals = annotations.filter((a) => a.proposed)
-  const accepted = annotations.filter((a) => !a.proposed)
+  // on this screen. `accepted` is the DRAFT — the boxes on screen are the ones
+  // being counted, edits included.
+  const proposals = serverAnnotations.filter((a) => a.proposed)
+  const accepted = draft
   const unreviewed = accepted.filter((a) => !a.reviewed).length
 
   // ONE set of boxes on screen, never two.
@@ -414,6 +526,35 @@ export function Review() {
               scopes in one toolbar both muddled the meaning and overflowed the
               header at narrow widths. */}
           <div className="flex shrink-0 items-center gap-2">
+            {/* Save/Reset for the edit buffer. Only rendered while dirty:
+                a permanently-visible Save button that is almost always
+                disabled teaches you to stop looking at it. When it appears,
+                it means something. */}
+            {!reviewingBatch && dirty && (
+              <>
+                <span className="hidden text-[11px] text-status-busy xl:inline">
+                  Unsaved changes
+                </span>
+                <button
+                  className="btn-secondary"
+                  onClick={resetDraft}
+                  disabled={saving}
+                  title="Discard every edit since the last save"
+                >
+                  <RotateCcw size={13} />
+                  Reset
+                </button>
+                <button
+                  className="btn-primary"
+                  onClick={() => void save()}
+                  disabled={saving}
+                  title="Save this image's boxes (Ctrl+S)"
+                >
+                  <Save size={13} />
+                  {saving ? 'Saving…' : 'Save'}
+                </button>
+              </>
+            )}
             {/* While judging a batch the ONLY actions are accept/reject for
                 this image. Approve is meaningless here — you can't approve
                 boxes that aren't yours yet. */}
@@ -582,7 +723,7 @@ export function Review() {
           )}
         </div>
         <ul className="min-h-0 flex-1 divide-y divide-gray-100 overflow-y-auto">
-          {annotations.length === 0 && (
+          {visibleBoxes.length === 0 && (
             <li className="px-3 py-4 text-xs text-gray-400">
               No boxes. Drag on the image to draw one.
             </li>
@@ -639,6 +780,9 @@ export function Review() {
             <Kbd>Del</Kbd> delete · <Kbd>Esc</Kbd> deselect
           </p>
           <p>
+            <Kbd>Ctrl</Kbd>+<Kbd>S</Kbd> save edits
+          </p>
+          <p>
             <Kbd>←</Kbd> <Kbd>→</Kbd> navigate
             {reviewingBatch && (
               <>
@@ -657,6 +801,59 @@ export function Review() {
           )}
         </div>
       </aside>
+
+      {/* The leave guard. useBlocker has already stopped the navigation —
+          whatever it was: next image, filmstrip, sidebar — and this modal
+          decides its fate. Three genuinely different answers, so three
+          buttons, not a yes/no that forces Save and Discard into one. */}
+      <Modal
+        open={blocker.state === 'blocked'}
+        onClose={() => blocker.state === 'blocked' && blocker.reset()}
+        title="Unsaved changes"
+        footer={
+          <>
+            <button
+              className="btn-secondary"
+              onClick={() => blocker.state === 'blocked' && blocker.reset()}
+              disabled={saving}
+            >
+              Stay
+            </button>
+            <button
+              className="btn bg-red-600 text-white hover:bg-red-700"
+              onClick={() => {
+                if (blocker.state !== 'blocked') return
+                resetDraft()
+                blocker.proceed()
+              }}
+              disabled={saving}
+            >
+              Discard
+            </button>
+            <button
+              className="btn-primary"
+              onClick={() => {
+                if (blocker.state !== 'blocked') return
+                void save().then((ok) => {
+                  // A failed save must NOT navigate — leaving would destroy
+                  // the very edits the failure just refused to persist.
+                  if (blocker.state !== 'blocked') return
+                  if (ok) blocker.proceed()
+                  else blocker.reset()
+                })
+              }}
+              disabled={saving}
+            >
+              {saving ? 'Saving…' : 'Save & continue'}
+            </button>
+          </>
+        }
+      >
+        <p className="text-sm text-gray-600">
+          This image has box edits that haven&apos;t been saved. Save them, discard
+          them, or stay and keep working.
+        </p>
+      </Modal>
     </div>
   )
 }

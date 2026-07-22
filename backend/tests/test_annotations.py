@@ -245,3 +245,127 @@ def test_list_images_filters_by_split_and_reports_filtered_total(client):
     r = client.get(f"/api/projects/{pid}/images?split=test")
     assert {i["id"] for i in r.json()} == {images[0]["id"]}
     assert r.headers["X-Total-Count"] == "1"  # the FILTERED total, not 3
+
+
+# --- bulk replace (the review page's Save) ----------------------------------
+
+
+def test_bulk_replace_updates_creates_and_deletes_atomically(client):
+    """One PUT = the desired final state: kept ids update, missing ids delete,
+    id-less items create."""
+    pid, img_id, car = _one_image(client)
+    keep = client.post(
+        f"/api/images/{img_id}/annotations",
+        json={"category_id": car["id"], "x": 5, "y": 5, "width": 10, "height": 10},
+    ).json()
+    gone = client.post(
+        f"/api/images/{img_id}/annotations",
+        json={"category_id": car["id"], "x": 30, "y": 5, "width": 10, "height": 10},
+    ).json()
+
+    r = client.put(
+        f"/api/images/{img_id}/annotations",
+        json={
+            "annotations": [
+                # kept, moved
+                {"id": keep["id"], "category_id": car["id"], "x": 7, "y": 8, "width": 10, "height": 10},
+                # drawn since last save
+                {"category_id": car["id"], "x": 40, "y": 20, "width": 12, "height": 12},
+            ]
+        },
+    )
+    assert r.status_code == 200
+    boxes = {b["id"]: b for b in r.json()}
+
+    assert gone["id"] not in boxes, "box absent from the payload must be deleted"
+    assert boxes[keep["id"]]["x"] == 7 and boxes[keep["id"]]["y"] == 8
+    new = next(b for b in boxes.values() if b["id"] not in (keep["id"], gone["id"]))
+    assert new["source"] == "manual" and new["reviewed"] is True
+    assert new["confidence"] is None
+    assert len(boxes) == 2
+
+
+def test_bulk_replace_promotes_only_boxes_a_human_changed(client):
+    """Re-sending an auto box unchanged must NOT launder it into 'manual' —
+    only an actual edit is a human override."""
+    from tests.conftest import add_proposals
+
+    pid, img_id, car = _one_image(client)
+    add_proposals(client, img_id, car["id"], n=2)
+    client.post(f"/api/images/{img_id}/proposals/accept")
+    a1, a2 = client.get(f"/api/images/{img_id}/annotations").json()
+    assert a1["source"] == "auto" and a2["source"] == "auto"
+
+    client.put(
+        f"/api/images/{img_id}/annotations",
+        json={
+            "annotations": [
+                # untouched: same geometry, same class
+                {"id": a1["id"], "category_id": a1["category_id"], "x": a1["x"],
+                 "y": a1["y"], "width": a1["width"], "height": a1["height"]},
+                # nudged 2px
+                {"id": a2["id"], "category_id": a2["category_id"], "x": a2["x"] + 2,
+                 "y": a2["y"], "width": a2["width"], "height": a2["height"]},
+            ]
+        },
+    )
+    after = {b["id"]: b for b in client.get(f"/api/images/{img_id}/annotations").json()}
+    assert after[a1["id"]]["source"] == "auto", "unchanged box must keep its provenance"
+    assert after[a1["id"]]["confidence"] == 0.5
+    assert after[a2["id"]]["source"] == "manual", "edited box is the human's now"
+
+
+def test_bulk_replace_never_touches_proposals(client):
+    """Save with an EMPTY list deletes your boxes — but a pending batch
+    survives untouched. Accept/reject is its only exit."""
+    from tests.conftest import add_proposals
+
+    pid, img_id, car = _one_image(client)
+    client.post(
+        f"/api/images/{img_id}/annotations",
+        json={"category_id": car["id"], "x": 5, "y": 5, "width": 10, "height": 10},
+    )
+    add_proposals(client, img_id, car["id"], n=2)
+
+    r = client.put(f"/api/images/{img_id}/annotations", json={"annotations": []})
+    assert r.status_code == 200
+    boxes = client.get(f"/api/images/{img_id}/annotations").json()
+    assert [b for b in boxes if not b["proposed"]] == []
+    assert len([b for b in boxes if b["proposed"]]) == 2
+
+
+def test_bulk_replace_stale_draft_conflicts_and_applies_nothing(client):
+    """An id the server no longer has = the draft is stale. 409, and the save
+    must not half-apply — the box that WAS deletable is still there."""
+    pid, img_id, car = _one_image(client)
+    survivor = client.post(
+        f"/api/images/{img_id}/annotations",
+        json={"category_id": car["id"], "x": 5, "y": 5, "width": 10, "height": 10},
+    ).json()
+
+    r = client.put(
+        f"/api/images/{img_id}/annotations",
+        json={
+            "annotations": [
+                {"id": 999999, "category_id": car["id"], "x": 1, "y": 1, "width": 5, "height": 5},
+            ]
+        },
+    )
+    assert r.status_code == 409
+    boxes = client.get(f"/api/images/{img_id}/annotations").json()
+    assert [b["id"] for b in boxes] == [survivor["id"]], "409 must change nothing"
+
+
+def test_bulk_replace_rejects_cross_project_class(client):
+    pid, img_id, _ = _one_image(client)
+    other = make_project(client, "OtherBulk")
+    other_cls = client.post(f"/api/projects/{other}/classes", json={"name": "boat"}).json()
+    r = client.put(
+        f"/api/images/{img_id}/annotations",
+        json={
+            "annotations": [
+                {"category_id": other_cls["id"], "x": 1, "y": 1, "width": 5, "height": 5},
+            ]
+        },
+    )
+    assert r.status_code == 400
