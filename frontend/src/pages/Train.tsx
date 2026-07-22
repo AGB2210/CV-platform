@@ -1216,15 +1216,14 @@ function VersionHistory({
                       latest
                     </span>
                   )}
+                  {/* TEXT, not a bare glyph: an icon-only marker needed a
+                      hover to decode, and provenance is worth reading at a
+                      glance. Resolved live, so renaming the source updates
+                      this too. */}
                   {j.init_from_job_id !== null && (
-                    <GitBranch
-                      size={10}
-                      className="shrink-0 text-gray-400"
-                      // Resolved live, so renaming the source updates this too.
-                      aria-label={`Continued from ${labelOf(j.init_from_job_id) ?? 'an earlier run'}`}
-                    >
-                      <title>{`Continued from ${labelOf(j.init_from_job_id) ?? 'an earlier run'}`}</title>
-                    </GitBranch>
+                    <span className="shrink-0 rounded bg-gray-100 px-1 py-px text-[9px] font-normal text-gray-500">
+                      from {labelOf(j.init_from_job_id) ?? 'earlier run'}
+                    </span>
                   )}
                 </span>
                 <span className="flex shrink-0 items-center gap-0.5">
