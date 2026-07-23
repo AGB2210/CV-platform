@@ -164,12 +164,22 @@ class UltralyticsTrainer(Trainer):
             val_map = metric("metrics/mAP50-95(B)", "metrics/mAP50-95")
             val_map50 = metric("metrics/mAP50(B)", "metrics/mAP50")
 
+            # The total training loss for the epoch. tloss's SHAPE has changed
+            # across ultralytics versions — a tensor of loss items up to
+            # 8.4.102, a dict of named components (box/cls/dfl) from 8.4.104 —
+            # so every known shape is handled and an unknown one degrades to
+            # None rather than aborting the run. (The dict case was found the
+            # hard way: a fresh install trained fine but recorded "—" for
+            # every epoch's loss.)
             train_loss: float | None = None
             tloss = getattr(yolo_trainer, "tloss", None)
             if tloss is not None:
                 try:
-                    train_loss = float(tloss.sum())
-                except Exception:  # noqa: BLE001 — tloss may be a scalar tensor
+                    if isinstance(tloss, dict):
+                        train_loss = float(sum(float(v) for v in tloss.values()))
+                    else:
+                        train_loss = float(tloss.sum())  # tensor of loss items
+                except Exception:  # noqa: BLE001 — or a plain scalar
                     try:
                         train_loss = float(tloss)
                     except (TypeError, ValueError):
