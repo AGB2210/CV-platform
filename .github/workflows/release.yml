@@ -114,7 +114,10 @@ jobs:
           # from source; here it finds a prebuilt dist and no source, so it never
           # touches Node. start.bat is its double-click shim.
           cp -r scripts "dist/$STAGE/scripts"
-          cp start.bat README.md "dist/$STAGE/"
+          # VERSION rides along because backend/app/version.py reads it from
+          # the unpack root — without it every release reported 0.0.0+unknown
+          # at /api/health, found by actually asking a shipped build.
+          cp start.bat README.md VERSION "dist/$STAGE/"
 
           cd dist && zip -qr "$STAGE.zip" "$STAGE"
           echo "stage=$STAGE" >> "$GITHUB_OUTPUT"
@@ -164,6 +167,14 @@ jobs:
           check /api/health              200 "API answers"
           check /projects/7/train        200 "deep link falls back to the SPA"
           check /api/definitely-not-real 404 "unmatched API path still 404s"
+
+          # The build must KNOW its own version — the exact regression this
+          # guards was a zip that answered health checks fine while reporting
+          # 0.0.0+unknown, because VERSION wasn't in the artifact.
+          WANT="$(cat "$GITHUB_WORKSPACE/VERSION")"
+          GOT=$(curl -s http://127.0.0.1:8765/api/health | python -c "import json,sys; print(json.load(sys.stdin)['version'])")
+          if [ "$GOT" = "$WANT" ]; then echo "  ok   reports its version ($GOT)";
+          else echo "  FAIL version: artifact reports '$GOT', VERSION says '$WANT'"; fail=1; fi
 
           kill $SERVER 2>/dev/null || true
           exit $fail
