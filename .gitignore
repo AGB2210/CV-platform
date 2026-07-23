@@ -87,6 +87,10 @@ htmlcov/
 *.db-wal
 *.db-shm
 
+# The running server's pid, written by scripts/app.py so a later launch can
+# reap a stale copy of itself. Machine-local by definition.
+.server.pid
+
 
 # =============================================================================
 # Node / frontend

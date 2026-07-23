@@ -101,7 +101,7 @@ jobs:
           rsync -a \
                 --exclude venv --exclude __pycache__ --exclude .pytest_cache \
                 --exclude '*.db*' --exclude '*.pt' --exclude '*.pth' \
-                --exclude runs --exclude .env \
+                --exclude runs --exclude .env --exclude .server.pid \
                 backend "dist/$STAGE/"
 
           # The COMPILED frontend only. No source, no node_modules — the whole

@@ -184,41 +184,73 @@ def _find_npm() -> str | None:
 
 # --- Reap a stale server ----------------------------------------------------
 
+#: Written next to the venv when the server starts, removed on clean shutdown.
+#: A crash or a closed window leaves it behind — that is the case the reaper
+#: exists for.
+PIDFILE = BACKEND / ".server.pid"
+
 
 def reap_stale_server(port: int) -> None:
     """Kill a uvicorn of OURS left holding the port by a previous run.
 
-    Much simpler than the old dev launcher's reaper: there is one process and no
-    `--reload`, so there is no reloader parent and no orphaned multiprocessing
-    worker to chase — just, at most, one stale uvicorn. Scoped to our own repo
-    path so an unrelated server on the same port is never touched.
+    Ownership is proven by the PIDFILE this launcher writes, NOT by scanning
+    command lines for our path. The obvious scan does not work on Windows:
+    `venv\\Scripts\\python.exe` is a tiny redirector that respawns the BASE
+    interpreter, so the server's visible command line is
+    "C:\\...\\Python312\\python.exe -m uvicorn app.main:app" — no venv path, no
+    repo path, nothing that ties the process to this install. (Found the hard
+    way: the path-matching reaper matched nothing, every time.) A pidfile is
+    per-install by construction — it lives in THIS folder — so an unrelated
+    server on the same port is never touched.
     """
-    if not IS_WINDOWS or not port_in_use(port):
+    if not port_in_use(port):
+        PIDFILE.unlink(missing_ok=True)  # nothing running; drop any leftover
         return
-    root_low = str(ROOT).lower()
-    try:
-        out = subprocess.run(
-            [
-                "powershell",
-                "-NoProfile",
-                "-Command",
-                "Get-CimInstance Win32_Process | "
-                "Where-Object { $_.Name -eq 'python.exe' } | "
-                "Select-Object ProcessId,CommandLine | ConvertTo-Csv -NoTypeInformation",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=15,
-        ).stdout
-    except Exception:  # noqa: BLE001
+    if not PIDFILE.exists():
+        return  # something else owns the port — not ours to kill
+    pid = PIDFILE.read_text(encoding="utf-8").strip()
+    if not pid.isdigit():
+        PIDFILE.unlink(missing_ok=True)
         return
-    for line in out.splitlines():
-        low = line.lower()
-        if "uvicorn" in low and root_low in low.replace("/", "\\"):
-            pid = line.split(",", 1)[0].strip('"')
-            if pid.isdigit() and int(pid) != os.getpid():
-                subprocess.run(["taskkill", "/F", "/T", "/PID", pid], capture_output=True)
-    time.sleep(1.5)
+
+    # PIDs get recycled: only kill if that pid still looks like our server.
+    ours = False
+    if IS_WINDOWS:
+        try:
+            out = subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    f"(Get-CimInstance Win32_Process -Filter 'ProcessId = {int(pid)}').CommandLine",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=15,
+            ).stdout
+            ours = "uvicorn" in out.lower()
+        except Exception:  # noqa: BLE001
+            return
+        if ours:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", pid], capture_output=True)
+    else:
+        cmdline = Path(f"/proc/{pid}/cmdline")
+        try:
+            ours = cmdline.exists() and b"uvicorn" in cmdline.read_bytes()
+            if ours:
+                import signal
+
+                os.kill(int(pid), signal.SIGTERM)
+        except OSError:
+            pass
+    PIDFILE.unlink(missing_ok=True)
+
+    if ours:
+        # Give the OS a moment to release the port before we bind it again.
+        for _ in range(20):
+            if not port_in_use(port):
+                break
+            time.sleep(0.25)
 
 
 # --- Setup steps ------------------------------------------------------------
@@ -475,6 +507,13 @@ def serve(python: Path, host: str, port: int, open_browser: bool) -> int:
         env=env,
     )
 
+    # The reaper's ownership proof (see reap_stale_server). Best-effort: a
+    # failed write only means a future stale server needs closing by hand.
+    try:
+        PIDFILE.write_text(str(proc.pid), encoding="utf-8")
+    except OSError:
+        pass
+
     if open_browser:
         threading.Thread(
             target=_open_when_ready, args=(url, f"{url}/api/health", proc), daemon=True
@@ -491,6 +530,8 @@ def serve(python: Path, host: str, port: int, open_browser: bool) -> int:
         else:
             proc.terminate()
         return 0
+    finally:
+        PIDFILE.unlink(missing_ok=True)
 
 
 def main() -> int:
