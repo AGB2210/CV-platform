@@ -378,6 +378,11 @@ export const deleteClass = (classId: number) => api.delete<void>(`/classes/${cla
 export const listImages = (projectId: number) =>
   api.get<DatasetImage[]>(`/projects/${projectId}/images`)
 
+/** One image by id — the deep-link resolver. Review uses it when the linked
+ *  image (a worst-test-image from Evaluate, a shared URL) sits outside the
+ *  page `listImages` returned; without it the editor rendered a blank page. */
+export const getImage = (imageId: number) => api.get<DatasetImage>(`/images/${imageId}`)
+
 /** One page of images, plus how many there are in total.
  *
  *  The plain `listImages` above returns whatever the server's default page is,

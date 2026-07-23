@@ -205,6 +205,43 @@ def list_images(
     return results
 
 
+@router.get("/images/{image_id}", response_model=ImageRead)
+def get_image(image_id: int, db: Session = Depends(get_db)) -> ImageRead:
+    """One image by id, carrying the same counts the list rows do.
+
+    The deep-link resolver. Review can be linked straight to an image — the
+    worst-test-images grid on Evaluate does exactly that, and a shared URL
+    can too — and that image is routinely OUTSIDE the first page the list
+    endpoint returns. Without this, the editor had nothing to render and the
+    page came up blank.
+    """
+    image = db.get(Image, image_id)
+    if image is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, f"Image {image_id} not found")
+
+    n, reviewed, proposed = db.execute(
+        select(
+            func.sum(case((Annotation.proposed.is_(False), 1), else_=0)),
+            func.sum(
+                case(
+                    (
+                        (Annotation.reviewed.is_(True))
+                        & (Annotation.proposed.is_(False)),
+                        1,
+                    ),
+                    else_=0,
+                )
+            ),
+            func.sum(case((Annotation.proposed.is_(True), 1), else_=0)),
+        ).where(Annotation.image_id == image_id)
+    ).one()
+    data = ImageRead.model_validate(image)
+    data.annotation_count = n or 0
+    data.reviewed_count = reviewed or 0
+    data.proposed_count = proposed or 0
+    return data
+
+
 @router.post(
     "/projects/{project_id}/images",
     response_model=UploadResult,

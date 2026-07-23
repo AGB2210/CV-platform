@@ -20,6 +20,7 @@ import {
   getDatasetStats,
   listAnnotations,
   listClasses,
+  getImage,
   listImages,
   replaceAnnotations,
   type Annotation,
@@ -83,13 +84,28 @@ export function Review() {
         listClasses(projectId),
         getDatasetStats(projectId),
       ])
-      setImages(imgs)
+      // A deep link can point PAST the loaded page — Evaluate's worst-image
+      // grid links straight to test images, which live late in the id order.
+      // Fetch that one image and slot it in; without this the editor had
+      // nothing to render and the page came up blank.
+      let all = imgs
+      if (imageId && !imgs.some((i) => i.id === Number(imageId))) {
+        try {
+          const one = await getImage(Number(imageId))
+          if (one.project_id === projectId) {
+            all = [...imgs, one].sort((a, b) => a.id - b.id)
+          }
+        } catch {
+          // A dead id in the URL — the not-found state below says so.
+        }
+      }
+      setImages(all)
       setClasses(cls)
       setStats(s)
       setActiveClassId((c) => c ?? cls[0]?.id ?? null)
       // No image in the URL: land on the first one rather than an empty screen.
-      if (!imageId && imgs.length) {
-        navigate(`/projects/${projectId}/review/${imgs[0].id}`, { replace: true })
+      if (!imageId && all.length) {
+        navigate(`/projects/${projectId}/review/${all[0].id}`, { replace: true })
       }
     } catch (e) {
       setError((e as Error).message)
@@ -630,6 +646,13 @@ export function Review() {
             controls that act on it, reading as an unexplained hole rather than
             breathing room. */}
         <div className="min-h-0 flex-1 overflow-auto px-6 pb-6 pt-3">
+          {/* A dead image id in the URL says so — a silent blank canvas reads
+              as the app being broken, not the link. */}
+          {!loading && imageId && !current && (
+            <p className="mx-auto mt-8 w-fit text-sm text-gray-500">
+              Image #{imageId} isn't in this project — it may have been deleted.
+            </p>
+          )}
           {current && (
             <div className="mx-auto w-fit shadow-sm ring-1 ring-gray-300">
               <AnnotationCanvas
