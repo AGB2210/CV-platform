@@ -69,7 +69,9 @@ adapts to the detected GPU, and a live **mAP** curve (mean average precision,
 the standard accuracy score for detectors) plus live logs show what the run is
 doing. **Stop** ends a run cleanly at the next epoch boundary and keeps the
 best checkpoint; **Cancel** aborts within seconds. Fine-tune from a previous
-run's checkpoint. Runs train a *saved version* of the dataset, never the live
+run's checkpoint — or **import weights** trained elsewhere (a `.pt` from
+another machine or tool) and start from those. Runs train a *saved version* of
+the dataset, never the live
 working copy, so "trained on v3" stays true no matter what you edit afterwards.
 A validation split is required — without held-out data (images kept aside from
 training) the reported mAP only measures what the model memorised. A run that
