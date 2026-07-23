@@ -63,6 +63,15 @@ VENV = BACKEND / "venv"
 IS_WINDOWS = os.name == "nt"
 DEFAULT_PORT = 8000
 
+# The ML stack sets a Python CEILING, not just a floor. faster-coco-eval
+# (pulled in by rfdetr) ships native wheels only up to Python 3.13; on a newer
+# Python, pip falls back to compiling C++ that almost no user machine can, and
+# the ML install dies mid-feature — long after first launch looked fine.
+# Enforced HERE, at launch, where the fix is cheap and the message can be
+# clear. Both bounds are inclusive.
+PY_MIN = (3, 10)
+PY_MAX = (3, 13)
+
 
 # --- Console ----------------------------------------------------------------
 
@@ -216,17 +225,115 @@ def reap_stale_server(port: int) -> None:
 
 
 def ensure_python_ok() -> None:
-    if sys.version_info < (3, 10):
+    if sys.version_info < PY_MIN:
         die(
-            f"Python 3.10+ is required; this is {sys.version.split()[0]}.",
+            f"Python {PY_MIN[0]}.{PY_MIN[1]}+ is required; this is {sys.version.split()[0]}.",
             "Install a newer Python from https://www.python.org/downloads/",
         )
+    if sys.version_info[:2] > PY_MAX:
+        _switch_to_supported_python()
     if not BACKEND.is_dir():
         die("backend/ not found.", f"Run this from the app folder. Looked in {ROOT}")
 
 
+def _find_supported_python() -> str | None:
+    """An installed interpreter within [PY_MIN, PY_MAX], newest first, or None."""
+    minors = range(PY_MAX[1], PY_MIN[1] - 1, -1)
+    if IS_WINDOWS:
+        # The `py` launcher knows every registered install, PATH or not.
+        py = shutil.which("py")
+        if not py:
+            return None
+        for minor in minors:
+            probe = subprocess.run(
+                [py, f"-3.{minor}", "-c", "import sys; print(sys.executable)"],
+                capture_output=True,
+                text=True,
+            )
+            if probe.returncode == 0 and probe.stdout.strip():
+                return probe.stdout.strip()
+        return None
+    for minor in minors:
+        found = shutil.which(f"python3.{minor}")
+        if found:
+            return found
+    return None
+
+
+def _switch_to_supported_python() -> None:
+    """Re-run this script under an installed 3.10–3.13, or explain the ceiling.
+
+    The version this launcher starts under is whatever `python` resolves to —
+    on a fresh Windows that is now 3.14. The core app runs fine there, but the
+    first Auto-annotate would fail deep inside pip with "Failed building wheel
+    for faster-coco-eval". Catching it here turns that cryptic failure into
+    either an invisible switch or one clear sentence.
+    """
+    this = sys.version.split()[0]
+    found = _find_supported_python()
+    if found:
+        warn(
+            f"Python {this} is newer than the ML stack supports "
+            f"(<= {PY_MAX[0]}.{PY_MAX[1]}) — continuing with {found}"
+        )
+        result = subprocess.run([found, str(Path(__file__).resolve()), *sys.argv[1:]])
+        raise SystemExit(result.returncode)
+    if IS_WINDOWS:
+        die(
+            f"Python {this} is too new for the ML stack — its prebuilt wheels stop "
+            f"at {PY_MAX[0]}.{PY_MAX[1]}, so Auto-annotate and Train could never install.",
+            "Install Python 3.12 or 3.13 from https://www.python.org/downloads/ "
+            "and double-click start.bat again — it finds the new install by itself.",
+        )
+    # On macOS/Linux a C toolchain is usually present, so the source build that
+    # the missing wheels force has a real chance of working — warn and carry on.
+    warn(
+        f"Python {this} is newer than the ML stack's prebuilt wheels "
+        f"(<= {PY_MAX[0]}.{PY_MAX[1]}); the ML install will try to compile from source."
+    )
+
+
+def _discard_unsupported_venv() -> None:
+    """Delete backend/venv if it was built by a Python outside [PY_MIN, PY_MAX].
+
+    A venv remembers its interpreter in pyvenv.cfg. One created while 3.14 was
+    the machine default keeps failing ML installs forever even after THIS
+    process switches to a supported version — pip runs under the venv's Python,
+    not the launcher's. Rebuilding is cheap (core deps, ~1 minute) and touches
+    no data: projects, images and the database live outside the venv.
+    """
+    if not (PY_MIN <= sys.version_info[:2] <= PY_MAX):
+        return  # can't build anything better than what already exists
+    cfg = VENV / "pyvenv.cfg"
+    if not cfg.exists():
+        return
+    version: tuple[int, int] | None = None
+    for line in cfg.read_text(encoding="utf-8").splitlines():
+        key, _, value = line.partition("=")
+        if key.strip().lower() == "version":
+            parts = value.strip().split(".")
+            if len(parts) >= 2 and parts[0].isdigit() and parts[1].isdigit():
+                version = (int(parts[0]), int(parts[1]))
+            break
+    if version is None or PY_MIN <= version <= PY_MAX:
+        return
+    warn(
+        f"Rebuilding the Python environment: it was created by Python "
+        f"{version[0]}.{version[1]}, outside the supported "
+        f"{PY_MIN[0]}.{PY_MIN[1]}–{PY_MAX[0]}.{PY_MAX[1]}."
+    )
+    try:
+        shutil.rmtree(VENV)
+    except OSError:
+        die(
+            "Could not remove the old environment — is the app still running?",
+            "Close it (Ctrl+C in its window) and run start.bat again.",
+        )
+
+
 def ensure_backend() -> Path:
     """Create the venv and install the CORE dependencies if needed."""
+    _discard_unsupported_venv()
     python = venv_python()
     if not python.exists():
         step("Creating the Python environment (first run only)…")

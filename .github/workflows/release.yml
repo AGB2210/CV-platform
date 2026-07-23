@@ -193,8 +193,9 @@ jobs:
             dependencies (a minute or two); after that it starts in seconds,
             and opens at <http://127.0.0.1:8000>.
 
-            Requires **Python 3.10+**. No Node needed — the interface is
-            already built.
+            Requires **Python 3.10 – 3.13** (if 3.14 is your default, the
+            launcher finds an installed 3.10–3.13 by itself). No Node needed —
+            the interface is already built.
 
             ### Notes
 
