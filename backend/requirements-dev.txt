@@ -16,3 +16,13 @@ pytest>=8.0
 # from these files could not run a single test. Found by building a fresh venv
 # from the requirements alone, which is exactly what CI does on every run.
 httpx2>=0.28
+
+# The evaluation tests run REAL COCOeval over fake predictions — the metric
+# maths is exactly the part worth testing without a GPU. pycocotools ships
+# prebuilt wheels (no compiler needed), and numpy is declared explicitly
+# because evaluation_job.py imports it directly. At runtime both arrive with
+# requirements-ml.txt; here they exist so the suite passes on a clean venv —
+# which is what CI builds, and how their absence was caught (the same way the
+# httpx2 note above was earned).
+numpy>=1.26
+pycocotools>=2.0.8
