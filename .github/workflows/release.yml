@@ -167,6 +167,7 @@ jobs:
           check /api/health              200 "API answers"
           check /projects/7/train        200 "deep link falls back to the SPA"
           check /api/definitely-not-real 404 "unmatched API path still 404s"
+          check /openapi.json            200 "the OpenAPI schema generates (/docs depends on it)"
 
           # The build must KNOW its own version — the exact regression this
           # guards was a zip that answered health checks fine while reporting

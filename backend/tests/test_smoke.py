@@ -18,3 +18,16 @@ def test_create_project_and_upload(client):
     imgs = upload_images(client, pid, ["a.png", "b.png"])
     assert len(imgs) == 2
     assert {i["split"] for i in imgs} == {"train"}
+
+
+def test_openapi_schema_generates(client):
+    """/docs depends on /openapi.json, and ONE unresolvable annotation anywhere
+    breaks the WHOLE schema. This 500'd for three releases (a quoted
+    `-> "FileResponse"` forward reference on the thumbnail route) because
+    nothing — tests, smoke, QA — ever asked for it. The README advertises
+    /docs; this keeps that advertisement honest."""
+    r = client.get("/openapi.json")
+    assert r.status_code == 200, r.text[:300]
+    doc = r.json()
+    assert doc["info"]["title"]
+    assert "/api/projects" in doc["paths"], "the schema actually covers the API"

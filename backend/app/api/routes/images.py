@@ -15,6 +15,14 @@ from fastapi import (
     UploadFile,
     status,
 )
+
+# Imported at module level ON PURPOSE. This used to be a lazy import inside
+# get_thumbnail with a quoted `-> "FileResponse"` annotation — a forward
+# reference Pydantic could never resolve, and ONE unresolvable annotation
+# anywhere poisons the ENTIRE OpenAPI schema: /openapi.json 500'd, so /docs
+# showed "Failed to load API definition" for three releases before anyone
+# opened it. The import is starlette re-exported and costs nothing.
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session
@@ -35,8 +43,8 @@ router = APIRouter(tags=["images"])
 THUMB_SIZE = 256
 
 
-@router.get("/thumbs/{project_id}/{filename}")
-def get_thumbnail(project_id: int, filename: str) -> "FileResponse":
+@router.get("/thumbs/{project_id}/{filename}", response_class=FileResponse)
+def get_thumbnail(project_id: int, filename: str) -> FileResponse:
     """A small cached JPEG of one stored image, for grids and filmstrips.
 
     The scroll-lag fix: grids used to render the ORIGINALS (multi-megabyte,
@@ -48,8 +56,6 @@ def get_thumbnail(project_id: int, filename: str) -> "FileResponse":
     forever on the browser side too, because stored filenames are content-
     addressed uuids that never change their bytes.
     """
-    from fastapi.responses import FileResponse
-
     # The filename is a path segment from the URL — refuse anything that could
     # walk out of the project directory.
     if "/" in filename or "\\" in filename or ".." in filename:
