@@ -38,7 +38,7 @@ export function SelectionToolbar({
         <span className="font-medium tabular-nums">{count}</span> selected
       </span>
       <span className="flex items-center gap-2">
-        <button onClick={onToggleAll} className="text-accent-800 hover:underline">
+        <button onClick={onToggleAll} className="btn-small">
           {count === total ? 'Clear' : `Select all ${total}`}
         </button>
         <button

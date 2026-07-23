@@ -524,10 +524,7 @@ function NoTestData({ projectId }: { projectId: number }) {
         Dataset page, assign images to the test split (or upload a labelled test set),
         save a version, then evaluate that version.
       </p>
-      <Link
-        to={`/projects/${projectId}`}
-        className="mt-2 inline-flex items-center gap-1 font-medium underline underline-offset-2"
-      >
+      <Link to={`/projects/${projectId}`} className="btn-small mt-2">
         Go to Dataset
       </Link>
     </div>

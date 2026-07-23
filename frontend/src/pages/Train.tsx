@@ -639,7 +639,7 @@ export function Train() {
                       type="button"
                       onClick={() => weightsFileRef.current?.click()}
                       disabled={isRunning || importingWeights}
-                      className="mt-1.5 text-xs font-medium text-accent-700 underline underline-offset-2 hover:text-accent-800 disabled:cursor-default disabled:text-gray-400 disabled:no-underline"
+                      className="btn-small mt-1.5"
                     >
                       {importingWeights ? 'Importing…' : 'Import weights (.pt / .pth)…'}
                     </button>
@@ -723,7 +723,7 @@ export function Train() {
                             type="button"
                             onClick={() => resetParams()}
                             disabled={isRunning}
-                            className="shrink-0 text-xs text-accent-700 hover:underline disabled:text-gray-300"
+                            className="btn-small shrink-0"
                           >
                             Reset
                           </button>
@@ -1013,17 +1013,15 @@ function RunDetail({
         </dl>
 
         {job.status === 'done' && (
-          <p className="mt-3 rounded-md border border-status-good/30 bg-status-good/5 px-2.5 py-1.5 text-xs text-gray-700">
-            Best checkpoint saved.{' '}
-            <Link to={`/projects/${job.project_id}/evaluate`} className="text-accent-700 underline">
-              Evaluate it on the test split
-            </Link>{' '}
-            or{' '}
-            <Link to={`/projects/${job.project_id}/deploy`} className="text-accent-700 underline">
-              try it on a new image
+          <div className="mt-3 flex flex-wrap items-center gap-2 rounded-md border border-status-good/30 bg-status-good/5 px-2.5 py-1.5 text-xs text-gray-700">
+            <span>Best checkpoint saved.</span>
+            <Link to={`/projects/${job.project_id}/evaluate`} className="btn-small">
+              Evaluate on the test split
             </Link>
-            .
-          </p>
+            <Link to={`/projects/${job.project_id}/deploy`} className="btn-small">
+              Try it on a new image
+            </Link>
+          </div>
         )}
 
         {job.error && (

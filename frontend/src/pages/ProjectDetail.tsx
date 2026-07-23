@@ -932,7 +932,7 @@ function UploadPanel({
             <button
               onClick={() => void undo(result.import_id!)}
               disabled={busy}
-              className="mt-1.5 flex items-center gap-1 text-gray-600 underline hover:text-red-700 disabled:opacity-50"
+              className="btn-small mt-1.5"
             >
               <Undo2 size={11} />
               Undo this import ({result.uploaded_count} image
@@ -1150,7 +1150,7 @@ function StoragePanel({
             <button
               onClick={() => setConfirmDiscard(true)}
               disabled={busy}
-              className="mt-1 flex items-center gap-1 text-red-700 underline hover:text-red-800 disabled:opacity-50"
+              className="btn-small-danger mt-1"
             >
               <Trash2 size={11} />
               Discard them
@@ -1180,7 +1180,7 @@ function StoragePanel({
               // Not destructive-red: nothing recoverable is at stake, and
               // colouring it like a delete would make routine cleanup feel
               // dangerous.
-              className="mt-1 text-accent-700 underline hover:text-accent-800 disabled:opacity-50"
+              className="btn-small mt-1"
             >
               Reclaim {mb(report.orphan_bytes)}
             </button>
@@ -1503,18 +1503,18 @@ function ImageGrid({
                   images is exactly what it's reserved for. 11px glyph beside
                   11px text. */}
               <button
-                className="flex items-center gap-1 text-red-700 underline"
+                className="btn-small-danger"
                 onClick={() => setBulkOpen(true)}
               >
                 <Trash2 size={11} />
                 Delete {selected.size}
               </button>
-              <button className="text-gray-500 underline" onClick={onClearSelection}>
+              <button className="btn-small" onClick={onClearSelection}>
                 Clear
               </button>
             </>
           )}
-          <button className="text-gray-500 underline" onClick={onSelectAll}>
+          <button className="btn-small" onClick={onSelectAll}>
             {selected.size === images.length ? 'Deselect all' : 'Select all'}
           </button>
           {/* Say WHICH images these are, not just how many are on screen. The

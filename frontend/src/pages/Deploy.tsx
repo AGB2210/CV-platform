@@ -374,7 +374,7 @@ function Snippet({
         <button
           type="button"
           onClick={onCopy}
-          className="text-[11px] font-medium text-accent-700 hover:underline"
+          className="btn-small"
         >
           {copied ? 'Copied' : 'Copy'}
         </button>

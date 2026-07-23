@@ -462,7 +462,7 @@ export function Annotate() {
                       type="button"
                       onClick={() => setPickerOpen(true)}
                       disabled={isRunning}
-                      className="shrink-0 text-xs font-medium text-accent-800 underline"
+                      className="btn-small shrink-0"
                     >
                       Change
                     </button>
@@ -475,7 +475,7 @@ export function Annotate() {
                         setSearchParams({}, { replace: true })
                       }}
                       disabled={isRunning}
-                      className="shrink-0 text-xs font-medium text-gray-500 underline"
+                      className="btn-small shrink-0"
                     >
                       Clear
                     </button>
@@ -743,7 +743,7 @@ function JobProgress({
                   setCancelling(false)
                 }
               }}
-              className="text-xs font-medium text-red-700 underline underline-offset-2 hover:text-red-800 disabled:cursor-default disabled:text-gray-400 disabled:no-underline"
+              className="btn-small-danger"
             >
               {cancelling ? 'Cancelling…' : 'Cancel run'}
             </button>
@@ -986,7 +986,7 @@ function ImagePicker({
               return next
             })
           }
-          className="font-medium text-accent-700 underline underline-offset-2"
+          className="btn-small"
         >
           {allOnPage ? 'Unselect page' : 'Select page'}
         </button>
