@@ -133,3 +133,48 @@ class YoloWorldAnnotator(AutoAnnotator):
         return AnnotationResult(
             boxes=boxes, image_width=width, image_height=height, inference_ms=elapsed_ms
         )
+
+
+# The rest of the ladder — same code path, bigger backbone. Throughput is the
+# family's whole reason to exist, and even X stays far faster than the
+# transformer annotators; the trade is VRAM and a little per-image latency for
+# better boxes on hard vocabulary.
+
+
+@register
+class YoloWorldMAnnotator(YoloWorldAnnotator):
+    key = "yolo_world_m"
+    variant = "medium (v2)"
+    display_name = "YOLO-World M"
+    description = (
+        "The middle YOLO-World — noticeably better boxes than S on cluttered "
+        "scenes, still built for bulk batches."
+    )
+    approx_vram_gb = 2.5
+    base_weights = "yolov8m-worldv2.pt"
+
+
+@register
+class YoloWorldLAnnotator(YoloWorldAnnotator):
+    key = "yolo_world_l"
+    variant = "large (v2)"
+    display_name = "YOLO-World L"
+    description = (
+        "The large YOLO-World — the family's accuracy pick while keeping "
+        "YOLO-class speed."
+    )
+    approx_vram_gb = 3.0
+    base_weights = "yolov8l-worldv2.pt"
+
+
+@register
+class YoloWorldXAnnotator(YoloWorldAnnotator):
+    key = "yolo_world_x"
+    variant = "xlarge (v2)"
+    display_name = "YOLO-World X"
+    description = (
+        "The biggest YOLO-World — best open-vocabulary accuracy at YOLO "
+        "speed; wants a mid-size card."
+    )
+    approx_vram_gb = 4.0
+    base_weights = "yolov8x-worldv2.pt"

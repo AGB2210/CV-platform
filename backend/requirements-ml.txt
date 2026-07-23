@@ -14,8 +14,9 @@
 #     python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
 
 # --- Auto-annotation ---
-# transformers ships Grounding DINO (tiny + base), OWLv2 and Florence-2 — four
-# of the five annotators from one dependency and one weight cache. Avoids
+# transformers ships Grounding DINO (tiny/base), OWLv2 (base/large) and
+# Florence-2 (base/large) — six of the ten annotators from one dependency and
+# one weight cache. Avoids
 # vendoring the original research repos, which are pinned to old torch versions
 # and are painful to install on Windows.
 transformers>=4.46.0
@@ -62,11 +63,11 @@ pycocotools>=2.0.8
 # The app reports yours in the Compute panel, and each picker shows the
 # per-variant estimate beside the size.
 #
-#   Grounding DINO tiny     ~700 MB weights   ~2.5 GB inference
-#   Grounding DINO base     ~1.8 GB weights   ~5.5 GB inference
-#   YOLO-World S             ~25 MB weights   ~2 GB inference
-#   OWLv2 base              ~1.2 GB weights   ~3 GB inference
-#   Florence-2 base         ~500 MB weights   ~2.5 GB inference
+#   Grounding DINO tiny      ~700 MB weights        ~2.5 GB inference
+#   Grounding DINO base      ~1.8 GB weights        ~5.5 GB inference
+#   YOLO-World S..X          ~25–140 MB weights     ~2–4 GB inference
+#   OWLv2 base / large       ~1.2 / ~1.8 GB weights ~3 / ~6 GB inference
+#   Florence-2 base / large  ~0.5 / ~1.5 GB weights ~2.5 / ~5 GB inference
 #
 # Training wants far more than inference — the per-variant estimates live on
 # the trainer classes (app/ml/trainers/) and drive both the adaptive batch

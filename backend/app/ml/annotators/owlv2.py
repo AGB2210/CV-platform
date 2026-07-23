@@ -129,3 +129,20 @@ class Owlv2Annotator(AutoAnnotator):
         return AnnotationResult(
             boxes=boxes, image_width=width, image_height=height, inference_ms=elapsed_ms
         )
+
+
+@register
+class Owlv2LargeAnnotator(Owlv2Annotator):
+    """The large ensemble — the same second-opinion role, stronger still on
+    fine-grained classes, at roughly triple the compute of base."""
+
+    key = "owlv2_large"
+    variant = "large (ensemble)"
+    display_name = "OWLv2 large"
+    description = (
+        "The large OWLv2 — the strongest rare-class detector in the roster. "
+        "Slow per image; reserve it for the classes everything else misses."
+    )
+    approx_vram_gb = 6.0
+    model_id = "google/owlv2-large-patch14-ensemble"
+    download_size = "~1.8 GB"

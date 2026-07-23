@@ -304,8 +304,8 @@ export function Annotate() {
               </div>
               <div className="space-y-3 p-4">
                 {/* Model as TWO questions — family, then size — mirroring the
-                    Train page's picker. Five annotators across four families
-                    is already past the point where one flat list reads well. */}
+                    Train page's picker. Ten annotators across four families
+                    is well past the point where one flat list reads well. */}
                 <div className="grid grid-cols-2 gap-3">
                   <div>
                     <label

@@ -132,8 +132,8 @@ def test_cancel_discards_run_proposals_and_row(client, monkeypatch):
         db.close()
 
 
-def test_annotator_roster_covers_five_models_in_four_families(client):
-    """Five annotators across four families, each carrying the grouping
+def test_annotator_roster_covers_ten_models_in_four_families(client):
+    """Ten annotators across four families, each carrying the grouping
     metadata the picker needs. All keys resolve to classes without importing
     any heavy framework (this test would hang for minutes if they did)."""
     from app.ml import registry
@@ -145,8 +145,13 @@ def test_annotator_roster_covers_five_models_in_four_families(client):
         "grounding_dino": "Grounding DINO",
         "grounding_dino_base": "Grounding DINO",
         "yolo_world_s": "YOLO-World",
+        "yolo_world_m": "YOLO-World",
+        "yolo_world_l": "YOLO-World",
+        "yolo_world_x": "YOLO-World",
         "owlv2_base": "OWLv2",
+        "owlv2_large": "OWLv2",
         "florence2_base": "Florence-2",
+        "florence2_large": "Florence-2",
     }
     for key, family in expected.items():
         assert key in by_key, f"missing annotator {key}"

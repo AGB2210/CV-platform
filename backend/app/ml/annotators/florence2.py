@@ -136,3 +136,21 @@ class Florence2Annotator(AutoAnnotator):
         return AnnotationResult(
             boxes=boxes, image_width=width, image_height=height, inference_ms=elapsed_ms
         )
+
+
+@register
+class Florence2LargeAnnotator(Florence2Annotator):
+    """The 0.77B-parameter sibling — same prompts, same one-pass-per-class
+    behaviour, meaningfully better grounding of long descriptions."""
+
+    key = "florence2_large"
+    variant = "large"
+    display_name = "Florence-2 large"
+    description = (
+        "The large Florence-2 — the best descriptive-prompt grounding in the "
+        "roster. Same careful-pass role as base, better boxes for ~3x the "
+        "weights."
+    )
+    approx_vram_gb = 5.0
+    model_id = "florence-community/Florence-2-large"
+    download_size = "~1.5 GB"

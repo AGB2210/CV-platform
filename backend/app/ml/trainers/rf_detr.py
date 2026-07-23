@@ -289,9 +289,23 @@ class RfDetrMediumTrainer(RfDetrTrainer):
     variant = "medium"
     display_name = "RF-DETR medium"
     description = (
-        "The strongest RF-DETR here — best transformer accuracy in the "
-        "roster; wants 9 GB+ to train." + _DESCRIPTION_TAIL
+        "The sweet spot of the family — near-large accuracy at a memory "
+        "budget mid-size cards can train; wants 9 GB+." + _DESCRIPTION_TAIL
     )
     approx_vram_gb = 9.0
     default_batch_size = 2
     model_class = "RFDETRMedium"
+
+
+@register
+class RfDetrLargeTrainer(RfDetrTrainer):
+    key = "rfdetr_large"
+    variant = "large"
+    display_name = "RF-DETR large"
+    description = (
+        "The flagship RF-DETR — the highest accuracy in the roster; wants "
+        "13 GB+ to train." + _DESCRIPTION_TAIL
+    )
+    approx_vram_gb = 13.0
+    default_batch_size = 1
+    model_class = "RFDETRLarge"
