@@ -291,5 +291,12 @@ def delete_project_files(project_id: int, job_ids: list[int]) -> None:
     """
     delete_project_dir(project_id)
     shutil.rmtree(settings.versions_dir / str(project_id), ignore_errors=True)
+    # Imported checkpoints (the fourth location, added in 1.1.0). Found the
+    # hard way: the DB row cascaded with the project but the uploaded .pt
+    # stayed on disk forever — every new storage location must be added HERE
+    # the moment it exists.
+    shutil.rmtree(
+        settings.STORAGE_DIR / "imported_weights" / str(project_id), ignore_errors=True
+    )
     for job_id in job_ids:
         shutil.rmtree(settings.runs_dir / str(job_id), ignore_errors=True)

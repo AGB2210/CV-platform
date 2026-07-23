@@ -177,3 +177,24 @@ def test_bulk_delete_also_removes_every_projects_files(client):
     for pid in (a, b):
         assert not (settings.images_dir / str(pid)).exists()
         assert not (settings.versions_dir / str(pid)).exists()
+
+
+def test_delete_project_removes_imported_weights_files(client):
+    """Every storage location a project owns goes with it — including the
+    imported-checkpoints folder added in 1.1.0. Found by deleting a real
+    project and finding the uploaded .pt still on disk: the DB row cascaded,
+    the file leaked, and nothing inside the app could ever show it."""
+    from app.config import settings
+    from tests.conftest import make_project
+
+    pid = make_project(client, "WeightsLeak", classes=("car",))
+    r = client.post(
+        f"/api/projects/{pid}/weights", files={"file": ("ext.pt", b"WEIGHTBYTES")}
+    )
+    assert r.status_code == 201, r.text
+
+    weights_dir = settings.STORAGE_DIR / "imported_weights" / str(pid)
+    assert weights_dir.exists() and any(weights_dir.iterdir())
+
+    assert client.delete(f"/api/projects/{pid}").status_code == 204
+    assert not weights_dir.exists(), "the uploaded checkpoint must not outlive its project"
