@@ -77,28 +77,36 @@ export function Review() {
 
   // --- data --------------------------------------------------------------
 
+  /** The first page of images — PLUS the deep-linked one when it lives beyond
+   *  that page. Evaluate's worst-image grid links straight to test images,
+   *  which sit late in the id order; any fetch that forgets this renders a
+   *  blank editor (the original bug) or drops the image mid-session (the
+   *  follow-up: a batch accept/reject refreshed the list with a plain page-1
+   *  fetch and the open image vanished under the user). Every refresh of the
+   *  images list must go through here. */
+  const fetchImages = useCallback(async (): Promise<DatasetImage[]> => {
+    const imgs = await listImages(projectId)
+    const wanted = Number(imageId)
+    if (imageId && !imgs.some((i) => i.id === wanted)) {
+      try {
+        const one = await getImage(wanted)
+        if (one.project_id === projectId) {
+          return [...imgs, one].sort((a, b) => a.id - b.id)
+        }
+      } catch {
+        // A dead id in the URL — the not-found state says so.
+      }
+    }
+    return imgs
+  }, [projectId, imageId])
+
   const loadShell = useCallback(async () => {
     try {
-      const [imgs, cls, s] = await Promise.all([
-        listImages(projectId),
+      const [all, cls, s] = await Promise.all([
+        fetchImages(),
         listClasses(projectId),
         getDatasetStats(projectId),
       ])
-      // A deep link can point PAST the loaded page — Evaluate's worst-image
-      // grid links straight to test images, which live late in the id order.
-      // Fetch that one image and slot it in; without this the editor had
-      // nothing to render and the page came up blank.
-      let all = imgs
-      if (imageId && !imgs.some((i) => i.id === Number(imageId))) {
-        try {
-          const one = await getImage(Number(imageId))
-          if (one.project_id === projectId) {
-            all = [...imgs, one].sort((a, b) => a.id - b.id)
-          }
-        } catch {
-          // A dead id in the URL — the not-found state below says so.
-        }
-      }
       setImages(all)
       setClasses(cls)
       setStats(s)
@@ -112,7 +120,7 @@ export function Review() {
     } finally {
       setLoading(false)
     }
-  }, [projectId, imageId, navigate])
+  }, [projectId, imageId, navigate, fetchImages])
 
   useEffect(() => {
     void loadShell()
@@ -181,7 +189,7 @@ export function Review() {
   /** Refresh the filmstrip counts and dataset stats without refetching classes. */
   const refreshCounts = useCallback(async () => {
     try {
-      const [imgs, s] = await Promise.all([listImages(projectId), getDatasetStats(projectId)])
+      const [imgs, s] = await Promise.all([fetchImages(), getDatasetStats(projectId)])
       setImages(imgs)
       setStats(s)
       // Only ask for the batch preview when there IS a batch — otherwise every
@@ -192,7 +200,7 @@ export function Review() {
     } catch {
       /* non-fatal: the counts are a nicety, not the work */
     }
-  }, [projectId])
+  }, [projectId, fetchImages])
 
 
   // --- mutations ---------------------------------------------------------
