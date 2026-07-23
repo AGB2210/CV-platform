@@ -818,3 +818,42 @@ def test_a_split_scoped_annotation_file_disambiguates(client):
     test_boxes = client.get(f"/api/images/{by_split['test']['id']}/annotations").json()
     assert len(train_boxes) == 1 and round(train_boxes[0]["x"]) == 5
     assert test_boxes == [], "the other 001.jpg is untouched"
+
+
+def test_reimport_of_same_zip_reports_duplicates_and_supersedes_proposals(client):
+    """Re-uploading an already-imported zip is an OUTCOME, not an error.
+
+    First upload: images stored, annotations accepted. Second: every image is
+    a byte-duplicate (reported, not silently dropped, not 400) and the
+    annotation file arrives as PROPOSALS for review. Third: those proposals
+    are SUPERSEDED, not stacked — two identical suggestion sets per image was
+    the observed failure.
+    """
+    pid = client.post("/api/projects", json={"name": "ReImport"}).json()["id"]
+    zip_bytes = _roboflow_zip()
+
+    first = client.post(
+        f"/api/projects/{pid}/images",
+        files=[("files", ("rf.zip", zip_bytes, "application/zip"))],
+    )
+    assert first.status_code == 201
+
+    second = client.post(
+        f"/api/projects/{pid}/images",
+        files=[("files", ("rf.zip", zip_bytes, "application/zip"))],
+    )
+    assert second.status_code == 201, second.text  # NOT "no valid images"
+    body = second.json()
+    assert body["uploaded_count"] == 0
+    assert body["duplicates_skipped"] == 6
+    stats = client.get(f"/api/projects/{pid}/dataset/stats").json()
+    assert stats["proposed_boxes"] == 6, "the corrected file arrived as proposals"
+
+    third = client.post(
+        f"/api/projects/{pid}/images",
+        files=[("files", ("rf.zip", zip_bytes, "application/zip"))],
+    )
+    assert third.status_code == 201
+    stats = client.get(f"/api/projects/{pid}/dataset/stats").json()
+    assert stats["proposed_boxes"] == 6, "a fresh import supersedes, never stacks"
+    assert stats["total_boxes"] == 6, "accepted boxes untouched throughout"

@@ -783,8 +783,24 @@ def execute(
         corrections made since the first import, which is exactly the kind of
         loss nothing later can detect.
         """
+        boxes = list(_boxes_for(group, name, width, height, plan, existing))
+        if boxes and proposed:
+            # A fresh import SUPERSEDES the previous import's un-actioned
+            # proposals on this image — the same no-stacking rule auto-runs
+            # apply to their own leftovers. Without this, re-uploading the
+            # same (or a corrected) file twice presented two identical sets
+            # of suggestions per image. Accepted boxes are never touched, and
+            # auto proposals belong to the annotate pipeline, not this one.
+            for stale in db.scalars(
+                select(Annotation).where(
+                    Annotation.image_id == image.id,
+                    Annotation.proposed.is_(True),
+                    Annotation.source == "imported",
+                )
+            ).all():
+                db.delete(stale)
         written = 0
-        for category_id, x, y, w, h in _boxes_for(group, name, width, height, plan, existing):
+        for category_id, x, y, w, h in boxes:
             # Clamp against the REAL dimensions, not what the file claims. They
             # disagree more often than you'd expect — resized exports with stale
             # metadata are common — and the image is the authority.

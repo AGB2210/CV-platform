@@ -326,7 +326,16 @@ async def upload_images(
     # plain-image path below has nothing to do for it.
     if import_results and not saved:
         merged = _merge_results(import_results, skipped)
-        if merged.images_added == 0:
+        # 400 only when NOTHING happened at all. A re-upload of an archive
+        # whose images are all already here is a real outcome, not an error:
+        # duplicates were recognised (and possibly its annotation file arrived
+        # as fresh proposals) — reporting "no valid images" for that told the
+        # user their zip was broken while quietly changing their project.
+        if (
+            merged.images_added == 0
+            and merged.duplicates_skipped == 0
+            and merged.proposals_created == 0
+        ):
             raise HTTPException(
                 status.HTTP_400_BAD_REQUEST,
                 "No valid images found in the archive. "
