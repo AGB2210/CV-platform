@@ -117,7 +117,7 @@ jobs:
           # VERSION rides along because backend/app/version.py reads it from
           # the unpack root — without it every release reported 0.0.0+unknown
           # at /api/health, found by actually asking a shipped build.
-          cp start.bat README.md VERSION "dist/$STAGE/"
+          cp start.bat README.md VERSION LICENSE "dist/$STAGE/"
 
           cd dist && zip -qr "$STAGE.zip" "$STAGE"
           echo "stage=$STAGE" >> "$GITHUB_OUTPUT"

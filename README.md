@@ -376,6 +376,12 @@ finished and breaks on someone else's machine.
 
 ## License
 
-None. This is a personal portfolio project, published to be read rather than
-reused — without a license, the default applies and nobody else has permission
-to copy, modify or distribute it.
+**MIT** — see [LICENSE](LICENSE). Use it, modify it, build on it; keeping the
+copyright notice is the only ask.
+
+One dependency deserves a flag: the **optional** ML stack the app installs on
+first use includes **ultralytics, which is AGPL-3.0** (copyleft). It is not
+part of this repository or its release zips — the app installs it onto your
+machine, where its own terms apply. The MIT grant here covers this project's
+code; if you build something commercial on the YOLO trainers, read
+ultralytics' license first.
