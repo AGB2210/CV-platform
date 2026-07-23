@@ -14,7 +14,20 @@ import { getMlStatus, startMlInstall, type MlStatus } from '@/lib/api'
  * While the stack is present (the common case after the first install) this is a
  * transparent pass-through: it renders its children and gets out of the way.
  */
-export function MlSetupGate({ feature, children }: { feature: string; children: React.ReactNode }) {
+export function MlSetupGate({
+  feature,
+  children,
+  onReady,
+}: {
+  feature: string
+  children: React.ReactNode
+  /** Fired once when the gate goes from blocking to installed IN THIS MOUNT.
+   *  Data the parent page fetched while the gate was still blocking — device
+   *  info, most notably — is stale the moment the install lands: torch wasn't
+   *  importable when it was fetched, so /api/device reported CPU. This is the
+   *  page's chance to refetch. A mount that starts installed never fires it. */
+  onReady?: () => void
+}) {
   const [status, setStatus] = useState<MlStatus | null>(null)
   const [starting, setStarting] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -49,6 +62,21 @@ export function MlSetupGate({ feature, children }: { feature: string; children: 
       pollingRef.current = null
     }
   }, [installStatus, refresh])
+
+  // Detect the blocked→installed transition (see the onReady doc above).
+  // The callback lives in a ref so a parent re-render can't retrigger this.
+  const onReadyRef = useRef(onReady)
+  onReadyRef.current = onReady
+  const wasBlocked = useRef(false)
+  const installed = status?.installed
+  useEffect(() => {
+    if (installed === false) {
+      wasBlocked.current = true
+    } else if (installed && wasBlocked.current) {
+      wasBlocked.current = false
+      onReadyRef.current?.()
+    }
+  }, [installed])
 
   // Keep the install log pinned to the newest line, terminal-style — unless
   // the user scrolls up to read something, in which case leave them be until

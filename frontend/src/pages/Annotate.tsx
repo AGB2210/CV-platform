@@ -260,7 +260,17 @@ export function Annotate() {
         }
       />
       <PageBody>
-        <MlSetupGate feature="Auto-annotate">
+        <MlSetupGate
+          feature="Auto-annotate"
+          // The device card's data was fetched while torch didn't exist yet
+          // (the initial load ran with the gate still blocking), so it says
+          // CPU. Refetch the moment the install lands.
+          onReady={() => {
+            getDevice()
+              .then(setDevice)
+              .catch(() => {})
+          }}
+        >
         {error && (
           <div className="mb-4 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
             {error}
