@@ -107,6 +107,14 @@ class TrainingJob(Base):
     # re-checks the source exists and has a checkpoint before using it.
     init_from_job_id: Mapped[int | None] = mapped_column(Integer, default=None)
 
+    # When set, this run was initialised from an UPLOADED checkpoint (see
+    # models/imported_weights.py) — the third "Initialize from" source, next to
+    # the pretrained base and a previous run. Mutually exclusive with
+    # init_from_job_id; the route enforces it. Plain nullable int like its
+    # sibling above, and for the same reason: the runner re-checks the row and
+    # its file exist before using them.
+    init_weights_id: Mapped[int | None] = mapped_column(Integer, default=None)
+
     # --- Live progress the frontend polls -----------------------------------
     current_epoch: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     total_epochs: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

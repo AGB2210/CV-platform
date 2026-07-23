@@ -56,6 +56,11 @@ class TrainingJobCreate(BaseModel):
     # completed, has a checkpoint, matching class count).
     init_from_job_id: int | None = None
 
+    # Finetune from an UPLOADED checkpoint (imported weights) instead. Mutually
+    # exclusive with init_from_job_id — the route rejects both at once, because
+    # a run has exactly one starting point.
+    init_weights_id: int | None = None
+
     # Which SAVED dataset version to train. None = the latest saved version.
     # Training always runs against a saved version, never the live rows, so a
     # run's results stay attributable to a specific dataset.
@@ -116,6 +121,8 @@ class TrainingJobRead(BaseModel):
     num_classes: int
     #: Set when this run continued another run's checkpoint (finetune).
     init_from_job_id: int | None
+    #: Set when this run started from an uploaded checkpoint instead.
+    init_weights_id: int | None
     #: The saved dataset version this run trained on.
     dataset_version_id: int | None
     #: "stop" | "cancel" once requested, so the UI can show it's winding down.
@@ -164,3 +171,15 @@ class TrainingJobRead(BaseModel):
             # A malformed history must not 500 the poll the whole page depends
             # on — an empty curve is a survivable degradation.
             return []
+
+
+class ImportedWeightsRead(BaseModel):
+    """An uploaded checkpoint, listable in the trainer's "Initialize from"."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    project_id: int
+    filename: str
+    size_bytes: int
+    created_at: UtcDatetime

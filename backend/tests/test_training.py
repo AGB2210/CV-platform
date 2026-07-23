@@ -956,3 +956,97 @@ def _counting_clock():
         return t[0]
 
     return clock
+
+
+# --- imported weights --------------------------------------------------------
+
+
+def test_upload_weights_validates_dedupes_and_lists(client):
+    """Upload is content-addressed like images: wrong extension and empty files
+    are refused with clear messages, identical bytes land on the same row, and
+    the list shows what the picker will offer."""
+    pid, _ = make_trainable_project(client, "Weights")
+
+    r = client.post(
+        f"/api/projects/{pid}/weights", files={"file": ("notes.txt", b"hello")}
+    )
+    assert r.status_code == 400 and "checkpoint" in r.json()["detail"]
+
+    r = client.post(f"/api/projects/{pid}/weights", files={"file": ("w.pt", b"")})
+    assert r.status_code == 400 and "empty" in r.json()["detail"]
+
+    r = client.post(
+        f"/api/projects/{pid}/weights", files={"file": ("colleague.pt", b"WEIGHTS")}
+    )
+    assert r.status_code == 201, r.text
+    row = r.json()
+    assert row["filename"] == "colleague.pt" and row["size_bytes"] == 7
+
+    # Same bytes under a different name: same row, no duplicate file.
+    r2 = client.post(
+        f"/api/projects/{pid}/weights", files={"file": ("renamed.pt", b"WEIGHTS")}
+    )
+    assert r2.json()["id"] == row["id"]
+
+    listed = client.get(f"/api/projects/{pid}/weights").json()
+    assert [w["id"] for w in listed] == [row["id"]]
+
+
+def test_train_from_imported_weights(client, monkeypatch, fake_trainer):
+    """A run started from imported weights hands the trainer exactly that file
+    as its init checkpoint — the same seam previous-run fine-tuning uses."""
+    monkeypatch.setattr(
+        "app.services.training_job.SessionLocal",
+        client.SessionLocal,  # type: ignore[attr-defined]
+    )
+    pid, _ = make_trainable_project(client, "WeightsTrain")
+    wid = client.post(
+        f"/api/projects/{pid}/weights", files={"file": ("base.pt", b"W" * 32)}
+    ).json()["id"]
+
+    r = client.post(
+        f"/api/projects/{pid}/train",
+        json={
+            "trainer_key": "fake",
+            "epochs": 1,
+            "batch_size": 2,
+            "image_size": 64,
+            "init_weights_id": wid,
+        },
+    )
+    assert r.status_code == 202, r.text
+    job = client.get(f"/api/training-jobs/{r.json()['id']}").json()
+    assert job["status"] == "done", job.get("error")
+    assert job["init_weights_id"] == wid
+
+    config = fake_trainer.received[-1]
+    assert config.init_weights is not None and config.init_weights.exists()
+    assert config.init_weights.read_bytes() == b"W" * 32
+
+
+def test_train_refuses_ambiguous_or_foreign_weights(client, no_train_run, fake_trainer):
+    """One starting point only, and only weights this project owns."""
+    pid, _ = make_trainable_project(client, "WeightsGuard")
+    other_pid, _ = make_trainable_project(client, "WeightsOther")
+    wid = client.post(
+        f"/api/projects/{other_pid}/weights", files={"file": ("w.pt", b"W")}
+    ).json()["id"]
+
+    # Weights belonging to a different project are not resolvable here.
+    r = client.post(
+        f"/api/projects/{pid}/train",
+        json={"trainer_key": "fake", "epochs": 1, "init_weights_id": wid},
+    )
+    assert r.status_code == 400 and "not found" in r.json()["detail"].lower()
+
+    # Both a previous run and imported weights at once is a contradiction.
+    r = client.post(
+        f"/api/projects/{pid}/train",
+        json={
+            "trainer_key": "fake",
+            "epochs": 1,
+            "init_from_job_id": 1,
+            "init_weights_id": wid,
+        },
+    )
+    assert r.status_code == 400 and "one starting point" in r.json()["detail"].lower()

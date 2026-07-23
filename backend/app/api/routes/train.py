@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import shutil
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
+import hashlib
+
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.api.routes.projects import get_project_or_404
-from app.config import settings
+from app.config import from_storage_path, settings, to_storage_path
 from app.database import get_db
 from app.ml.trainers import registry as trainer_registry
 from app.models import (
@@ -18,6 +20,7 @@ from app.models import (
     Category,
     DatasetVersion,
     Image,
+    ImportedWeights,
     JobControl,
     JobStatus,
     TrainingJob,
@@ -26,6 +29,7 @@ from app.models.image import Split
 from app.schemas.training import (
     BulkDeleteJobs,
     DeleteJobsResult,
+    ImportedWeightsRead,
     TrainerInfo,
     TrainingJobCreate,
     TrainingJobRead,
@@ -126,11 +130,39 @@ def start_training(
             "percentage split), save the dataset, and train again.",
         )
 
+    # A run has exactly ONE starting point: the pretrained base, a previous
+    # run, or imported weights. Two at once is a contradiction, not a merge.
+    if payload.init_from_job_id is not None and payload.init_weights_id is not None:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Choose one starting point — a previous run or imported weights, "
+            "not both.",
+        )
+
     # Finetuning from a previous run: validate the source is usable and its class
     # set still matches, so we fail with a clear 400 now rather than a cryptic
     # framework error 30 seconds into the run.
     if payload.init_from_job_id is not None:
         _validate_finetune_source(db, project_id, payload.init_from_job_id)
+
+    # Finetuning from imported weights: the row must be this project's and its
+    # file must still exist. Architecture compatibility is NOT checked here —
+    # only the framework can truly judge a checkpoint, so a mismatch surfaces
+    # as the run failing with the framework's own message.
+    if payload.init_weights_id is not None:
+        imported = db.get(ImportedWeights, payload.init_weights_id)
+        if imported is None or imported.project_id != project_id:
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                "Those imported weights were not found in this project.",
+            )
+        stored = from_storage_path(imported.stored_path)
+        if stored is None or not stored.exists():
+            raise HTTPException(
+                status.HTTP_400_BAD_REQUEST,
+                f"The file for '{imported.filename}' is missing on disk. "
+                "Upload it again.",
+            )
 
     # Version number scoped to THIS project + model, 1-based. Counts every prior
     # run of the same trainer here (any status) — a version is a training attempt,
@@ -156,6 +188,7 @@ def start_training(
         learning_rate=payload.learning_rate,
         total_epochs=payload.epochs,
         init_from_job_id=payload.init_from_job_id,
+        init_weights_id=payload.init_weights_id,
         dataset_version_id=dataset_version.id,
     )
     db.add(job)
@@ -494,6 +527,112 @@ def _resolve_dataset_version(db: Session, project_id: int, version_id: int | Non
             "dataset version so a run's results stay reproducible.",
         )
     return default
+
+
+# --- Imported weights -------------------------------------------------------
+# The third "Initialize from" source: a checkpoint trained OUTSIDE the app.
+# Bytes land under storage/imported_weights/<project>/, named by content hash
+# (the same identity discipline images use); the row is what the picker lists.
+
+#: What a checkpoint plausibly is. Not a guarantee of compatibility — only the
+#: framework can truly judge a checkpoint — but it stops the obvious mistakes
+#: (a zip, a dataset, an ONNX file) at the door with a clear message.
+_WEIGHTS_SUFFIXES = {".pt", ".pth"}
+
+#: Checkpoints top out well under this (RT-DETR-X is ~0.3 GB). The cap exists
+#: so a mis-picked video or dataset zip fails fast instead of filling the disk.
+_MAX_WEIGHTS_BYTES = 2 * 1024**3
+
+
+@router.post(
+    "/projects/{project_id}/weights",
+    response_model=ImportedWeightsRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def upload_weights(
+    project_id: int,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+) -> ImportedWeights:
+    """Upload a checkpoint to fine-tune from.
+
+    Streamed to disk while hashing — a checkpoint can be hundreds of MB and
+    must not be buffered whole in memory. Re-uploading identical bytes returns
+    the existing row: content-hash identity, exactly like image uploads.
+    """
+    get_project_or_404(project_id, db)
+
+    from pathlib import Path as _P
+
+    original = _P(file.filename or "weights.pt").name  # basename: no path tricks
+    suffix = _P(original).suffix.lower()
+    if suffix not in _WEIGHTS_SUFFIXES:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"'{original}' doesn't look like a checkpoint — expected "
+            f"{' or '.join(sorted(_WEIGHTS_SUFFIXES))}.",
+        )
+
+    dest_dir = settings.STORAGE_DIR / "imported_weights" / str(project_id)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    part = dest_dir / f".upload-{id(file):x}.part"
+
+    sha = hashlib.sha256()
+    size = 0
+    try:
+        with part.open("wb") as out:
+            while chunk := await file.read(1024 * 1024):
+                size += len(chunk)
+                if size > _MAX_WEIGHTS_BYTES:
+                    raise HTTPException(
+                        status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                        "That file is over 2 GB — bigger than any supported "
+                        "checkpoint. Did you pick the right file?",
+                    )
+                sha.update(chunk)
+                out.write(chunk)
+        if size == 0:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, f"'{original}' is empty.")
+
+        digest = sha.hexdigest()
+        existing = db.scalar(
+            select(ImportedWeights).where(
+                ImportedWeights.project_id == project_id,
+                ImportedWeights.sha256 == digest,
+            )
+        )
+        if existing is not None:
+            return existing  # same bytes, same row — nothing new to store
+
+        final = dest_dir / f"{digest[:16]}{suffix}"
+        part.replace(final)
+        row = ImportedWeights(
+            project_id=project_id,
+            filename=original,
+            stored_path=to_storage_path(final),
+            size_bytes=size,
+            sha256=digest,
+        )
+        db.add(row)
+        db.commit()
+        db.refresh(row)
+        return row
+    finally:
+        part.unlink(missing_ok=True)  # no-op on success (renamed away)
+
+
+@router.get(
+    "/projects/{project_id}/weights", response_model=list[ImportedWeightsRead]
+)
+def list_weights(project_id: int, db: Session = Depends(get_db)) -> list[ImportedWeights]:
+    get_project_or_404(project_id, db)
+    return list(
+        db.scalars(
+            select(ImportedWeights)
+            .where(ImportedWeights.project_id == project_id)
+            .order_by(ImportedWeights.id.desc())
+        ).all()
+    )
 
 
 def _validate_finetune_source(db: Session, project_id: int, source_id: int) -> None:

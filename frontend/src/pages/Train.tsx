@@ -38,13 +38,16 @@ import {
   listDatasetVersions,
   listTrainers,
   listTrainingJobs,
+  listWeights,
   getTrainingJob,
   renameTrainingJob,
   startTraining,
   stopTrainingJob,
+  uploadWeights,
   versionLabel,
   type DatasetVersion,
   type DeviceInfo,
+  type ImportedWeights,
   type TrainerInfo,
   type TrainingJob,
   type TrainPreview,
@@ -84,6 +87,31 @@ export function Train() {
   // Finetune source: a completed run's id, or null to start from the pretrained
   // base. Lets you keep improving a model instead of re-learning from zero.
   const [initFromId, setInitFromId] = useState<number | null>(null)
+  // …or an UPLOADED checkpoint (imported weights). Mutually exclusive with
+  // initFromId — selecting either clears the other, mirroring the backend rule.
+  const [initWeightsId, setInitWeightsId] = useState<number | null>(null)
+  const [weights, setWeights] = useState<ImportedWeights[]>([])
+  const [importingWeights, setImportingWeights] = useState(false)
+  const weightsFileRef = useRef<HTMLInputElement>(null)
+
+  async function importWeightsFile(file: File | undefined) {
+    if (!file) return
+    setError(null)
+    setImportingWeights(true)
+    try {
+      const row = await uploadWeights(projectId, file)
+      // Deduped re-uploads return the existing row — don't list it twice.
+      setWeights((w) => [row, ...w.filter((x) => x.id !== row.id)])
+      // Selecting the fresh import is what the user meant by uploading it.
+      setInitWeightsId(row.id)
+      setInitFromId(null)
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setImportingWeights(false)
+      if (weightsFileRef.current) weightsFileRef.current.value = ''
+    }
+  }
 
   const [activeJob, setActiveJob] = useState<TrainingJob | null>(null)
   // Which past run the user is inspecting in the detail panel.
@@ -155,14 +183,16 @@ export function Train() {
       getTrainPreview(projectId),
       listTrainingJobs(projectId),
       listDatasetVersions(projectId),
+      listWeights(projectId),
     ])
-      .then(([t, d, p, j, dv]) => {
+      .then(([t, d, p, j, dv, w]) => {
         if (cancelled) return
         setTrainers(t)
         setDevice(d)
         setPreview(p)
         setJobs(j)
         setDatasetVersions(dv)
+        setWeights(w)
         if (t.length) {
           setTrainerKey((k) => k || t[0].key)
           setEpochs(t[0].default_epochs)
@@ -265,6 +295,7 @@ export function Train() {
         image_size: imageSize,
         learning_rate: lr.trim() ? Number(lr) : null,
         init_from_job_id: initFromId,
+        init_weights_id: initWeightsId,
         dataset_version_id: datasetVersionId,
       })
       setActiveJob(job)
@@ -308,8 +339,18 @@ export function Train() {
     return job ? versionLabel(job) : null
   }
   /** Dataset version number a run trained on. */
-  const datasetVersionOf = (id: number | null) =>
-    id === null ? null : (datasetVersions.find((v) => v.id === id)?.version ?? null)
+  // The LABEL, not the raw number: a renamed dataset version must read by its
+  // current name everywhere it is referenced, so this resolves against the
+  // live versions list on every render rather than echoing "v{n}".
+  const datasetVersionOf = (id: number | null) => {
+    if (id === null) return null
+    const v = datasetVersions.find((x) => x.id === id)
+    return v ? versionLabel(v) : null
+  }
+  const datasetLabelByNumber = (n: number | null | undefined) => {
+    const v = datasetVersions.find((x) => x.version === n)
+    return v ? versionLabel(v) : `v${n}`
+  }
 
   if (loading) {
     return (
@@ -376,7 +417,10 @@ export function Train() {
                   fromVersion={
                     displayedJob.init_from_job_id !== null
                       ? labelOf(displayedJob.init_from_job_id)
-                      : null
+                      : displayedJob.init_weights_id !== null
+                        ? (weights.find((w) => w.id === displayedJob.init_weights_id)
+                            ?.filename ?? 'imported weights')
+                        : null
                   }
                   datasetVersion={datasetVersionOf(displayedJob.dataset_version_id)}
                   onStop={requestStop}
@@ -502,12 +546,12 @@ export function Train() {
                         {!datasetVersions.length
                           ? 'No saved dataset yet'
                           : preview?.current_version
-                            ? `Current dataset (v${preview.current_version})`
-                            : `Latest saved (v${datasetVersions[0].version})`}
+                            ? `Current dataset (${datasetLabelByNumber(preview.current_version)})`
+                            : `Latest saved (${versionLabel(datasetVersions[0])})`}
                       </option>
                       {datasetVersions.map((v) => (
                         <option key={v.id} value={v.id}>
-                          v{v.version}
+                          {versionLabel(v)}
                           {v.is_current ? ' (current)' : ''} · {v.total_images} imgs ·{' '}
                           {v.total_boxes} boxes{v.note ? ` · ${v.note}` : ''}
                         </option>
@@ -517,7 +561,10 @@ export function Train() {
                       <Database size={11} />
                       Trains that saved snapshot — later dataset edits don't change it.
                     </p>
-                    {preview?.has_unsaved_changes && (
+                    {/* Only when no explicit version is picked: with one
+                        selected, the user has already answered "what should
+                        this run train?" and the nudge is just noise. */}
+                    {preview?.has_unsaved_changes && datasetVersionId === null && (
                       <p className="mt-1 rounded-md border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-amber-900">
                         The dataset has changed since it was last saved. Save it to train
                         those changes, or pick a version above.
@@ -530,27 +577,72 @@ export function Train() {
                     <label htmlFor="initfrom" className="mb-1 block text-xs font-medium text-gray-700">
                       Initialize from
                     </label>
+                    {/* THREE sources behind one select: the pretrained base,
+                        a previous run, an imported file. Values are prefixed
+                        ("run:"/"imp:") because two id spaces share the list. */}
                     <select
                       id="initfrom"
-                      value={initFromId ?? ''}
-                      onChange={(e) => setInitFromId(e.target.value ? Number(e.target.value) : null)}
+                      value={
+                        initFromId !== null
+                          ? `run:${initFromId}`
+                          : initWeightsId !== null
+                            ? `imp:${initWeightsId}`
+                            : ''
+                      }
+                      onChange={(e) => {
+                        const v = e.target.value
+                        setInitFromId(v.startsWith('run:') ? Number(v.slice(4)) : null)
+                        setInitWeightsId(v.startsWith('imp:') ? Number(v.slice(4)) : null)
+                      }}
                       disabled={isRunning}
                       className="w-full rounded-md border border-gray-300 bg-white px-2.5 py-1.5 text-sm focus:border-accent-500 focus:outline-none disabled:bg-gray-50"
                     >
                       <option value="">Pretrained weights (from scratch)</option>
-                      {completedRuns.map((j) => (
-                        <option key={j.id} value={j.id}>
-                          Continue {versionLabel(j)}
-                          {j.best_map !== null ? ` · mAP ${j.best_map.toFixed(3)}` : ''}
-                        </option>
-                      ))}
+                      {completedRuns.length > 0 && (
+                        <optgroup label="Continue a previous run">
+                          {completedRuns.map((j) => (
+                            <option key={j.id} value={`run:${j.id}`}>
+                              Continue {versionLabel(j)}
+                              {j.best_map !== null ? ` · mAP ${j.best_map.toFixed(3)}` : ''}
+                            </option>
+                          ))}
+                        </optgroup>
+                      )}
+                      {weights.length > 0 && (
+                        <optgroup label="Imported weights">
+                          {weights.map((w) => (
+                            <option key={w.id} value={`imp:${w.id}`}>
+                              {w.filename} · {(w.size_bytes / 1048576).toFixed(1)} MB
+                            </option>
+                          ))}
+                        </optgroup>
+                      )}
                     </select>
                     <p className="mt-0.5 flex items-center gap-1 text-xs text-gray-400">
                       <GitBranch size={11} />
                       {initFromId
                         ? `Builds on ${labelOf(initFromId)}'s weights, trained on the current dataset.`
-                        : 'Continue a finished version to keep improving it instead of re-learning from zero.'}
+                        : initWeightsId
+                          ? 'Starts from the imported checkpoint. It must match the selected model family — the run fails with the framework’s error if it doesn’t.'
+                          : 'Continue a finished version to keep improving it instead of re-learning from zero.'}
                     </p>
+                    {/* Bring your own checkpoint — trained elsewhere, uploaded
+                        here, selectable above like any other starting point. */}
+                    <input
+                      ref={weightsFileRef}
+                      type="file"
+                      accept=".pt,.pth"
+                      className="hidden"
+                      onChange={(e) => void importWeightsFile(e.target.files?.[0])}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => weightsFileRef.current?.click()}
+                      disabled={isRunning || importingWeights}
+                      className="mt-1.5 text-xs font-medium text-accent-700 underline underline-offset-2 hover:text-accent-800 disabled:cursor-default disabled:text-gray-400 disabled:no-underline"
+                    >
+                      {importingWeights ? 'Importing…' : 'Import weights (.pt / .pth)…'}
+                    </button>
                   </div>
 
                   {/* --- Tuning knobs, hidden by default ---
@@ -788,7 +880,7 @@ function RunDetail({
   job: TrainingJob
   live: boolean
   fromVersion: string | null
-  datasetVersion: number | null
+  datasetVersion: string | null
   onStop: () => void
   onCancel: () => void
   /** A stop/cancel request is in flight — grey both buttons so the click
@@ -806,10 +898,14 @@ function RunDetail({
           {/* The NAME once it has one — the detail panel and the version list
               must not disagree about what a run is called. */}
           {live ? `Training ${versionLabel(job)}…` : versionLabel(job)}
-          {job.init_from_job_id !== null && (
+          {(job.init_from_job_id !== null || job.init_weights_id !== null) && (
             <span className="flex items-center gap-1 rounded bg-gray-100 px-1.5 py-0.5 text-[10px] font-normal text-gray-500">
               <GitBranch size={10} />
-              {fromVersion !== null ? `continued from ${fromVersion}` : 'continued'}
+              {job.init_weights_id !== null
+                ? `started from ${fromVersion ?? 'imported weights'}`
+                : fromVersion !== null
+                  ? `continued from ${fromVersion}`
+                  : 'continued'}
             </span>
           )}
           {job.stopped_early && (
@@ -904,10 +1000,7 @@ function RunDetail({
         {/* How this run was configured — the "how it did it" for history. */}
         <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1 text-xs sm:grid-cols-4">
           <Detail label="Backend" value={job.trainer_key} />
-          <Detail
-            label="Dataset"
-            value={datasetVersion !== null ? `v${datasetVersion}` : '—'}
-          />
+          <Detail label="Dataset" value={datasetVersion ?? '—'} />
           <Detail label="Epochs" value={String(job.total_epochs)} />
           <Detail label="Batch" value={String(job.batch_size)} />
           <Detail label="Image size" value={`${job.image_size}px`} />

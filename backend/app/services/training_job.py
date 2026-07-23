@@ -220,6 +220,24 @@ def _run(db: Session, job: TrainingJob) -> None:
                 f"The checkpoint for run {job.init_from_job_id} is missing on disk "
                 f"({init_weights}). Train a fresh model instead."
             )
+    elif job.init_weights_id is not None:
+        # The third source: an uploaded checkpoint (models/imported_weights.py).
+        # Same late re-check discipline as above — the row or its file may have
+        # gone between queueing and running.
+        from app.models import ImportedWeights
+
+        imported = db.get(ImportedWeights, job.init_weights_id)
+        if imported is None:
+            raise ValueError(
+                "The imported weights this run was to start from no longer "
+                "exist. Pick another starting point."
+            )
+        init_weights = from_storage_path(imported.stored_path)
+        if init_weights is None or not init_weights.exists():
+            raise ValueError(
+                f"The imported weights file ({imported.filename}) is missing on "
+                "disk. Upload it again."
+            )
 
     # A run learns from the boxes in the TRAIN split. Validate that some exist
     # before paying to export and spin up a framework — a run over zero labels

@@ -15,6 +15,7 @@ from app.models.category import Category
 from app.models.dataset_version import DatasetVersion
 from app.models.evaluation_job import EvaluationJob
 from app.models.image import Image
+from app.models.imported_weights import ImportedWeights
 from app.models.project import Project
 from app.models.training_job import JobControl, TrainingJob
 
@@ -26,6 +27,7 @@ __all__ = [
     "JobStatus",
     "Category",
     "Image",
+    "ImportedWeights",
     "JobControl",
     "Project",
     "TrainingJob",

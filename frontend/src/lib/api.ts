@@ -593,7 +593,7 @@ export interface AnnotationJob {
   id: number
   project_id: number
   model_key: string
-  status: 'queued' | 'running' | 'done' | 'failed'
+  status: 'queued' | 'running' | 'done' | 'failed' | 'cancelled'
   /** Why a queued job hasn't started — the live "waiting for GPU" reason
    *  from the admission loop. Null once running. */
   status_detail: string | null
@@ -999,6 +999,8 @@ export interface TrainingJob {
   num_classes: number
   /** Set when this run continued another run's checkpoint (finetune). */
   init_from_job_id: number | null
+  /** Set when this run started from an uploaded checkpoint instead. */
+  init_weights_id: number | null
   /** The saved dataset version this run trained on. */
   dataset_version_id: number | null
   /** "stop" | "cancel" once requested — the run is winding down. */
@@ -1054,10 +1056,46 @@ export const startTraining = (
     learning_rate?: number | null
     /** Continue/finetune from this completed run's checkpoint. */
     init_from_job_id?: number | null
+    /** Fine-tune from an uploaded checkpoint instead (mutually exclusive). */
+    init_weights_id?: number | null
     /** Which saved dataset version to train. Omit for the latest save. */
     dataset_version_id?: number | null
   },
 ) => api.post<TrainingJob>(`/projects/${projectId}/train`, body)
+
+// --- Imported weights ------------------------------------------------------
+// Checkpoints uploaded from OUTSIDE the app, offered as a third "Initialize
+// from" source next to the pretrained base and previous runs.
+
+export interface ImportedWeights {
+  id: number
+  project_id: number
+  filename: string
+  size_bytes: number
+  created_at: string
+}
+
+export const listWeights = (projectId: number) =>
+  api.get<ImportedWeights[]>(`/projects/${projectId}/weights`)
+
+/** Single-file multipart under the field name `file` — a separate helper
+ *  because upload() speaks the image endpoint's `files` protocol. Content-Type
+ *  is left unset on purpose so the browser adds the multipart boundary. */
+export async function uploadWeights(projectId: number, file: File): Promise<ImportedWeights> {
+  const form = new FormData()
+  form.append('file', file)
+  let res: Response
+  try {
+    res = await fetch(`${BASE_URL}/projects/${projectId}/weights`, {
+      method: 'POST',
+      body: form,
+    })
+  } catch (err) {
+    throw describeNetworkFailure(err, 'the checkpoint may be too large for one request')
+  }
+  if (!res.ok) throw new ApiError(await describeFailure(res), res.status)
+  return res.json() as Promise<ImportedWeights>
+}
 export const getTrainingJob = (jobId: number) =>
   api.get<TrainingJob>(`/training-jobs/${jobId}`)
 export const listTrainingJobs = (projectId: number) =>
