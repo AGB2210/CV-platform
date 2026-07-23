@@ -201,11 +201,13 @@ jobs:
             - **Starts empty.** This is the application, not data. Create a
               project and upload images.
             - **Object detection only.** Segmentation is a later phase.
-            - **Auto-annotation and training need the extra ML dependencies**
-              (`backend/requirements-ml.txt`) and a GPU. Read the notes at the
-              top of that file before installing torch — the default PyPI
-              wheel may not match your card. Everything else works without
-              them.
+            - **The ML stack installs itself.** The heavy dependencies
+              (torch and friends, several GB) are not in the zip — the
+              first time you open Auto-annotate or Train, the app installs
+              them, picking the right PyTorch build for your GPU, with
+              progress shown on the page. Everything else works without
+              them. A GPU is strongly recommended for annotation and
+              training; CPU works, slowly.
             - **No authentication.** It binds to localhost, so only this
               machine can reach it. Don't expose it to a network you don't
               trust.
