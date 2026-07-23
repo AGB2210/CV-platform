@@ -67,9 +67,17 @@ def run_evaluation_job(job_id: int) -> None:
         except Exception as exc:  # noqa: BLE001 — background thread, nothing to bubble to
             _fail(db, job, exc)
     finally:
-        # Hand the card back — an evaluation holds a predictor resident.
-        annotator_registry.release()
-        predictor_registry.release()
+        # Hand the card back — an evaluation holds a predictor resident. Both
+        # releases are DB-gated, same discipline as the training runner: an
+        # evaluation that ended (or never started — failed before acquiring,
+        # cancelled in its GPU wait) must not unload a model a RUNNING
+        # annotation job or an already-admitted successor evaluation owns.
+        from app.services.training_job import _annotation_active, _evaluation_active
+
+        if not _annotation_active(db):
+            annotator_registry.release()
+        if not _evaluation_active(db):
+            predictor_registry.release()
         empty_cache()
         db.close()
 

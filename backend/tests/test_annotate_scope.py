@@ -167,3 +167,58 @@ def test_annotator_roster_covers_ten_models_in_four_families(client):
         assert registry.get_class(key)
 
     assert len({a["family"] for a in annotators}) == 4
+
+
+def test_cancelled_queued_job_leaves_the_resident_model_alone(client, monkeypatch):
+    """A run that never ACQUIRED anything must not release anything.
+
+    The failure this pins (observed live): job B, cancelled while waiting for
+    the GPU, ran its cleanup with nothing of its own — and the old
+    "release whatever is resident" behaviour unloaded RUNNING job A's model
+    mid-batch, failing every remaining image with "Model not loaded".
+    """
+    import app.ml.registry as registry_mod
+    from app.models import AnnotationJob, JobStatus
+    from app.services import annotation_job as service
+    from tests.conftest import make_project
+
+    monkeypatch.setattr(service, "SessionLocal", client.SessionLocal)
+
+    # Job A's model, resident on the (fake) card.
+    class _Resident:
+        key = "someone_elses_model"
+        unloaded = False
+
+        def unload(self):
+            self.unloaded = True
+
+    resident = _Resident()
+    monkeypatch.setattr(registry_mod, "_resident", resident)
+
+    # Job B: queued, already asked to cancel — its runner discards it in the
+    # GPU wait, acquiring nothing along the way.
+    pid = make_project(client, "LeaveItAlone", classes=("car",))
+    db = client.SessionLocal()
+    try:
+        job = AnnotationJob(
+            project_id=pid,
+            model_key="grounding_dino",
+            status=JobStatus.QUEUED,
+            control="cancel",
+        )
+        db.add(job)
+        db.commit()
+        job_id = job.id
+    finally:
+        db.close()
+
+    service.run_annotation_job(job_id)
+
+    assert registry_mod._resident is resident, "resident model must survive"
+    assert resident.unloaded is False, "cleanup unloaded a model it never owned"
+
+    db = client.SessionLocal()
+    try:
+        assert db.get(AnnotationJob, job_id).status == JobStatus.CANCELLED
+    finally:
+        db.close()

@@ -67,18 +67,26 @@ def run_annotation_job(job_id: int) -> None:
             # polls. Every exit path must leave a terminal status.
             _fail(db, job, exc)
     finally:
-        # Release OUR model, even on failure — a crashed job still holding it
-        # means every subsequent job OOMs. `only=` matters: with GPU admission
-        # the next queued job may already be admitted and loading ITS model by
-        # the time this line runs (terminal status commits before the finally),
-        # and an unconditional release here unloaded that model mid-job.
-        registry.release(only=owned[0] if owned else None)
-        # A predictor left resident by an idle playground would also be freed —
-        # but only when no evaluation could own it. Admission blocks this
-        # runner while an evaluation is queued/running, so the check mirrors
-        # the boundary case: an eval started the instant we finished.
-        if not _evaluation_active(db):
-            predictor_registry.release()
+        # Clean up ONLY IF this run actually acquired anything. A job that
+        # never loaded a model — cancelled while queued, or failed before
+        # acquire — has nothing of its own to free, and "free whatever is
+        # resident" is someone ELSE'S model: a queued job cancelled during its
+        # GPU wait unloaded the RUNNING job's annotator mid-batch, and every
+        # remaining image failed "Model not loaded". (Observed live, twice:
+        # once pre-1.0 from an unconditional release after DONE, once post-1.0
+        # from exactly this owned-is-empty path.)
+        if owned:
+            # `only=` still matters: the next queued job may already be
+            # admitted and loading ITS model by the time this runs (terminal
+            # status commits before the finally).
+            registry.release(only=owned[0])
+            # A predictor left resident by an idle playground would also be
+            # freed — but only when no evaluation could own it. Admission
+            # blocks this runner while an evaluation is queued/running, so the
+            # check mirrors the boundary case: an eval started the instant we
+            # finished.
+            if not _evaluation_active(db):
+                predictor_registry.release()
         db.close()
 
 
