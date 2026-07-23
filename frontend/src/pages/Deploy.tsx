@@ -3,6 +3,7 @@ import { Link, useParams } from 'react-router-dom'
 import { ArrowLeft, Cpu, Download, Upload, ScanSearch } from 'lucide-react'
 import { PageBody, PageHeader } from '@/components/layout/AppShell'
 import { MlSetupGate } from '@/components/MlSetupGate'
+import { DownloadLink } from '@/components/ui/DownloadLink'
 import {
   listModels,
   onnxUrl,
@@ -133,17 +134,17 @@ export function Deploy() {
 
                   {/* The model as a file. An <a download> streaming the .pt
                       straight from storage — take it to a Pi, a server, a
-                      colleague's ultralytics script. */}
+                      colleague's ultralytics script. DownloadLink flips its
+                      label on click, because a big .pt takes a beat before
+                      the browser shows anything. */}
                   {modelId != null && (
-                    <a
+                    <DownloadLink
                       href={weightsUrl(modelId)}
-                      download
                       className="btn-secondary mt-4 w-full"
-                      title="Download this run's checkpoint (.pt) for use outside the app"
+                      startedLabel="Download started — check your browser"
                     >
-                      <Download size={13} />
                       Download weights (.pt)
-                    </a>
+                    </DownloadLink>
                   )}
                   {modelId != null && (
                     <OnnxButton key={modelId} modelId={modelId} />

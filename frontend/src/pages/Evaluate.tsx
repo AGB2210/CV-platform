@@ -128,7 +128,12 @@ export function Evaluate() {
             </div>
           )}
 
-          {models !== null && models.length === 0 ? (
+          {/* Three states, in order: still loading (say nothing rather than
+              flash a form that may be about to vanish), no models (the empty
+              state, directly), then the real page. */}
+          {models === null ? (
+            <p className="text-sm text-gray-500">Loading…</p>
+          ) : models.length === 0 ? (
             <NoModelsCard projectId={projectId} />
           ) : (
             <div className="grid grid-cols-1 gap-6 lg:grid-cols-[320px_minmax(0,1fr)]">

@@ -27,6 +27,7 @@ import {
 import { PageBody, PageHeader } from '@/components/layout/AppShell'
 import { PageSizeSelect } from '@/components/PageSizeSelect'
 import { ConfirmDialog } from '@/components/ui/Modal'
+import { DownloadLink } from '@/components/ui/DownloadLink'
 import {
   RenameDialog,
   RowAction,
@@ -1040,16 +1041,17 @@ function ExportPanel({
             ? 'No labels in this zip, so the format does not apply.'
             : formats.find((f) => f.key === format)?.description}
         </p>
-        {/* An <a download>, not a fetch — native download UI and streaming. */}
+        {/* An <a download>, not a fetch — native download UI and streaming.
+            DownloadLink acknowledges the click: zipping a big dataset takes
+            a moment before the browser shows anything. */}
         {hasImages ? (
-          <a
+          <DownloadLink
             href={exportUrl(projectId, format, true, content)}
-            download
             className="btn-secondary w-full"
+            startedLabel="Preparing zip — check your browser"
           >
-            <Download size={13} />
             Download
-          </a>
+          </DownloadLink>
         ) : (
           <p className="text-xs text-gray-400">Upload images first.</p>
         )}
