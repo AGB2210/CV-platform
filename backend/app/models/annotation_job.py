@@ -47,6 +47,9 @@ class JobStatus:
     RUNNING = "running"
     DONE = "done"
     FAILED = "failed"
+    #: The user called it off. A distinct state, not FAILED: "you asked it to
+    #: stop and it stopped" and "it broke" must never wear the same label.
+    CANCELLED = "cancelled"
 
 
 class AnnotationJob(Base):

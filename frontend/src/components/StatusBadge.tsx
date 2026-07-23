@@ -7,7 +7,7 @@
  * instead of each page inventing its own amber.
  */
 
-export type Status = 'queued' | 'running' | 'done' | 'failed' | 'unknown'
+export type Status = 'queued' | 'running' | 'done' | 'failed' | 'cancelled' | 'unknown'
 
 // Map lifecycle state -> presentation. Adding a state means adding one entry
 // here, not editing JSX in five files.
@@ -16,6 +16,9 @@ const STYLES: Record<Status, { dot: string; text: string; label: string }> = {
   running: { dot: 'bg-status-busy', text: 'text-amber-700', label: 'Running' },
   done: { dot: 'bg-status-good', text: 'text-green-700', label: 'Done' },
   failed: { dot: 'bg-status-bad', text: 'text-red-700', label: 'Failed' },
+  // Neutral, not red: the user asked for this outcome. Red would read as
+  // "something went wrong" — the exact confusion this state exists to end.
+  cancelled: { dot: 'bg-status-idle', text: 'text-gray-500', label: 'Cancelled' },
   unknown: { dot: 'bg-gray-300', text: 'text-gray-400', label: 'Unknown' },
 }
 

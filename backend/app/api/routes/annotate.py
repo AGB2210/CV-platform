@@ -153,9 +153,9 @@ def cancel_job(job_id: int, db: Session = Depends(get_db)) -> dict:
 
     Sets a flag the runner reads between images (mirroring training's control
     column — the runner and this request are different sessions, so a DB flag is
-    the only channel they share). The runner deletes the run's proposals and the
-    job row itself; the poller treats the resulting 404 as the expected end of a
-    cancel, not an error.
+    the only channel they share). The runner deletes the run's proposals and
+    ends the job as status "cancelled" — a visible terminal state the poller
+    reads like done/failed, distinct from failure because the user asked for it.
     """
     job = db.get(AnnotationJob, job_id)
     if job is None:

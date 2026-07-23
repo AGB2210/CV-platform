@@ -126,6 +126,45 @@ def test_jobs_left_running_by_a_kill_are_failed_at_startup(client):
     assert "interrupted" in (job["error"] or "").lower()
 
 
+def test_interrupted_cancel_ends_cancelled_not_failed(client):
+    """Cancel-then-close-the-window must still read as a cancel.
+
+    A running annotation job whose control flag already says "cancel" when the
+    process dies was DELIBERATELY stopped — the restart merely delivers the
+    outcome. Marking it failed told the user their explicit cancel had broken
+    something, which is exactly the confusion the cancelled status exists to
+    end.
+    """
+    from app.database import _fail_interrupted_jobs
+    from app.models import AnnotationJob, JobStatus
+
+    pid = make_project(client, "CancelKill", classes=("car",))
+    db = client.SessionLocal()  # type: ignore[attr-defined]
+    db.add(
+        AnnotationJob(
+            project_id=pid,
+            model_key="grounding_dino",
+            status=JobStatus.RUNNING,
+            control="cancel",
+        )
+    )
+    db.commit()
+    db.close()
+
+    import app.database as database
+
+    original = database.SessionLocal
+    database.SessionLocal = client.SessionLocal  # type: ignore[attr-defined]
+    try:
+        _fail_interrupted_jobs()
+    finally:
+        database.SessionLocal = original
+
+    job = client.get(f"/api/projects/{pid}/jobs").json()[0]
+    assert job["status"] == "cancelled"
+    assert job["error"] is None, "a delivered cancel is not an error"
+
+
 # --- class deletion ---------------------------------------------------------
 
 

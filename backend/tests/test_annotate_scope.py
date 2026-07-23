@@ -80,10 +80,12 @@ def test_empty_project_rejected(client, no_run):
 
 
 def test_cancel_discards_run_proposals_and_row(client, monkeypatch):
-    """Cancel means the run never happened: its proposals AND its row go.
+    """Cancel discards the run's OUTPUT but keeps its record, as "cancelled".
 
     The runner sees the flag before loading any model, so a cancel-while-queued
-    costs nothing. Proposals from other sources must survive.
+    costs nothing. Proposals from other sources must survive. The row survives
+    too — deleting it let SQLite reuse the id and made an interrupted cancel
+    indistinguishable from a crash (reported "failed" for a deliberate stop).
     """
     from app.models import AnnotationJob, Annotation, JobStatus
     from app.services import annotation_job as service
@@ -123,7 +125,11 @@ def test_cancel_discards_run_proposals_and_row(client, monkeypatch):
 
     db = client.SessionLocal()
     try:
-        assert db.get(AnnotationJob, job_id) is None, "cancelled row must be gone"
+        row = db.get(AnnotationJob, job_id)
+        assert row is not None, "cancelled row must SURVIVE as history"
+        assert row.status == JobStatus.CANCELLED
+        assert row.control is None and row.status_detail is None
+        assert row.finished_at is not None
         remaining = db.query(Annotation).filter(Annotation.proposed.is_(True)).all()
         assert len(remaining) == 1 and remaining[0].job_id is None, (
             "only the run's own proposals are discarded"

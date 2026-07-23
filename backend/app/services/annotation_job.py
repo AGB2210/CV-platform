@@ -289,19 +289,26 @@ def _run(db: Session, job: AnnotationJob, owned: list) -> None:
 
 
 def _discard(db: Session, job: AnnotationJob) -> None:
-    """Cancel: throw the run away — its proposals and its row.
+    """Cancel: throw the run's OUTPUT away, keep its record.
 
-    Mirrors training's cancel. The run's own proposals (job_id = this job) are
-    deleted; proposals from OTHER runs or imports are untouched, and accepted
-    boxes were never touched to begin with. Deleting the row too means job
-    history doesn't accumulate entries whose only content is "asked not to
-    exist"; the poller treats the resulting 404 as the expected end of a cancel.
+    The run's own proposals (job_id = this job) are deleted; proposals from
+    OTHER runs or imports are untouched, and accepted boxes were never touched
+    to begin with.
+
+    The ROW survives, as status "cancelled". An earlier design deleted it and
+    let the poller read the resulting 404 as the end of the run — which had two
+    real costs, both found in use: SQLite reuses the freed rowid, so a later
+    job wore a cancelled job's number; and a cancel interrupted by a server
+    restart looked identical to a crash, so startup marked it FAILED — the
+    user cancelled and was told it failed.
     """
-    job_id = job.id
     for stale in db.scalars(
-        select(Annotation).where(Annotation.job_id == job_id, Annotation.proposed.is_(True))
+        select(Annotation).where(Annotation.job_id == job.id, Annotation.proposed.is_(True))
     ).all():
         db.delete(stale)
-    db.delete(job)
+    job.status = JobStatus.CANCELLED
+    job.control = None
+    job.status_detail = None
+    job.finished_at = utcnow()
     db.commit()
-    logger.info("Annotation job %s cancelled and discarded", job_id)
+    logger.info("Annotation job %s cancelled; proposals discarded", job.id)

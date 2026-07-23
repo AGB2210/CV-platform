@@ -223,6 +223,18 @@ def _fail_interrupted_jobs() -> None:
                     model.status.in_([JobStatus.QUEUED, JobStatus.RUNNING])
                 )
             ).all():
+                # A job the user had already asked to cancel ends as CANCELLED,
+                # not failed — the restart merely delivered what was requested.
+                # Without this, cancel-then-close-the-window reported "failed"
+                # for a run the user deliberately stopped.
+                if model is AnnotationJob and getattr(job, "control", None) == "cancel":
+                    job.status = JobStatus.CANCELLED
+                    job.control = None
+                    if hasattr(job, "status_detail"):
+                        job.status_detail = None
+                    job.finished_at = utcnow()
+                    reclaimed += 1
+                    continue
                 job.status = JobStatus.FAILED
                 job.error = (
                     "The server stopped while this job was running, so it was "

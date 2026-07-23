@@ -168,15 +168,15 @@ export function Annotate() {
       try {
         const fresh = await getJob(activeJob.id)
         setActiveJob(fresh)
-        if (fresh.status === 'done' || fresh.status === 'failed') {
+        if (fresh.status === 'done' || fresh.status === 'failed' || fresh.status === 'cancelled') {
           // Terminal state — stop polling and refresh the counts once.
           if (pollRef.current) clearInterval(pollRef.current)
           pollRef.current = null
           void refreshSummary()
         }
       } catch (e) {
-        // Cancel DELETES the job row, so the poll 404s — that is the expected
-        // end of a cancelled run, not an error (same contract as training).
+        // Rows from before cancel became a visible status were deleted on
+        // cancel — a 404 here is that legacy contract, not an error.
         if (e instanceof ApiError && e.status === 404) {
           setActiveJob(null)
           void refreshSummary()
@@ -704,17 +704,11 @@ function JobProgress({
   // Feedback that the click REGISTERED. Cancel takes effect between images
   // (up to ~a second later), and a button that stays clickable in that window
   // reads as a button that didn't work — so it greys out and says what it's
-  // doing. Stays disabled after success on purpose: the card closes when the
-  // poller sees the 404, and re-enabling just invites a second, doomed click.
+  // doing. Stays disabled after success on purpose: the card flips to
+  // "Cancelled" when the poller sees the terminal status, and re-enabling
+  // just invites a second, doomed click.
   const [cancelling, setCancelling] = useState(false)
-  const status: Status =
-    job.status === 'done'
-      ? 'done'
-      : job.status === 'failed'
-        ? 'failed'
-        : job.status === 'running'
-          ? 'running'
-          : 'queued'
+  const status: Status = job.status
 
   const isRunning = job.status === 'running' || job.status === 'queued'
 
@@ -902,17 +896,9 @@ function JobHistory({ jobs }: { jobs: AnnotationJob[] }) {
                 {j.boxes_created} boxes · {new Date(j.created_at).toLocaleTimeString()}
               </p>
             </div>
-            <StatusBadge
-              status={
-                j.status === 'done'
-                  ? 'done'
-                  : j.status === 'failed'
-                    ? 'failed'
-                    : j.status === 'running'
-                      ? 'running'
-                      : 'queued'
-              }
-            />
+            {/* Job statuses are a subset of the badge vocabulary — including
+                "cancelled", which reads neutral, not red. */}
+            <StatusBadge status={j.status} />
           </li>
         ))}
       </ul>
