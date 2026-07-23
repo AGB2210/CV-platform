@@ -585,17 +585,20 @@ def test_cancel_discards_the_run_entirely(client, monkeypatch, controllable_trai
     r = client.post(f"/api/projects/{pid}/train", json={"trainer_key": "ctl", "epochs": 10})
     job_id = r.json()["id"]
 
-    assert client.get(f"/api/training-jobs/{job_id}").status_code == 404, "no version kept"
-    assert client.get(f"/api/projects/{pid}/training-jobs").json() == []
+    job = client.get(f"/api/training-jobs/{job_id}").json()
+    assert job["status"] == "cancelled", "the record survives, as cancelled"
+    assert job["control"] is None and job["error"] is None
+    assert job["checkpoint_path"] is None, "no model was kept"
 
     from app.config import settings
 
     assert not (settings.runs_dir / str(job_id)).exists(), "its output was discarded"
 
 
-def test_cancelled_version_number_is_reused(client, monkeypatch, controllable_trainer, fake_trainer):
-    """A cancelled run leaves no gap: numbering counts what exists, so the next
-    run takes the number the cancelled one was using."""
+def test_cancelled_version_number_is_kept(client, monkeypatch, controllable_trainer, fake_trainer):
+    """A cancelled run OCCUPIES its number: the row survives (a version is a
+    training attempt), so the next run takes the next number — id and version
+    reuse were exactly the confusion the kept row exists to end."""
     from app.models import JobControl, TrainingJob
 
     monkeypatch.setattr(
@@ -620,7 +623,7 @@ def test_cancelled_version_number_is_reused(client, monkeypatch, controllable_tr
 
     monkeypatch.setattr("app.api.routes.train.run_training_job", _real)
     second = client.post(f"/api/projects/{pid}/train", json={"trainer_key": "ctl"}).json()
-    assert second["version"] == 1, "the cancelled run's number is free again"
+    assert second["version"] == 2, "the cancelled attempt keeps its number"
 
 
 def test_stop_rejects_a_finished_run(client, monkeypatch, fake_trainer):
@@ -938,11 +941,10 @@ def test_cancel_aborts_mid_epoch_and_discards(client, monkeypatch):
         job_id = r.json()["id"]
 
         # Cancel-before-start is caught by the pre-flight check; to exercise the
-        # BATCH poll we need the run to have started. The pre-flight discard is
-        # fine too — either way the row is gone.
-        assert client.get(f"/api/training-jobs/{job_id}").status_code == 404, (
-            "a cancelled run is discarded — row deleted, poller sees 404"
-        )
+        # BATCH poll we need the run to have started. Either way the outcome is
+        # the same terminal state: cancelled, output discarded, record kept.
+        job = client.get(f"/api/training-jobs/{job_id}").json()
+        assert job["status"] == "cancelled", "the poller reads cancelled like done/failed"
     finally:
         registry._REGISTRY.pop("batchpoll", None)
 

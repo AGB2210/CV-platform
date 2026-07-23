@@ -744,6 +744,11 @@ function JobProgress({
                 }
               }}
               className="btn-small-danger"
+              // Honest about the one thing cancel can't undo: images this run
+              // already re-annotated had their previous suggestions replaced
+              // (the no-stacking rule), and discarding the run leaves those
+              // images with none — a re-run regenerates them.
+              title="Discards this run's suggestions. Images it already covered lose their older suggestions too — re-run to regenerate."
             >
               {cancelling ? 'Cancelling…' : 'Cancel run'}
             </button>

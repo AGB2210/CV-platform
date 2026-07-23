@@ -263,10 +263,10 @@ def stop_training_job(job_id: int, db: Session = Depends(get_db)) -> TrainingJob
 def cancel_training_job(job_id: int, db: Session = Depends(get_db)) -> None:
     """Cancel outright: no version is kept and the run's output is discarded.
 
-    Returns as soon as the request is recorded — the runner picks it up at the
-    end of the epoch in flight and deletes the job itself, so the row is gone
-    moments later. That's why this is 204 rather than returning the job: there
-    will shortly be nothing to return.
+    Returns as soon as the request is recorded — the runner picks it up within
+    a second (checked between batches) and ends the job as status "cancelled",
+    its checkpoints and logs discarded. The poller reads that terminal status
+    exactly like done/failed.
     """
     _request_control(db, job_id, JobControl.CANCEL)
 

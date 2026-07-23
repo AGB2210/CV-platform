@@ -991,7 +991,7 @@ export interface TrainingJob {
   version: number
   /** User-given name; null means it displays as "v{version}". */
   name: string | null
-  status: 'queued' | 'running' | 'done' | 'failed'
+  status: 'queued' | 'running' | 'done' | 'failed' | 'cancelled'
   /** Why a queued job hasn't started — the live "waiting for GPU" reason
    *  from the admission loop. Null once running. */
   status_detail: string | null

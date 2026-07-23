@@ -253,16 +253,23 @@ export function Train() {
       try {
         const fresh = await getTrainingJob(activeJob.id)
         setActiveJob(fresh)
-        if (fresh.status === 'done' || fresh.status === 'failed') {
+        if (
+          fresh.status === 'done' ||
+          fresh.status === 'failed' ||
+          fresh.status === 'cancelled'
+        ) {
           if (pollRef.current) clearInterval(pollRef.current)
           pollRef.current = null
+          if (fresh.status === 'cancelled') {
+            setNotice('Training cancelled — nothing was saved.')
+          }
           void refresh()
         }
       } catch (e) {
         if (pollRef.current) clearInterval(pollRef.current)
         pollRef.current = null
-        // A cancelled run deletes itself, so the very next poll 404s. That's the
-        // expected end of a cancel, not a failure to report as one.
+        // Runs cancelled before cancel became a visible status deleted their
+        // row — a 404 here is that legacy contract, not an error.
         if ((e as ApiError).status === 404) {
           setActiveJob(null)
           setNotice('Training cancelled — nothing was saved.')
@@ -861,7 +868,9 @@ function vramHint(device: DeviceInfo | null, trainer: TrainerInfo | undefined): 
 }
 
 function toStatus(s: TrainingJob['status']): Status {
-  return s === 'done' ? 'done' : s === 'failed' ? 'failed' : s === 'running' ? 'running' : 'queued'
+  // Job statuses are a subset of the badge vocabulary — including
+  // "cancelled", which reads neutral, not red.
+  return s
 }
 
 function fmt(v: number | null | undefined, dp = 3): string {

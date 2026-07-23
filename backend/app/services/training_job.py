@@ -150,14 +150,24 @@ def _evaluation_active(db: Session) -> bool:
 
 
 def _discard(db: Session, job: TrainingJob) -> None:
-    """Throw a cancelled run away: its row and everything it wrote."""
+    """Cancel: discard everything the run WROTE, keep its record as "cancelled".
+
+    The run directory (checkpoints, exported dataset) and its live logs go —
+    cancel destroys the output, that part is unchanged. The ROW survives, for
+    the same two reasons annotation cancel learned first: a deleted row's id
+    (and with it the run's version number) was reused by the next run, and a
+    cancel interrupted by a restart was indistinguishable from a crash, so
+    startup reported "failed" for a deliberate stop.
+    """
     run_dir = settings.runs_dir / str(job.id)
-    job_id = job.id
-    db.delete(job)
+    job.status = JobStatus.CANCELLED
+    job.control = None
+    job.status_detail = None
+    job.finished_at = utcnow()
     db.commit()
     shutil.rmtree(run_dir, ignore_errors=True)
-    training_logs.discard(job_id)
-    logger.info("Training job %s cancelled and discarded", job_id)
+    training_logs.discard(job.id)
+    logger.info("Training job %s cancelled; artifacts discarded", job.id)
 
 
 def _run(db: Session, job: TrainingJob) -> None:
