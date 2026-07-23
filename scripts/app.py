@@ -308,7 +308,15 @@ def _switch_to_supported_python() -> None:
             f"Python {this} is newer than the ML stack supports "
             f"(<= {PY_MAX[0]}.{PY_MAX[1]}) — continuing with {found}"
         )
-        result = subprocess.run([found, str(Path(__file__).resolve()), *sys.argv[1:]])
+        try:
+            result = subprocess.run([found, str(Path(__file__).resolve()), *sys.argv[1:]])
+        except KeyboardInterrupt:
+            # Ctrl+C reaches the CHILD too (same console group), and the child
+            # already shuts the server down cleanly and says so. This parent
+            # has nothing to add — without this handler it added a full
+            # KeyboardInterrupt traceback after the tidy shutdown message,
+            # which read as a crash on every normal exit.
+            raise SystemExit(0) from None
         raise SystemExit(result.returncode)
     if IS_WINDOWS:
         die(
