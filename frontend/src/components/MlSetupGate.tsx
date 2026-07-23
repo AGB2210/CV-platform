@@ -50,6 +50,18 @@ export function MlSetupGate({ feature, children }: { feature: string; children: 
     }
   }, [installStatus, refresh])
 
+  // Keep the install log pinned to the newest line, terminal-style — unless
+  // the user scrolls up to read something, in which case leave them be until
+  // they scroll back to the bottom themselves. Same pattern as the training
+  // page's LiveLogs. Refs, not state: scroll position isn't render data.
+  const logRef = useRef<HTMLPreElement>(null)
+  const logPinned = useRef(true)
+  const logText = status?.install.log_tail.join('\n') ?? ''
+  useEffect(() => {
+    const el = logRef.current
+    if (el && logPinned.current) el.scrollTop = el.scrollHeight
+  }, [logText])
+
   const install = async () => {
     setStarting(true)
     setError(null)
@@ -148,11 +160,30 @@ export function MlSetupGate({ feature, children }: { feature: string; children: 
         {error && <p className="text-xs text-red-700">{error}</p>}
 
         {inst.log_tail.length > 0 && (
-          <details className="text-xs">
+          <details
+            className="text-xs"
+            // Opening the panel lands at the newest line, not the top — that's
+            // where the action is. Also re-pins after a scroll-up + close.
+            onToggle={(e) => {
+              if (!e.currentTarget.open) return
+              const el = logRef.current
+              if (el) {
+                logPinned.current = true
+                el.scrollTop = el.scrollHeight
+              }
+            }}
+          >
             <summary className="cursor-pointer text-gray-500 hover:text-gray-700">
               Installation log
             </summary>
-            <pre className="mt-1 max-h-40 overflow-auto rounded border border-gray-200 bg-gray-50 p-2 text-[11px] leading-relaxed text-gray-700">
+            <pre
+              ref={logRef}
+              onScroll={(e) => {
+                const el = e.currentTarget
+                logPinned.current = el.scrollHeight - el.scrollTop - el.clientHeight < 24
+              }}
+              className="mt-1 max-h-40 overflow-auto rounded border border-gray-200 bg-gray-50 p-2 text-[11px] leading-relaxed text-gray-700"
+            >
               {inst.log_tail.join('\n')}
             </pre>
           </details>
