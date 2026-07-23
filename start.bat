@@ -41,7 +41,7 @@ if %ERRORLEVEL%==0 (
 echo.
 echo   [X] Python was not found on your PATH.
 echo.
-echo   Install Python 3.10 or newer from https://www.python.org/downloads/
+echo   Install Python 3.12 or 3.13 from https://www.python.org/downloads/
 echo   During install, tick "Add python.exe to PATH", then open a NEW terminal.
 echo.
 pause

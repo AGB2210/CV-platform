@@ -151,7 +151,7 @@ class Trainer(ABC):
     key: str = ""
     #: Shown in the UI's trainer dropdown.
     display_name: str = ""
-    #: Grouping for the UI's picker: models come in FAMILIES (YOLO11, RT-DETR)
+    #: Grouping for the UI's picker: models come in FAMILIES (YOLO12, RT-DETR)
     #: whose members differ only in size/speed. A flat list of six entries
     #: hides that structure; family + variant lets the UI offer "which
     #: architecture" and "which size" as the two separate questions they are.

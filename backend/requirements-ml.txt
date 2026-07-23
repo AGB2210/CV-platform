@@ -32,7 +32,7 @@ openai-clip>=1.0.1
 supervision>=0.25.0
 
 # --- Phase 4: training ---
-# YOLO11 (Ultralytics) — the first training backend (app/ml/trainers/yolo.py).
+# Ultralytics — the YOLO12/YOLO26 and RT-DETR trainers (app/ml/trainers/yolo.py).
 # Pulls polars + nvidia-ml-py + thop; torch is already satisfied, so the CUDA
 # build is left untouched. Nano fine-tunes on modest GPUs.
 ultralytics>=8.3.0

@@ -956,7 +956,7 @@ export const setSplitForImages = (projectId: number, imageIds: number[], split: 
 export interface TrainerInfo {
   key: string
   display_name: string
-  /** Architecture family ("YOLO11", "RT-DETR") and size within it ("nano",
+  /** Architecture family ("YOLO12", "RT-DETR") and size within it ("nano",
    *  "L") — the picker groups by these two axes. */
   family: string
   variant: string

@@ -14,7 +14,7 @@ class TrainerInfo(BaseModel):
 
     key: str
     display_name: str
-    #: Architecture family ("YOLO11", "RT-DETR") and the size within it
+    #: Architecture family ("YOLO12", "RT-DETR") and the size within it
     #: ("nano", "L") — the UI's picker groups by these two axes.
     family: str
     variant: str

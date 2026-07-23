@@ -8,8 +8,9 @@ imports is invisible — so this file is the single list of "which trainers exis
 Adding one is two steps: write the class, add the import below. No route, schema
 or component changes.
 
-The ultralytics module registers the whole roster (YOLO11 nano..xlarge and
-RT-DETR L) via its own @register decorators. It imports ultralytics lazily
+The ultralytics module registers the whole roster (YOLO12 and YOLO26
+nano..xlarge, RT-DETR L/X, plus the delisted legacy YOLO11 keys) via its own
+@register decorators; rf_detr adds the RF-DETR family. It imports ultralytics lazily
 (inside train()), so this import stays free — the trainers appear in the
 registry, but the heavy deps only load when a run actually starts.
 """

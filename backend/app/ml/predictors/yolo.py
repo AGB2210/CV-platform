@@ -1,5 +1,5 @@
 """
-YOLO predictor — run a trained YOLO11 checkpoint on an image.
+Ultralytics predictor — run a trained YOLO/RT-DETR checkpoint on an image.
 
 The inference counterpart to the ultralytics trainers. Loads a `best.pt` and runs
 `model.predict()`, converting ultralytics' output into the project's canonical

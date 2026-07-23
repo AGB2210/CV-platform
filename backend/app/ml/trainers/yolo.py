@@ -1,11 +1,11 @@
 """
-Ultralytics trainers — the YOLO11 family and RT-DETR, one adapter.
+Ultralytics trainers — the YOLO families (12, 26, legacy 11) and RT-DETR, one adapter.
 
 One shared train() implementation because ultralytics gives every model the
 same API (train(data=...), callbacks, best.pt); the variants differ only in
 which pretrained checkpoint they start from and how much VRAM they want. Each
 is registered as its own key so a job's provenance names the actual
-architecture it trained — "yolo11l", not "some YOLO".
+architecture it trained — "yolo12l", not "some YOLO".
 
 THE VARIANTS ARE A LADDER, NOT A MENU OF EQUALS
 -----------------------------------------------
@@ -285,7 +285,7 @@ class UltralyticsTrainer(Trainer):
 # optimistic figure turns into an OOM mid-run where a cautious one merely
 # trains slightly slower.
 #
-# YOLO11 vs YOLO12: the user asked for whichever is better, not both. YOLO12
+# YOLO11 vs YOLO12: one listed family, not two near-duplicates. YOLO12
 # wins on accuracy at every size (ultralytics' own COCO tables: 40.6 vs 39.5
 # mAP at nano, and the gap holds up the ladder) at comparable inference cost,
 # so YOLO12 is the listed family and YOLO11 is legacy — registered but hidden,
